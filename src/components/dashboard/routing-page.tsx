@@ -187,7 +187,7 @@ export function RoutingPage() {
                             <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{account.workspaceId || account.id}</p>
                           </div>
                           <div className="flex flex-wrap gap-1.5">
-                            <PoolTypeBadge poolType={account.poolType} />
+                            <PoolTypeBadge poolType={account.poolType} label={account.poolLabel} />
                             <AccountBadges account={account} />
                             <BillingSafetyBadge account={account} />
                           </div>

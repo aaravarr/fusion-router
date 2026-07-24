@@ -33,8 +33,30 @@ export const SYSTEM_SECRET_KEYS = {
 export type SystemSecretKey =
   (typeof SYSTEM_SECRET_KEYS)[keyof typeof SYSTEM_SECRET_KEYS];
 
+export interface DomainMirrorTarget {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
+export interface DomainMirrorRule {
+  id: string;
+  pattern: string;
+  mirrorId: string;
+  enabled: boolean;
+}
+
+export interface DomainMirrorConfig {
+  mirrors: DomainMirrorTarget[];
+  accountAssignments: Record<string, string>;
+  rules: DomainMirrorRule[];
+}
+
+export type DomainMirrorMap = Record<string, DomainMirrorConfig>;
+
 export interface SystemSettings {
-  domainMirrorMap: Record<string, string>;
+  domainMirrorMap: DomainMirrorMap;
   upstreamBaseUrl: string;
   upstreamRequestTimeoutMs: number;
   maintenanceEnabled: boolean;
@@ -44,7 +66,7 @@ export interface SystemSettings {
 }
 
 export interface UpdateSystemSettingsInput {
-  domainMirrorMap?: Record<string, string>;
+  domainMirrorMap?: DomainMirrorMap;
   upstreamBaseUrl?: string;
   upstreamRequestTimeoutMs?: number;
   maintenanceEnabled?: boolean;
@@ -192,7 +214,7 @@ export function getSystemSettings(
   db: AppDatabase = getDatabase(),
 ): SystemSettings {
   return {
-    domainMirrorMap: readPublic(db, SYSTEM_SETTING_KEYS.domainMirrorMap, defaults.domainMirrorMap),
+    domainMirrorMap: normalizeDomainMirrorMap(readPublic<unknown>(db, SYSTEM_SETTING_KEYS.domainMirrorMap, defaults.domainMirrorMap)),
     upstreamBaseUrl: readPublic(
       db,
       SYSTEM_SETTING_KEYS.upstreamBaseUrl,
@@ -233,19 +255,35 @@ export function updateSystemSettings(
 ): SystemSettings {
   const entries: [string, string][] = [];
   if (input.domainMirrorMap !== undefined) {
-    // Validate each entry: original domain → mirror URL
-    const cleaned: Record<string, string> = {}
-    for (const [domain, mirrorUrl] of Object.entries(input.domainMirrorMap)) {
+    const cleaned: DomainMirrorMap = {}
+    for (const [domain, config] of Object.entries(input.domainMirrorMap)) {
       const d = domain.trim().toLowerCase()
-      const m = mirrorUrl.trim().replace(/\/$/, "")
-      if (!d || !m) continue
-      try {
-        const url = new URL(m)
-        if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol")
-      } catch {
-        throw new Error(`域名镜像映射 ${d} 的目标地址不是有效 URL`)
+      if (!d) continue
+      const ids = new Set<string>()
+      const mirrors = config.mirrors.map((mirror) => {
+        const id = mirror.id.trim()
+        const urlValue = mirror.url.trim().replace(/\/$/, "")
+        if (!id || ids.has(id)) throw new Error(`域名 ${d} 的镜像 ID 为空或重复`)
+        ids.add(id)
+        try {
+          const url = new URL(urlValue)
+          if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol")
+          if (url.username || url.password) throw new Error("credentials")
+        } catch { throw new Error(`域名镜像 ${d}/${mirror.name || id} 的目标地址不是有效 URL`) }
+        return { id, name: mirror.name.trim() || id, url: urlValue, enabled: mirror.enabled !== false }
+      })
+      if (!mirrors.length) continue
+      const accountAssignments = Object.fromEntries(Object.entries(config.accountAssignments ?? {}).filter(([, mirrorId]) => ids.has(mirrorId)))
+      const rules = (config.rules ?? []).map((rule) => {
+        if (!ids.has(rule.mirrorId)) throw new Error(`域名 ${d} 的正则规则引用了不存在的镜像`)
+        try { new RegExp(rule.pattern) } catch { throw new Error(`域名 ${d} 包含无效正则: ${rule.pattern}`) }
+        if (rule.pattern.length > 500 || /\([^)]*[+*][^)]*\)[+*{]/.test(rule.pattern)) throw new Error(`域名 ${d} 包含可能导致性能问题的正则: ${rule.pattern}`)
+        return { id: rule.id.trim(), pattern: rule.pattern, mirrorId: rule.mirrorId, enabled: rule.enabled !== false }
+      })
+      if (rules.some((rule) => !rule.id) || new Set(rules.map((rule) => rule.id)).size !== rules.length) {
+        throw new Error(`域名 ${d} 的规则 ID 为空或重复`)
       }
-      cleaned[d] = m
+      cleaned[d] = { mirrors, accountAssignments, rules }
     }
     entries.push([SYSTEM_SETTING_KEYS.domainMirrorMap, JSON.stringify(cleaned)])
   }
@@ -339,6 +377,27 @@ export function updateSystemSettings(
   const mirrorCacheGlobal = globalThis as typeof globalThis & { __invalidateDomainMirrorCache?: () => void };
   mirrorCacheGlobal.__invalidateDomainMirrorCache?.();
   return getSystemSettings(db);
+}
+
+export function normalizeDomainMirrorMap(value: unknown): DomainMirrorMap {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  const result: DomainMirrorMap = {}
+  for (const [domain, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === "string" && raw.trim()) {
+      result[domain.toLowerCase()] = { mirrors: [{ id: "legacy", name: "默认镜像", url: raw.trim().replace(/\/$/, ""), enabled: true }], accountAssignments: {}, rules: [] }
+      continue
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
+    const config = raw as Partial<DomainMirrorConfig>
+    const mirrors = Array.isArray(config.mirrors) ? config.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && typeof item.url === "string")) : []
+    if (!mirrors.length) continue
+    result[domain.toLowerCase()] = {
+      mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: item.url, enabled: item.enabled !== false })),
+      accountAssignments: config.accountAssignments && typeof config.accountAssignments === "object" ? config.accountAssignments : {},
+      rules: Array.isArray(config.rules) ? config.rules.filter((item): item is DomainMirrorRule => Boolean(item && typeof item.id === "string" && typeof item.pattern === "string" && typeof item.mirrorId === "string")) : [],
+    }
+  }
+  return result
 }
 
 export function getSystemSecret(db: AppDatabase, key: SystemSecretKey): string {

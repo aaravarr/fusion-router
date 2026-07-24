@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS quota_windows (
   source TEXT NOT NULL DEFAULT 'DASHBOARD',
   limit_value INTEGER,
   remaining_value INTEGER,
+  unit TEXT,
   observation_version INTEGER NOT NULL DEFAULT 1,
   last_observed_at TEXT NOT NULL,
   PRIMARY KEY(owner_user_id, account_id, kind)
@@ -360,6 +361,7 @@ function ensureCurrentQuotaColumns(db: AppDatabase): void {
   const cols = new Set((db.prepare("PRAGMA table_info(quota_windows)").all() as { name: string }[]).map((column) => column.name))
   if (!cols.has("limit_value")) db.exec("ALTER TABLE quota_windows ADD COLUMN limit_value INTEGER")
   if (!cols.has("remaining_value")) db.exec("ALTER TABLE quota_windows ADD COLUMN remaining_value INTEGER")
+  if (!cols.has("unit")) db.exec("ALTER TABLE quota_windows ADD COLUMN unit TEXT")
 }
 
 function ensureCurrentApiKeyColumns(db: AppDatabase): void {
@@ -470,7 +472,7 @@ function resetLegacyAccountDomain(db: AppDatabase): void {
   }
 }
 
-const CURRENT_ACCOUNT_SCHEMA_VERSION = 8
+const CURRENT_ACCOUNT_SCHEMA_VERSION = 9
 const globalDatabase = globalThis as typeof globalThis & {
   __opencodeApiDb?: AppDatabase
   __opencodeApiAccountSchemaVersion?: number

@@ -4,13 +4,14 @@ import { OpenAICPAProvider } from "./openai-cpa"
 import { XAIGrokProvider } from "./xai-grok"
 import { KimiCodeProvider } from "./kimi-code"
 import { CustomProvider } from "./custom"
+import { getCustomProviderByPoolType } from "../custom-providers"
 
 // Register all built-in providers. This runs once on first import.
 
 const globalInit = globalThis as typeof globalThis & { __opencodeApiProvidersInitialized?: boolean }
 
 export function ensureProvidersRegistered(): void {
-  setCustomProviderFactory((poolType) => new CustomProvider(poolType))
+  setCustomProviderFactory((poolType) => getCustomProviderByPoolType(poolType) ? new CustomProvider(poolType) : undefined)
   if (globalInit.__opencodeApiProvidersInitialized) return
   globalInit.__opencodeApiProvidersInitialized = true
   const registry = getProviderRegistry()

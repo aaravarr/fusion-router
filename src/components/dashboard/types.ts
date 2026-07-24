@@ -13,6 +13,7 @@ export interface QuotaWindow {
   source?: string | null;
   limitValue?: number | null;
   remainingValue?: number | null;
+  unit?: string | null;
 }
 
 export interface Account {
@@ -63,6 +64,7 @@ export interface Account {
   disabledAt?: string | null;
   externalId?: string | null;
   poolType?: string;
+  poolLabel?: string | null;
 }
 
 export interface ApiKeyRecord {

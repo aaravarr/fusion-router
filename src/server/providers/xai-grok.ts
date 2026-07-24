@@ -30,7 +30,7 @@ import type { AccountRecord, QuotaKind, ProviderAccountData } from "../types"
 import type { PoolType } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
-import { apiFetch } from "../api-fetch"
+import { apiFetch, apiFetchWithMirrorContext } from "../api-fetch"
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
@@ -297,7 +297,7 @@ export class XAIGrokProvider implements Provider {
     // Validate by sending a minimal /responses probe to the CLI gateway, the
     // same way sub2api probes Grok OAuth accounts. A 401/403 means invalid
     // credentials; any other non-5xx means the token is accepted.
-    const resp = await apiFetch(`${XAI_UPSTREAM_BASE_URL}/responses`, {
+    const resp = await apiFetchWithMirrorContext(`${XAI_UPSTREAM_BASE_URL}/responses`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${credential.token}`,
@@ -312,7 +312,7 @@ export class XAIGrokProvider implements Provider {
       },
       body: JSON.stringify({ model: "grok-4.5", input: "hi", stream: false }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
+    }, { account })
 
     if (resp.status === 401 || resp.status === 403) return { valid: false }
     // 400 (bad probe body) or 429 (rate limited) still means the token was
@@ -426,7 +426,7 @@ export class XAIGrokProvider implements Provider {
 
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
     const credential = await this.getCredential(account)
-    const resp = await apiFetch(`${XAI_UPSTREAM_BASE_URL}/models`, {
+    const resp = await apiFetchWithMirrorContext(`${XAI_UPSTREAM_BASE_URL}/models`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${credential.token}`,
@@ -439,7 +439,7 @@ export class XAIGrokProvider implements Provider {
         "x-authenticateresponse": "authenticate-response",
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
+    }, { account })
     const body = await resp.text()
     if (!resp.ok) throw new Error(`xAI /models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
     return parseOpenAiModelList(body)

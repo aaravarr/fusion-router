@@ -4,7 +4,11 @@ import { requireAdministrator } from "../_auth";
 export const runtime = "nodejs";
 const schema = z.object({
   githubMirrorUrl: z.string().trim().max(500).optional(),
-  domainMirrorMap: z.record(z.string(), z.string()).optional(),
+  domainMirrorMap: z.record(z.string(), z.object({
+    mirrors: z.array(z.object({ id: z.string(), name: z.string(), url: z.string(), enabled: z.boolean() })),
+    accountAssignments: z.record(z.string(), z.string()),
+    rules: z.array(z.object({ id: z.string(), pattern: z.string().max(500), mirrorId: z.string(), enabled: z.boolean() })),
+  })).optional(),
   upstreamBaseUrl: z.url(),
   upstreamRequestTimeoutMs: z.number().int().min(1000).max(600000),
   maintenanceEnabled: z.boolean(),

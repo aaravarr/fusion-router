@@ -574,7 +574,7 @@ export function AccountsPage() {
                         <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground">{account.workspaceId || account.id}</span>
                       </button>
                     </TableCell>
-                    <TableCell><PoolTypeBadge poolType={account.poolType} /></TableCell>
+                    <TableCell><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /></TableCell>
                     <TableCell><AccountBadges account={account} /></TableCell>
                     {account.poolType === "xai-grok" ? (
                       <>
@@ -715,7 +715,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
               <div className="min-w-0 pr-8"><DialogTitle className="truncate" title={account.name || account.email || "未命名账号"}>{account.name || account.email || "未命名账号"}</DialogTitle><DialogDescription className="mt-1 truncate font-mono text-[11px]" title={account.workspaceId || account.id}>{account.workspaceId || account.id}</DialogDescription></div>
             </DialogHeader>
             <div className="scrollbar-thin max-h-[calc(88dvh-160px)] space-y-5 overflow-y-auto px-5 py-5">
-              <div className="flex flex-wrap gap-2"><PoolTypeBadge poolType={account.poolType} /><AccountBadges account={account} /><BillingSafetyBadge account={account} /></div>
+              <div className="flex flex-wrap gap-2"><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /><AccountBadges account={account} /><BillingSafetyBadge account={account} /></div>
               {isGo && account.billingGuard !== "VERIFIED_GO_ONLY" ? (
                 <div className="rounded-md border border-warning/25 bg-warning-soft px-3.5 py-3 text-xs leading-5 text-foreground">
                   {account.useBalance === true
@@ -729,6 +729,8 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                   {quotaKinds.includes("weekly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每周" quota={getQuota(account, "weekly")} variant="card" /></div> : null}
                   {quotaKinds.includes("monthly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每月" quota={getQuota(account, "monthly")} variant="card" /></div> : null}
                   {quotaKinds.includes("rolling24h") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="滚动 24 小时" quota={getQuota(account, "rolling24h")} variant="card" /></div> : null}
+                  {quotaKinds.includes("permanent") && getQuota(account, "permanent") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="永久余额" quota={getQuota(account, "permanent")} variant="card" /></div> : null}
+                  {quotaKinds.includes("customPeriod") && getQuota(account, "customPeriod") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="自定义周期" quota={getQuota(account, "customPeriod")} variant="card" /></div> : null}
                 </div>
               </DetailSection>
               {isGo ? (

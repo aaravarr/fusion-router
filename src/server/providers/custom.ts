@@ -1,5 +1,5 @@
 import { Script, createContext } from "node:vm"
-import { apiFetch } from "../api-fetch"
+import { apiFetchWithMirrorContext } from "../api-fetch"
 import { getCustomProviderByPoolType, type CustomProviderBalanceConfig } from "../custom-providers"
 import { getDatabase } from "../db"
 import { ProviderCredentialRepository } from "../repository"
@@ -17,6 +17,10 @@ type BalanceWindowResult = {
   unit?: string
 }
 type BalanceExtractorResult = BalanceWindowResult & { isValid?: boolean; windows?: BalanceWindowResult[] }
+
+export class InvalidCustomProviderCredentialError extends Error {
+  constructor() { super("余额接口返回凭据无效"); this.name = "InvalidCustomProviderCredentialError" }
+}
 
 const PASSTHROUGH_HEADERS = ["accept", "content-type", "user-agent", "openai-organization", "openai-project"]
 
@@ -54,8 +58,8 @@ function renderValue(value: unknown, baseUrl: string, apiKey: string): unknown {
 export function runBalanceExtractor(source: string, response: unknown): BalanceExtractorResult {
   if (source.length > 20_000) throw new Error("余额 extractor 不能超过 20KB")
   const context = createContext(Object.create(null), { codeGeneration: { strings: false, wasm: false } })
-  Object.defineProperty(context, "response", { value: structuredClone(response), writable: false, configurable: false, enumerable: true })
-  const script = new Script(`"use strict"; const extractor = (${source}); if (typeof extractor !== "function") throw new Error("extractor 必须是函数"); extractor(response);`)
+  const serialized = JSON.stringify(response) ?? "null"
+  const script = new Script(`"use strict"; const response = JSON.parse(${JSON.stringify(serialized)}); const extractor = (${source}); if (typeof extractor !== "function") throw new Error("extractor 必须是函数"); extractor(response);`)
   const result = script.runInContext(context, { timeout: 100 }) as unknown
   if (!result || typeof result !== "object") throw new Error("extractor 必须返回对象")
   return structuredClone(result) as BalanceExtractorResult
@@ -81,19 +85,19 @@ function balanceWindow(value: BalanceWindowResult, observedAt: string): QuotaWin
   return {
     kind: quotaKind(value.type ?? value.kind), usagePercent, resetAt,
     resetInSeconds: resetAt ? Math.max(0, Math.ceil((Date.parse(resetAt) - Date.parse(observedAt)) / 1000)) : null,
-    lastObservedAt: observedAt, source: "API_PROBE", limitValue: total, remainingValue: remaining,
+    lastObservedAt: observedAt, source: "API_PROBE", limitValue: total, remainingValue: remaining, unit: value.unit?.trim() || null,
   }
 }
 
-async function queryBalance(config: CustomProviderBalanceConfig, baseUrl: string, apiKey: string): Promise<{ valid: boolean; windows: QuotaWindow[] }> {
+async function queryBalance(config: CustomProviderBalanceConfig, baseUrl: string, apiKey: string, account: AccountRecord): Promise<{ valid: boolean; windows: QuotaWindow[] }> {
   const request = config.request
   const headers = new Headers(renderValue(request.headers ?? {}, baseUrl, apiKey) as Record<string, string>)
   const bodyValue = renderValue(request.body, baseUrl, apiKey)
-  const response = await apiFetch(renderTemplate(request.url, baseUrl, apiKey), {
+  const response = await apiFetchWithMirrorContext(renderTemplate(request.url, baseUrl, apiKey), {
     method: request.method ?? "GET", headers,
     body: bodyValue == null ? undefined : typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue),
     signal: AbortSignal.timeout(20_000), redirect: "error",
-  })
+  }, { account })
   const text = await response.text()
   let payload: unknown = text
   try { payload = JSON.parse(text) } catch { /* extractor may intentionally consume text */ }
@@ -107,14 +111,15 @@ async function queryBalance(config: CustomProviderBalanceConfig, baseUrl: string
 export class CustomProvider implements Provider {
   constructor(readonly poolType: PoolType) {}
   get displayName(): string { return configFor(this.poolType).name }
+  get interfaceType(): "chat" | "responses" { return configFor(this.poolType).interfaceType }
   supportedQuotaKinds(): readonly QuotaKind[] { return ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD"] }
 
   async refreshQuota(_accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
     const config = configFor(this.poolType)
     if (!config.balanceConfig) return []
     const credential = await this.getCredential(account)
-    const result = await queryBalance(config.balanceConfig, config.baseUrl, credential.token)
-    if (!result.valid) throw new Error("余额接口返回凭据无效")
+    const result = await queryBalance(config.balanceConfig, config.baseUrl, credential.token, account)
+    if (!result.valid) throw new InvalidCustomProviderCredentialError()
     return result.windows
   }
 
@@ -135,7 +140,7 @@ export class CustomProvider implements Provider {
     const config = configFor(this.poolType)
     if (config.models?.length) return [...config.models]
     const credential = await this.getCredential(account)
-    const response = await apiFetch(`${config.baseUrl}/models`, { headers: { authorization: `Bearer ${credential.token}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000) })
+    const response = await apiFetchWithMirrorContext(`${config.baseUrl}/models`, { headers: { authorization: `Bearer ${credential.token}`, accept: "application/json" }, signal: AbortSignal.timeout(20_000) }, { account })
     const text = await response.text()
     if (!response.ok) throw new Error(`/models 拉取失败（HTTP ${response.status}）: ${text.slice(0, 200)}`)
     return parseModelList(JSON.parse(text))
@@ -151,8 +156,8 @@ export class CustomProvider implements Provider {
     try {
       const config = configFor(this.poolType)
       const credential = await this.getCredential(account)
-      if (config.balanceConfig) return { valid: (await queryBalance(config.balanceConfig, config.baseUrl, credential.token)).valid }
-      const response = await apiFetch(`${config.baseUrl}/models`, { headers: { authorization: `Bearer ${credential.token}` }, signal: AbortSignal.timeout(20_000) })
+      if (config.balanceConfig) return { valid: (await queryBalance(config.balanceConfig, config.baseUrl, credential.token, account)).valid }
+      const response = await apiFetchWithMirrorContext(`${config.baseUrl}/models`, { headers: { authorization: `Bearer ${credential.token}` }, signal: AbortSignal.timeout(20_000) }, { account })
       return { valid: response.ok }
     } catch { return { valid: false } }
   }

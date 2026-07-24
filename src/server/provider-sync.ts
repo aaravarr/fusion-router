@@ -5,6 +5,7 @@ import { XAIAccountBannedError } from "./providers/xai-grok"
 import { AccountRepository } from "./repository"
 import { RoutingService } from "./routing"
 import { upsertLocalRollingUsage } from "./quota-usage"
+import { InvalidCustomProviderCredentialError } from "./providers/custom"
 
 export async function syncProviderAccount(ownerUserId: string, accountId: string, db: AppDatabase = getDatabase()) {
   const accounts = new AccountRepository(ownerUserId, db)
@@ -36,6 +37,7 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
           source=excluded.source,
           limit_value=excluded.limit_value,
           remaining_value=excluded.remaining_value,
+          unit=excluded.unit,
           observation_version=observation_version+1,last_observed_at=excluded.last_observed_at`
           : `usage_percent=MAX(usage_percent, excluded.usage_percent),
           reset_at=excluded.reset_at,
@@ -46,11 +48,12 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
             WHEN remaining_value IS NULL THEN excluded.remaining_value
             ELSE MIN(remaining_value, excluded.remaining_value)
           END,
+          unit=COALESCE(excluded.unit, unit),
           observation_version=observation_version+1,last_observed_at=excluded.last_observed_at`
-        db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
-          VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
+        db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit)
+          VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
           ${conflictUpdate}`)
-          .run(ownerUserId, accountId, window.kind, window.usagePercent, window.resetAt, window.source, window.lastObservedAt, window.limitValue ?? null, window.remainingValue ?? null)
+          .run(ownerUserId, accountId, window.kind, window.usagePercent, window.resetAt, window.source, window.lastObservedAt, window.limitValue ?? null, window.remainingValue ?? null, window.unit ?? null)
       }
       if (account.poolType === "xai-grok") {
         upsertLocalRollingUsage(ownerUserId, accountId, db)
@@ -61,6 +64,8 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
   } catch (cause) {
     if (cause instanceof XAIAccountBannedError) {
       new RoutingService(ownerUserId, db).markPermanentlyDisabled(accountId, "XAI_ACCOUNT_BANNED", cause.message)
+    } else if (cause instanceof InvalidCustomProviderCredentialError) {
+      accounts.updateState(accountId, { authState: "REAUTH_REQUIRED", lastError: cause.message })
     } else {
       accounts.updateState(accountId, { lastError: cause instanceof Error ? cause.message : "账号同步失败" })
     }
@@ -68,7 +73,7 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
   }
 
   const refreshed = accounts.get(accountId)
-  const quotaWindows = db.prepare(`SELECT kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value
+  const quotaWindows = db.prepare(`SELECT kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit
     FROM quota_windows WHERE owner_user_id=? AND account_id=? ORDER BY last_observed_at DESC`).all(ownerUserId, accountId) as Record<string, unknown>[]
   return {
     account: refreshed ? {
@@ -81,6 +86,7 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
         lastObservedAt: window.last_observed_at,
         limitValue: window.limit_value,
         remainingValue: window.remaining_value,
+        unit: window.unit,
       })),
     } : null,
   }

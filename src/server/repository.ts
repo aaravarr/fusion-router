@@ -299,11 +299,12 @@ export class AccountRepository {
     lastObservedAt: string | null
     limitValue: number | null
     remainingValue: number | null
+    unit: string | null
   }> {
     if (accountIds && accountIds.length === 0) return []
     if (accountIds && accountIds.length > 0) {
       const placeholders = accountIds.map(() => "?").join(",")
-      const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value
+      const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit
         FROM quota_windows WHERE owner_user_id=? AND account_id IN (${placeholders}) ORDER BY last_observed_at DESC`)
         .all(this.ownerUserId, ...accountIds) as Row[]
       return rows.map((row) => ({
@@ -315,9 +316,10 @@ export class AccountRepository {
         lastObservedAt: nullableString(row.last_observed_at),
         limitValue: row.limit_value == null ? null : Number(row.limit_value),
         remainingValue: row.remaining_value == null ? null : Number(row.remaining_value),
+        unit: nullableString(row.unit),
       }))
     }
-    const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value
+    const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit
       FROM quota_windows WHERE owner_user_id=? ORDER BY last_observed_at DESC`).all(this.ownerUserId) as Row[]
     return rows.map((row) => ({
       accountId: String(row.account_id),
@@ -328,6 +330,7 @@ export class AccountRepository {
       lastObservedAt: nullableString(row.last_observed_at),
       limitValue: row.limit_value == null ? null : Number(row.limit_value),
       remainingValue: row.remaining_value == null ? null : Number(row.remaining_value),
+      unit: nullableString(row.unit),
     }))
   }
 
@@ -532,6 +535,8 @@ export class ProviderCredentialRepository {
     this.db.prepare(`INSERT INTO provider_credentials(id, owner_user_id, account_id, pool_type, credential_data_ciphertext, credential_version, created_at, updated_at)
       VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET credential_data_ciphertext=excluded.credential_data_ciphertext, credential_version=credential_version+1, updated_at=excluded.updated_at`)
       .run(randomUUID(), this.ownerUserId, input.accountId, input.poolType, ciphertext, 1, ts, ts)
+    this.db.prepare("UPDATE accounts SET credential_version=credential_version+1,updated_at=? WHERE id=? AND owner_user_id=?")
+      .run(ts, input.accountId, this.ownerUserId)
   }
   get(accountId: string): Record<string, string> | null {
     const row = this.db.prepare("SELECT credential_data_ciphertext FROM provider_credentials WHERE account_id = ? AND owner_user_id = ?").get(accountId, this.ownerUserId) as Row | undefined

@@ -3,7 +3,7 @@ import type { AccountRecord, QuotaKind } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
 import { getSystemSettings, normalizeOfficialOpenCodeUpstreamUrl } from "../settings"
-import { apiFetch } from "../api-fetch"
+import { apiFetchWithMirrorContext } from "../api-fetch"
 
 // OpenAI Codex models served by the OpenCode Go upstream.
 // Bootstrap catalog used before /models sync succeeds. Runtime routing must
@@ -118,14 +118,14 @@ export class OpenCodeGoProvider implements Provider {
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
     const credential = await this.getCredential(account)
     const baseUrl = this.getUpstreamBaseUrl(account)
-    const resp = await apiFetch(`${baseUrl}/models`, {
+    const resp = await apiFetchWithMirrorContext(`${baseUrl}/models`, {
       method: "GET",
       headers: {
         authorization: `Bearer ${credential.token}`,
         accept: "application/json",
       },
       signal: AbortSignal.timeout(20_000),
-    })
+    }, { account })
     const body = await resp.text()
     if (!resp.ok) throw new Error(`OpenCode Go /models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
     return parseOpenAiModelList(body)

@@ -152,11 +152,13 @@ function safeXaiAuthUrl(raw: string): boolean {
   // allow any host that is configured as a mirror target in system_settings.
   try {
     const mirrorMap = getSystemSettings().domainMirrorMap ?? {}
-    for (const mirrorUrl of Object.values(mirrorMap)) {
-      try {
-        const target = new URL(mirrorUrl)
-        if (target.hostname.toLowerCase() === host) return true
-      } catch { /* skip invalid mirror entry */ }
+    for (const config of Object.values(mirrorMap)) {
+      for (const mirror of config.mirrors) {
+        try {
+          const target = new URL(mirror.url)
+          if (target.hostname.toLowerCase() === host) return true
+        } catch { /* skip invalid mirror entry */ }
+      }
     }
   } catch { /* settings unavailable — strict mode */ }
   return false

@@ -18,7 +18,7 @@ import type { AccountRecord, QuotaKind, ProviderAccountData } from "../types"
 import type { PoolType } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
-import { apiFetch } from "../api-fetch"
+import { apiFetch, apiFetchWithMirrorContext } from "../api-fetch"
 import { OPENAI_OAUTH_CLIENT_ID, OPENAI_OAUTH_TOKEN_URL } from "../openai-oauth"
 
 // ─── Constants ───────────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ export class OpenAICPAProvider implements Provider {
   ): Promise<{ valid: boolean; email?: string; planType?: string; extra?: Record<string, unknown> }> {
     const credential = await this.getCredential(account)
 
-    const resp = await apiFetch(OPENAI_PAT_WHOAMI_URL, {
+    const resp = await apiFetchWithMirrorContext(OPENAI_PAT_WHOAMI_URL, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${credential.token}`,
@@ -286,7 +286,7 @@ export class OpenAICPAProvider implements Provider {
         "user-agent": CODEX_USER_AGENT,
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
+    }, { account })
 
     if (resp.status === 401 || resp.status === 403) {
       return { valid: false }
@@ -318,14 +318,14 @@ export class OpenAICPAProvider implements Provider {
     const credential = await this.getCredential(account)
     const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"] ?? accountId
 
-    const resp = await apiFetch(CHATGPT_USAGE_URL, {
+    const resp = await apiFetchWithMirrorContext(CHATGPT_USAGE_URL, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${credential.token}`,
         "chatgpt-account-id": chatgptAccountId,
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
+    }, { account })
 
     if (!resp.ok) return []
 

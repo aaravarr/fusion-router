@@ -2,6 +2,8 @@ import { CustomProviderRepository } from "@/server/custom-providers"
 import { getDatabase } from "@/server/db"
 import { requireSession } from "../../_auth"
 import { updateCustomProviderSchema } from "../_schema"
+import { AccountRepository } from "@/server/repository"
+import { syncProviderModelsForAccount } from "@/server/provider-models"
 
 export const runtime = "nodejs"
 
@@ -21,6 +23,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const { id } = await context.params
   try {
     const provider = new CustomProviderRepository(user.id, getDatabase()).update(id, parsed.data)
+    if (provider && !provider.models?.length && (parsed.data.models !== undefined || parsed.data.baseUrl !== undefined)) {
+      const account = new AccountRepository(user.id, getDatabase()).listByPoolType(provider.poolType)[0]
+      if (account) await syncProviderModelsForAccount(user.id, account.id, getDatabase()).catch(() => null)
+    }
     return provider ? Response.json({ provider }) : Response.json({ error: { type: "not_found" } }, { status: 404 })
   } catch (cause) {
     return Response.json({ error: { type: "custom_provider_update_failed", message: cause instanceof Error ? cause.message : "更新失败" } }, { status: 400 })

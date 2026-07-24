@@ -48,6 +48,7 @@ export async function GET(request: Request) {
     const provider = tryGetProvider(account.poolType)
     return {
       ...account,
+      poolLabel: provider?.displayName ?? account.poolType,
       enabled: account.adminState === "ENABLED",
       isCurrent: routing.currentAccountId === account.id,
       isPreferred: routing.preferredAccountId === account.id,

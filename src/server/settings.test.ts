@@ -13,6 +13,7 @@ import {
   rotateSystemSecret,
   SYSTEM_SECRET_KEYS,
   updateSystemSettings,
+  normalizeDomainMirrorMap,
 } from "./settings"
 
 let directory: string
@@ -47,6 +48,15 @@ afterEach(() => {
 })
 
 describe("system settings", () => {
+  it("migrates a legacy single mirror into a multi-mirror configuration", () => {
+    expect(normalizeDomainMirrorMap({ "api.example.com": "https://mirror.example.com/" })).toEqual({
+      "api.example.com": {
+        mirrors: [{ id: "legacy", name: "默认镜像", url: "https://mirror.example.com", enabled: true }],
+        accountAssignments: {},
+        rules: [],
+      },
+    })
+  })
   it("initializes safe defaults and validates administrator updates", () => {
     expect(getSystemSettings(db)).toMatchObject({
       upstreamBaseUrl: "https://opencode.ai/zen/go/v1",

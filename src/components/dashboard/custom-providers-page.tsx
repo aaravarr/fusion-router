@@ -117,6 +117,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
   const [balanceUrl, setBalanceUrl] = useState(provider?.balanceConfig?.request.url ?? "{{baseUrl}}/user/balance");
   const [balanceMethod, setBalanceMethod] = useState<"GET" | "POST">(provider?.balanceConfig?.request.method ?? "GET");
   const [balanceHeaders, setBalanceHeaders] = useState(JSON.stringify(provider?.balanceConfig?.request.headers ?? { Authorization: "Bearer {{apiKey}}" }, null, 2));
+  const [balanceBody, setBalanceBody] = useState(provider?.balanceConfig?.request.body === undefined ? "" : JSON.stringify(provider.balanceConfig.request.body, null, 2));
   const [extractor, setExtractor] = useState(provider?.balanceConfig?.extractor ?? DEFAULT_EXTRACTOR);
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
@@ -130,10 +131,11 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
         if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("余额请求 Headers 必须是 JSON 对象");
         headers = parsed as Record<string, string>;
       }
+      const requestBody = balanceEnabled && balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
       const payload = {
         name, description, baseUrl, interfaceType, enabled,
         models: models.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
-        balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers }, extractor } : null,
+        balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers, ...(requestBody === undefined ? {} : { body: requestBody }) }, extractor } : null,
       };
       const response = await adminFetch(provider ? `/api/admin/custom-providers/${provider.id}` : "/api/admin/custom-providers", { method: provider ? "PATCH" : "POST", body: JSON.stringify(payload) });
       const result = await response.json().catch(() => null);
@@ -157,6 +159,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
         <Field label="余额接口 URL" wide><Input className="font-mono text-xs" value={balanceUrl} onChange={(event) => setBalanceUrl(event.target.value)} /></Field>
         <Field label="请求方法"><select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={balanceMethod} onChange={(event) => setBalanceMethod(event.target.value as "GET" | "POST")}><option>GET</option><option>POST</option></select></Field>
         <Field label="Headers JSON"><Textarea className="min-h-28 font-mono text-xs" value={balanceHeaders} onChange={(event) => setBalanceHeaders(event.target.value)} /></Field>
+        <Field label="Body JSON（可选）"><Textarea className="min-h-28 font-mono text-xs" value={balanceBody} onChange={(event) => setBalanceBody(event.target.value)} placeholder={'{"scope":"billing"}'} /></Field>
         <Field label="Extractor 函数" wide><Textarea className="min-h-56 font-mono text-xs" value={extractor} onChange={(event) => setExtractor(event.target.value)} /></Field>
       </> : null}
     </div>
@@ -169,23 +172,38 @@ function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvide
   const resource = useAdminResource<{ keys: ProviderKey[] }>(`/api/admin/custom-providers/${provider.id}/keys`);
   const [name, setName] = useState(""); const [apiKey, setApiKey] = useState(""); const [maxConcurrency, setMaxConcurrency] = useState(4);
   const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [rotating, setRotating] = useState<ProviderKey | null>(null); const [replacementKey, setReplacementKey] = useState("");
   const keys = resource.data?.keys ?? [];
   async function create() {
     setSaving(true); setError(null);
     try {
       const response = await adminFetch(`/api/admin/custom-providers/${provider.id}/keys`, { method: "POST", body: JSON.stringify({ name, apiKey, maxConcurrency }) });
       const payload = await response.json().catch(() => null); if (!response.ok) throw new Error(errorMessage(payload, "添加失败"));
+      const warnings = payload && typeof payload === "object" && Array.isArray((payload as { warnings?: unknown }).warnings) ? (payload as { warnings: string[] }).warnings : [];
+      setNotice(warnings.length ? `Key 已保存；上游探测提示：${warnings.join("；")}` : "API Key 已添加并完成上游探测");
       setName(""); setApiKey(""); await resource.refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "添加失败"); } finally { setSaving(false); }
   }
   async function patch(key: ProviderKey, input: object) {
     const response = await adminFetch(`/api/admin/custom-providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify(input) });
-    if (!response.ok) throw new Error(errorMessage(await response.json().catch(() => null), "更新失败")); await resource.refresh();
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(errorMessage(payload, "更新失败"));
+    const warnings = payload && typeof payload === "object" && Array.isArray((payload as { warnings?: unknown }).warnings) ? (payload as { warnings: string[] }).warnings : [];
+    setNotice(warnings.length ? `配置已保存；上游探测提示：${warnings.join("；")}` : "配置已更新");
+    await resource.refresh();
   }
   async function remove(key: ProviderKey) {
     if (!window.confirm(`确认删除 API Key「${key.name}」？此操作不可恢复。`)) return;
     const response = await adminFetch(`/api/admin/custom-providers/${provider.id}/keys/${key.id}`, { method: "DELETE" });
     if (!response.ok) setError(errorMessage(await response.json().catch(() => null), "删除失败")); else await resource.refresh();
+  }
+  async function replaceKey() {
+    if (!rotating || !replacementKey.trim()) return;
+    setSaving(true); setError(null);
+    try { await patch(rotating, { apiKey: replacementKey }); setRotating(null); setReplacementKey(""); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "更换失败"); }
+    finally { setSaving(false); }
   }
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-2xl">
     <DialogHeader><DialogTitle>{provider.name} · API Keys</DialogTitle><DialogDescription>每个 Key 是独立调度账号，可单独停用并配置并发上限。密钥写入后不再回显。</DialogDescription></DialogHeader>
@@ -196,13 +214,15 @@ function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvide
       <Button onClick={() => void create()} disabled={saving || !name.trim() || !apiKey.trim()}>{saving ? <LoaderCircle className="animate-spin" /> : <Plus />}添加</Button>
     </div>
     {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    {notice ? <p className="text-xs text-muted-foreground" role="status">{notice}</p> : null}
     {resource.loading ? <LoadingTable rows={3} columns={4} /> : keys.length ? <div className="divide-y rounded-md border">
       {keys.map((key) => <div key={key.id} className="grid gap-2 px-3 py-3 sm:grid-cols-[1fr_auto_auto] sm:items-center">
         <div><p className="text-sm font-medium">{key.name}</p><p className="mt-1 text-[11px] text-muted-foreground">并发 {key.maxConcurrency} · 最近成功 {formatDate(key.lastSuccessAt)} · {key.authState}</p></div>
-        <Button variant="outline" size="sm" onClick={() => void patch(key, { enabled: key.adminState !== "ENABLED" })}>{key.adminState === "ENABLED" ? "停用" : "启用"}</Button>
+        <div className="flex gap-1"><Button variant="outline" size="sm" onClick={() => void patch(key, { enabled: key.adminState !== "ENABLED" })}>{key.adminState === "ENABLED" ? "停用" : "启用"}</Button><Button variant="outline" size="sm" onClick={() => { setRotating(key); setReplacementKey(""); }}><RefreshCw />更换</Button></div>
         <Button variant="outline" size="icon-sm" className="text-destructive" onClick={() => void remove(key)}><Trash2 /></Button>
       </div>)}
     </div> : <p className="py-8 text-center text-sm text-muted-foreground">尚未添加 API Key</p>}
+    {rotating ? <div className="flex flex-wrap items-center gap-2 rounded-md border bg-[#fafafa] p-3"><span className="text-xs">更换 {rotating.name}</span><Input type="password" className="min-w-56 flex-1" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} placeholder="新的 API Key" /><Button variant="outline" size="sm" onClick={() => setRotating(null)}>取消</Button><Button size="sm" disabled={saving || !replacementKey.trim()} onClick={() => void replaceKey()}>保存新密钥</Button></div> : null}
   </DialogContent></Dialog>;
 }
 

@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { hostname, release, type as osType, arch } from "node:os"
 import { join } from "node:path"
-import { apiFetch } from "./api-fetch"
+import { apiFetch, apiFetchWithMirrorContext, type MirrorSelectionAccount } from "./api-fetch"
 
 export const KIMI_CODE_POOL_TYPE = "kimi-code" as const
 export const DEFAULT_KIMI_OAUTH_HOST = "https://auth.kimi.com"
@@ -406,22 +406,22 @@ export function parseKimiUsagePayload(payload: unknown): KimiParsedUsage {
   return { summary, limits }
 }
 
-export async function fetchKimiUsage(accessToken: string): Promise<KimiParsedUsage> {
-  const response = await apiFetch(`${kimiCodeBaseUrl()}/usages`, {
+export async function fetchKimiUsage(accessToken: string, account?: MirrorSelectionAccount): Promise<KimiParsedUsage> {
+  const response = await apiFetchWithMirrorContext(`${kimiCodeBaseUrl()}/usages`, {
     method: "GET",
     headers: { ...createKimiDeviceHeaders(), Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+  }, { account })
   if (!response.ok) throw new Error(`Kimi /usages failed (HTTP ${response.status})`)
   return parseKimiUsagePayload(await response.json())
 }
 
-export async function fetchKimiModels(accessToken: string): Promise<string[]> {
-  const response = await apiFetch(`${kimiCodeBaseUrl()}/models`, {
+export async function fetchKimiModels(accessToken: string, account?: MirrorSelectionAccount): Promise<string[]> {
+  const response = await apiFetchWithMirrorContext(`${kimiCodeBaseUrl()}/models`, {
     method: "GET",
     headers: { ...createKimiDeviceHeaders(), Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+  }, { account })
   const body = await response.text()
   if (!response.ok) throw new Error(`Kimi /models failed (HTTP ${response.status}): ${body.slice(0, 200)}`)
   const parsed = JSON.parse(body) as { data?: unknown }

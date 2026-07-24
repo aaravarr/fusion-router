@@ -1,9 +1,9 @@
 import type { PoolType, PoolTypeMeta, Provider } from "./types"
 import type { AccountRecord, QuotaKind } from "../types"
 
-let customProviderFactory: ((poolType: PoolType) => Provider) | null = null
+let customProviderFactory: ((poolType: PoolType) => Provider | undefined) | null = null
 
-export function setCustomProviderFactory(factory: (poolType: PoolType) => Provider): void {
+export function setCustomProviderFactory(factory: (poolType: PoolType) => Provider | undefined): void {
   customProviderFactory = factory
 }
 

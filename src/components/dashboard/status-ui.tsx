@@ -14,10 +14,11 @@ export function getPoolLabel(poolType?: string | null) {
 }
 
 export function getPoolQuotaKinds(poolType?: string | null) {
+  if (poolType?.startsWith("custom:")) return ["permanent", "fiveHour", "weekly", "monthly", "customPeriod"];
   return POOL_TYPE_META[poolType || "opencode-go"]?.quotaKinds ?? ["fiveHour", "weekly", "monthly"];
 }
 
-export function PoolTypeBadge({ poolType }: { poolType?: string | null }) {
+export function PoolTypeBadge({ poolType, label }: { poolType?: string | null; label?: string | null }) {
   const type = poolType || "opencode-go";
   const meta = POOL_TYPE_META[type];
   const isOpenAI = type === "openai";
@@ -36,7 +37,7 @@ export function PoolTypeBadge({ poolType }: { poolType?: string | null }) {
               : "border-info/20 bg-info-soft text-info"
       }`}
     >
-      {meta?.label ?? type}
+      {label ?? meta?.label ?? type}
     </Badge>
   );
 }
@@ -122,6 +123,9 @@ export function BillingSafetyBadge({ account }: { account: Account }) {
   if (poolType === "openai") {
     return <Badge variant="outline" className="h-5 rounded-sm border-violet/20 bg-violet-soft px-1.5 text-[11px] text-violet-deep">OpenAI Codex</Badge>;
   }
+  if (poolType.startsWith("custom:")) {
+    return <Badge variant="outline" className="h-5 rounded-sm border-sky-300/40 bg-sky-50 px-1.5 text-[11px] text-sky-700">API Key</Badge>;
+  }
   const verified = account.billingGuard === "VERIFIED_GO_ONLY";
   const label = verified
     ? "Go only"
@@ -138,10 +142,14 @@ export function BillingSafetyBadge({ account }: { account: Account }) {
   );
 }
 
-export function getQuota(account: Account, key: "fiveHour" | "weekly" | "monthly" | "rolling24h") {
+export function getQuota(account: Account, key: "permanent" | "fiveHour" | "weekly" | "monthly" | "rolling24h" | "customPeriod") {
   if (Array.isArray(account.quotaWindows)) {
     const aliases =
-      key === "fiveHour"
+      key === "permanent"
+        ? ["permanent", "PERMANENT"]
+        : key === "customPeriod"
+          ? ["customPeriod", "custom_period", "CUSTOM_PERIOD"]
+        : key === "fiveHour"
         ? ["fiveHour", "five_hour", "5h", "FIVE_HOUR"]
         : key === "rolling24h"
           ? ["rolling24h", "ROLLING_24H", "ROLLING", "24h"]
@@ -159,7 +167,7 @@ export function getQuota(account: Account, key: "fiveHour" | "weekly" | "monthly
   // Legacy/shaped accounts only expose fiveHour/weekly/monthly keys; the
   // rolling24h kind is a modern-windowed pool with no legacy slot, so remap it
   // to fiveHour for the backcompat lookup.
-  const legacyKey = key === "rolling24h" ? "fiveHour" : key;
+  const legacyKey = key === "rolling24h" || key === "permanent" || key === "customPeriod" ? "fiveHour" : key;
   const legacy = account.quotaWindows?.[legacyKey] ?? account.quotas?.[legacyKey] ?? account[legacyKey];
   return legacy ?? null;
 }
@@ -176,7 +184,6 @@ export function QuotaStatus({
   const state = quota?.status || "unknown";
   // Keep real over-limit percentages (can exceed 100%) so free-tier overspend is visible.
   const used = quota?.usagePercent == null ? null : Math.round(Math.max(0, Number(quota.usagePercent)) * 100) / 100;
-  const remaining = used == null ? null : Math.round((100 - used) * 100) / 100;
   const usedTokens = quota?.limitValue != null && quota?.remainingValue != null
     ? Number(quota.limitValue) - Number(quota.remainingValue)
     : null;
@@ -221,9 +228,13 @@ export function QuotaStatus({
         </div>
         {usedTokens != null && limitTokens != null ? (
           <p className="mt-2 font-mono text-[10px] text-muted-foreground">
-            {compactNumber(usedTokens)} / {compactNumber(limitTokens)} tokens
-            {overLimit ? ` · 超 ${compactNumber(usedTokens - limitTokens)}` : ""}
+            {quota?.unit
+              ? `剩余 ${Number(quota.remainingValue).toLocaleString()} / ${Number(quota.limitValue).toLocaleString()} ${quota.unit}`
+              : `${compactNumber(usedTokens)} / ${compactNumber(limitTokens)} tokens${overLimit ? ` · 超 ${compactNumber(usedTokens - limitTokens)}` : ""}`}
           </p>
+        ) : null}
+        {quota?.remainingValue != null && quota?.unit && (usedTokens == null || limitTokens == null) ? (
+          <p className="mt-2 font-mono text-[10px] text-muted-foreground">剩余 {Number(quota.remainingValue).toLocaleString()} {quota.unit}</p>
         ) : null}
         <div className="mt-3 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 border-t pt-2.5 text-[10px]">
           <span className="text-muted-foreground">{resetLabel}</span>

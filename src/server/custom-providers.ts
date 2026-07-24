@@ -42,6 +42,13 @@ const nowIso = () => new Date().toISOString()
 export const customPoolType = (id: string): PoolType => `custom:${id}`
 export const customProviderId = (poolType: string): string | null => poolType.startsWith("custom:") ? poolType.slice(7) || null : null
 
+const customProviderCacheGlobal = globalThis as typeof globalThis & { __customProviderConfigCache?: Map<string, { expiresAt: number; value: CustomProviderRecord | null }> }
+const CUSTOM_PROVIDER_CACHE_MS = 5_000
+export function invalidateCustomProviderCache(id?: string): void {
+  const cache = customProviderCacheGlobal.__customProviderConfigCache
+  if (id) cache?.delete(id); else cache?.clear()
+}
+
 function parseJson<T>(value: string | null): T | null {
   if (!value) return null
   try { return JSON.parse(value) as T } catch { return null }
@@ -101,6 +108,7 @@ export class CustomProviderRepository {
       JSON.stringify(normalizeModels(input.models)), input.balanceConfig ? JSON.stringify(input.balanceConfig) : null,
       Number(input.enabled ?? true), timestamp, timestamp,
     )
+    invalidateCustomProviderCache(id)
     return this.get(id)!
   }
 
@@ -116,16 +124,23 @@ export class CustomProviderRepository {
     if (entries.length) {
       this.db.prepare(`UPDATE custom_providers SET ${entries.map(([name]) => `${name}=?`).join(",")},updated_at=? WHERE id=? AND owner_user_id=?`)
         .run(...entries.map(([, value]) => value), nowIso(), id, this.ownerUserId)
+      invalidateCustomProviderCache(id)
+      if (input.models !== undefined || input.baseUrl !== undefined) {
+        this.db.prepare("DELETE FROM provider_model_cache WHERE pool_type=?").run(customPoolType(id))
+      }
     }
     return this.get(id)
   }
 
   delete(id: string): boolean {
+    if (!this.get(id)) return false
     return this.db.transaction(() => {
       const poolType = customPoolType(id)
       this.db.prepare("DELETE FROM accounts WHERE owner_user_id=? AND pool_type=?").run(this.ownerUserId, poolType)
       this.db.prepare("DELETE FROM provider_model_cache WHERE pool_type=?").run(poolType)
-      return this.db.prepare("DELETE FROM custom_providers WHERE id=? AND owner_user_id=?").run(id, this.ownerUserId).changes === 1
+      const deleted = this.db.prepare("DELETE FROM custom_providers WHERE id=? AND owner_user_id=?").run(id, this.ownerUserId).changes === 1
+      invalidateCustomProviderCache(id)
+      return deleted
     }).immediate()
   }
 }
@@ -133,6 +148,11 @@ export class CustomProviderRepository {
 export function getCustomProviderByPoolType(poolType: string, db: AppDatabase = getDatabase()): CustomProviderRecord | null {
   const id = customProviderId(poolType)
   if (!id) return null
+  const cache = (customProviderCacheGlobal.__customProviderConfigCache ??= new Map())
+  const cached = cache.get(id)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
   const row = db.prepare("SELECT * FROM custom_providers WHERE id=?").get(id) as ProviderRow | undefined
-  return row ? fromRow(row) : null
+  const value = row ? fromRow(row) : null
+  cache.set(id, { expiresAt: Date.now() + CUSTOM_PROVIDER_CACHE_MS, value })
+  return value
 }

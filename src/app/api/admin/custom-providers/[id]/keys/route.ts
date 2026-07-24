@@ -3,6 +3,8 @@ import { CustomProviderRepository } from "@/server/custom-providers"
 import { getDatabase } from "@/server/db"
 import { requireSession } from "../../../_auth"
 import { createCustomProviderKeySchema } from "../../_schema"
+import { syncProviderModelsForAccount } from "@/server/provider-models"
+import { syncProviderAccount } from "@/server/provider-sync"
 
 export const runtime = "nodejs"
 
@@ -32,5 +34,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     credentialData: { token: parsed.data.apiKey, ...(parsed.data.extraHeaders ? { extraHeaders: JSON.stringify(parsed.data.extraHeaders) } : {}) },
   })
   if (parsed.data.maxConcurrency) accountRepo.updateState(account.id, { maxConcurrency: parsed.data.maxConcurrency })
-  return Response.json({ key: accountRepo.get(account.id) }, { status: 201 })
+  const checks = await Promise.allSettled([
+    syncProviderModelsForAccount(user.id, account.id, db),
+    ...(provider.balanceConfig ? [syncProviderAccount(user.id, account.id, db)] : []),
+  ])
+  const warnings = checks.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason instanceof Error ? result.reason.message : "上游探测失败")
+  return Response.json({ key: accountRepo.get(account.id), warnings }, { status: 201 })
 }

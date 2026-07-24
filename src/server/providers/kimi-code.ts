@@ -155,7 +155,7 @@ export class KimiCodeProvider implements Provider {
   async validateCredential(account: AccountRecord): Promise<{ valid: boolean; email?: string; planType?: string; extra?: Record<string, unknown> }> {
     const credential = await this.getCredential(account)
     try {
-      const models = await fetchKimiModels(credential.token)
+      const models = await fetchKimiModels(credential.token, account)
       const db = getDatabase()
       const row = db.prepare("SELECT credential_data_ciphertext FROM provider_credentials WHERE account_id = ?")
         .get(account.id) as { credential_data_ciphertext: string } | undefined
@@ -182,7 +182,7 @@ export class KimiCodeProvider implements Provider {
   async refreshQuota(_accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
     void _accountId
     const credential = await this.getCredential(account)
-    const usage = await fetchKimiUsage(credential.token)
+    const usage = await fetchKimiUsage(credential.token, account)
     return windowsFromUsage(usage.summary, usage.limits)
   }
 
@@ -200,7 +200,7 @@ export class KimiCodeProvider implements Provider {
 
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
     const credential = await this.getCredential(account)
-    return fetchKimiModels(credential.token)
+    return fetchKimiModels(credential.token, account)
   }
 
   private readCachedModels(): string[] | null {
@@ -282,4 +282,3 @@ export class KimiCodeProvider implements Provider {
     return account.adminState === "ENABLED" && account.authState === "VALID"
   }
 }
-
