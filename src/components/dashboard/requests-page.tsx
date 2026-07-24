@@ -319,7 +319,7 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
                     <p className="flex flex-wrap items-baseline gap-x-2 font-mono">
                       <span className="text-lg font-semibold tracking-[-0.03em]">{detail.request.costLabel || "—"}</span>
                       {costCalculation ? (
-                        <span className="text-xs font-normal text-muted-foreground">（{costCalculation}）</span>
+                        <span className="text-xs font-normal text-muted-foreground">{costCalculation}</span>
                       ) : null}
                     </p>
                     <p className="mt-1 text-[11px] text-muted-foreground">
