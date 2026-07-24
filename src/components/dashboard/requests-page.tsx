@@ -318,36 +318,39 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
 }
 
 function BasicInfo({ request, poolType }: { request: RequestDetail["request"]; poolType?: string }) {
-  const rows: Array<[string, string]> = [
-    ["密钥", request.apiKeyName || request.apiKeyPrefix || "—"],
-    ["__account__", request.accountName || "—"],
-    ["模型", request.model || "—"],
-    ["路径", formatRouteLabel(request)],
-    ["是否转换", request.converted ? "已转换" : "未转换"],
-    ["注入工具", hasInjectedServerTools(request) ? "已注入 web_search + x_search" : "未注入内置工具"],
-    ["原因", explainRouteReason(request.routeReason)],
-    ["Stream", request.stream ? "是" : "否"],
-    ["HTTP 状态", request.status != null ? String(request.status) : "—"],
-    ["结果", request.outcome || (request.ok ? "success" : "fail")],
-    ["客户端", request.client || "—"],
-    ["User-Agent", request.userAgent || "—"],
-    ["创建时间", formatDate(request.createdAt)],
-    ["总延迟", request.latencyMs != null ? `${request.latencyMs} ms` : "—"],
-    ["本地准备", request.localPrepMs != null ? `${request.localPrepMs} ms` : "—"],
-   ["首 Token", request.firstTokenMs != null ? `${request.firstTokenMs} ms` : "—"],
-   ["TPS", request.tps != null ? String(request.tps) : "—"],
-   ["请求大小", request.requestSizeBytes != null ? formatBytes(request.requestSizeBytes) : "—"],
-    ["响应大小", request.responseSizeBytes != null ? formatBytes(request.responseSizeBytes) : "—"],
+  const rows: Array<{ label: string; value: string; full?: boolean }> = [
+    { label: "密钥", value: request.apiKeyName || request.apiKeyPrefix || "—" },
+    { label: "__account__", value: request.accountName || "—", full: true },
+    { label: "模型", value: request.model || "—" },
+    { label: "路径", value: formatRouteLabel(request) },
+    { label: "是否转换", value: request.converted ? "已转换" : "未转换" },
+    { label: "注入工具", value: hasInjectedServerTools(request) ? "已注入 web_search + x_search" : "未注入内置工具" },
+    { label: "原因", value: explainRouteReason(request.routeReason), full: true },
+    { label: "Stream", value: request.stream ? "是" : "否" },
+    { label: "HTTP 状态", value: request.status != null ? String(request.status) : "—" },
+    { label: "结果", value: request.outcome || (request.ok ? "success" : "fail") },
+    { label: "客户端", value: request.client || "—" },
+    { label: "User-Agent", value: request.userAgent || "—", full: true },
+    { label: "创建时间", value: formatDate(request.createdAt) },
+    { label: "总延迟", value: request.latencyMs != null ? `${request.latencyMs} ms` : "—" },
+    { label: "本地准备", value: request.localPrepMs != null ? `${request.localPrepMs} ms` : "—" },
+    { label: "首 Token", value: request.firstTokenMs != null ? `${request.firstTokenMs} ms` : "—" },
+    { label: "TPS", value: request.tps != null ? String(request.tps) : "—" },
+    { label: "请求大小", value: request.requestSizeBytes != null ? formatBytes(request.requestSizeBytes) : "—" },
+    { label: "响应大小", value: request.responseSizeBytes != null ? formatBytes(request.responseSizeBytes) : "—" },
   ];
   return (
     <div className="rounded-md border bg-[#fafafa] p-3">
       <h3 className="mb-3 text-sm font-medium">基本信息</h3>
-      <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">
-        {rows.map(([label, value]) => (
-          <div key={label} className="grid grid-cols-[96px_minmax(0,1fr)] items-center gap-2 text-xs">
-            <span className="text-muted-foreground">{label === "__account__" ? "服务账号" : label}</span>
-            <span className="inline-flex items-center gap-1.5 truncate font-mono" title={value}>
-              {value}
+      <div className="grid gap-x-4 gap-y-2.5 sm:grid-cols-2">
+        {rows.map(({ label, value, full }) => (
+          <div
+            key={label}
+            className={`grid grid-cols-[88px_minmax(0,1fr)] items-start gap-2 text-xs ${full ? "sm:col-span-2" : ""}`}
+          >
+            <span className="pt-0.5 text-muted-foreground">{label === "__account__" ? "服务账号" : label}</span>
+            <span className="inline-flex min-w-0 flex-wrap items-start gap-1.5 break-all font-mono leading-5">
+              <span className="min-w-0 whitespace-pre-wrap break-all">{value}</span>
               {label === "__account__" ? <PoolTypeBadge poolType={poolType} /> : null}
             </span>
           </div>
