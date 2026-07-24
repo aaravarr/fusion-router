@@ -462,6 +462,39 @@ export class AccountRepository {
     return this.db.prepare("DELETE FROM accounts WHERE id=? AND owner_user_id=?").run(accountId, this.ownerUserId).changes === 1
   }
 
+  bulkSetAdminState(accountIds: string[], adminState: AdminState): { updated: number; skippedBanned: number; notFound: number } {
+    const ids = [...new Set(accountIds)]
+    const result = { updated: 0, skippedBanned: 0, notFound: 0 }
+    this.db.transaction(() => {
+      for (const accountId of ids) {
+        const account = this.get(accountId)
+        if (!account) {
+          result.notFound += 1
+          continue
+        }
+        if (adminState === "ENABLED" && account.disabledReason === "XAI_ACCOUNT_BANNED") {
+          result.skippedBanned += 1
+          continue
+        }
+        this.updateState(accountId, { adminState })
+        result.updated += 1
+      }
+    }).immediate()
+    return result
+  }
+
+  bulkDelete(accountIds: string[]): { deleted: number; notFound: number } {
+    const ids = [...new Set(accountIds)]
+    const result = { deleted: 0, notFound: 0 }
+    this.db.transaction(() => {
+      for (const accountId of ids) {
+        if (this.delete(accountId)) result.deleted += 1
+        else result.notFound += 1
+      }
+    }).immediate()
+    return result
+  }
+
   private writeUsage(accountId: string, usage: ParsedUsage, observedAt: Date): void {
     const statement = this.db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at)
       VALUES(?,?,?,?,?,'DASHBOARD',?) ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET usage_percent=excluded.usage_percent,

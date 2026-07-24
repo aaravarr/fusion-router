@@ -8,6 +8,7 @@ import {
   Eye,
   KeyRound,
   MoreHorizontal,
+  Power,
   Puzzle,
   RefreshCw,
   Search,
@@ -119,7 +120,10 @@ export function AccountsPage() {
   const [kimiRefreshOpen, setKimiRefreshOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<"enable" | "disable" | "delete" | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [downloadInfo, setDownloadInfo] = useState<{ version: string | null; downloadUrl: string } | null>(null);
 
   useEffect(() => {
@@ -146,6 +150,9 @@ export function AccountsPage() {
   const accounts = resource.data?.items ?? resource.data?.accounts ?? [];
   const total = resource.data?.total ?? accounts.length;
   const stats = resource.data?.stats;
+  const visibleAccountIds = accounts.map((account) => account.id);
+  const allVisibleSelected = visibleAccountIds.length > 0 && visibleAccountIds.every((id) => selectedIds.has(id));
+  const someVisibleSelected = visibleAccountIds.some((id) => selectedIds.has(id));
 
   const poolOptions = useMemo<PoolFilterOption[]>(() => {
     const fromApi = (resource.data?.poolTypes ?? [])
@@ -196,6 +203,7 @@ export function AccountsPage() {
   async function patchAccount(account: Account, body: Record<string, unknown>) {
     setBusyId(account.id);
     setActionError(null);
+    setActionNotice(null);
     try {
       const response = await adminFetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, {
         method: "PATCH",
@@ -215,6 +223,7 @@ export function AccountsPage() {
   async function setPreferred(account: Account) {
     setBusyId(account.id);
     setActionError(null);
+    setActionNotice(null);
     try {
       const response = await adminFetch("/api/admin/routing", {
         method: "PATCH",
@@ -233,6 +242,7 @@ export function AccountsPage() {
   async function refreshAccount(account: Account) {
     setBusyId(account.id);
     setActionError(null);
+    setActionNotice(null);
     try {
       const response = await adminFetch(`/api/admin/accounts/${encodeURIComponent(account.id)}/refresh`, {
         method: "POST",
@@ -252,6 +262,7 @@ export function AccountsPage() {
     if (!window.confirm(`确认删除 ${account.name || account.email || account.id}？该账号的连接信息将被清除，此操作不可恢复。`)) return;
     setBusyId(account.id);
     setActionError(null);
+    setActionNotice(null);
     try {
       const response = await adminFetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, { method: "DELETE" });
       if (!response.ok && response.status !== 204) {
@@ -259,11 +270,70 @@ export function AccountsPage() {
         throw new Error(payload?.error?.message || payload?.message || "账号删除失败");
       }
       if (selected?.id === account.id) setSelected(null);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        next.delete(account.id);
+        return next;
+      });
       await resource.refresh();
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : "账号删除失败");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  function toggleAccountSelection(accountId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(accountId)) next.delete(accountId);
+      else if (next.size < 500) next.add(accountId);
+      return next;
+    });
+  }
+
+  function toggleVisibleSelection() {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) {
+        for (const id of visibleAccountIds) next.delete(id);
+      } else {
+        for (const id of visibleAccountIds) {
+          if (next.size >= 500) break;
+          next.add(id);
+        }
+      }
+      return next;
+    });
+  }
+
+  async function runBulkAction(action: "enable" | "disable" | "delete") {
+    const accountIds = [...selectedIds];
+    if (!accountIds.length) return;
+    if (action === "delete" && !window.confirm(`确认永久删除选中的 ${accountIds.length} 个账号？关联凭据和额度记录也会一并清除，此操作不可恢复。`)) return;
+    setBulkBusy(action);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const response = await adminFetch("/api/admin/accounts/bulk", {
+        method: "POST",
+        body: JSON.stringify({ action, accountIds }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message || "批量操作失败");
+      const affected = Number(action === "delete" ? payload?.deleted : payload?.updated) || 0;
+      const skippedBanned = Number(payload?.skippedBanned) || 0;
+      const notFound = Number(payload?.notFound) || 0;
+      const actionLabel = action === "enable" ? "启用" : action === "disable" ? "停用" : "删除";
+      const details = [skippedBanned ? `跳过永久封禁 ${skippedBanned} 个` : "", notFound ? `未找到 ${notFound} 个` : ""].filter(Boolean);
+      setActionNotice(`已${actionLabel} ${affected} 个账号${details.length ? `，${details.join("，")}` : ""}。`);
+      setSelectedIds(new Set());
+      if (selected && accountIds.includes(selected.id)) setSelected(null);
+      await resource.refresh();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "批量操作失败");
+    } finally {
+      setBulkBusy(null);
     }
   }
 
@@ -392,6 +462,7 @@ export function AccountsPage() {
       </div>
 
       {actionError ? <div className="mb-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive" role="alert">{actionError}</div> : null}
+      {actionNotice ? <div className="mb-4 rounded-md border border-success/20 bg-success-soft px-4 py-3 text-sm text-success" role="status">{actionNotice}</div> : null}
 
       <ImportTaskCenter version={jobVersion} poolType={poolFilter} onAccountsChanged={() => void resource.refresh()} />
 
@@ -423,7 +494,16 @@ export function AccountsPage() {
           </div>
         }
       >
-        {resource.loading ? <LoadingTable rows={6} columns={7} /> : null}
+        {selectedIds.size > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 border-b bg-[#fafafa] px-4 py-3">
+            <span className="mr-auto text-xs text-muted-foreground">已选择 <span className="font-medium text-foreground">{selectedIds.size}</span> 个账号</span>
+            <Button variant="outline" size="sm" onClick={() => setSelectedIds(new Set())} disabled={Boolean(bulkBusy)}>取消选择</Button>
+            <Button variant="outline" size="sm" onClick={() => void runBulkAction("enable")} disabled={Boolean(bulkBusy)}><Power data-icon="inline-start" />{bulkBusy === "enable" ? "启用中" : "批量启用"}</Button>
+            <Button variant="outline" size="sm" onClick={() => void runBulkAction("disable")} disabled={Boolean(bulkBusy)}><CircleOff data-icon="inline-start" />{bulkBusy === "disable" ? "停用中" : "批量停用"}</Button>
+            <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => void runBulkAction("delete")} disabled={Boolean(bulkBusy)}><Trash2 data-icon="inline-start" />{bulkBusy === "delete" ? "删除中" : "批量删除"}</Button>
+          </div>
+        ) : null}
+        {resource.loading ? <LoadingTable rows={6} columns={showMonthly ? 10 : 9} /> : null}
         {resource.error ? <ErrorState message={resource.error} onRetry={() => void resource.refresh()} /> : null}
         {!resource.loading && !resource.error && !total ? (
           <EmptyState
@@ -447,9 +527,19 @@ export function AccountsPage() {
           />
         ) : null}
         {!resource.loading && !resource.error && total ? (
-          <Table className={showMonthly ? "min-w-[1200px]" : "min-w-[1080px]"}>
+          <Table className={showMonthly ? "min-w-[1244px]" : "min-w-[1124px]"}>
             <TableHeader className="bg-[#fafafa]">
               <TableRow className="hover:bg-[#fafafa]">
+                <TableHead className="w-11 px-4">
+                  <input
+                    ref={(node) => { if (node) node.indeterminate = someVisibleSelected && !allVisibleSelected; }}
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={toggleVisibleSelection}
+                    aria-label="选择当前页全部账号"
+                    className="size-4 cursor-pointer accent-foreground"
+                  />
+                </TableHead>
                 <TableHead className="w-[230px] px-4 text-xs text-muted-foreground">账号</TableHead>
                 <TableHead className="w-[110px] text-xs text-muted-foreground">号池</TableHead>
                 <TableHead className="w-[150px] text-xs text-muted-foreground">状态</TableHead>
@@ -465,7 +555,16 @@ export function AccountsPage() {
               {accounts.map((account) => {
                 const isGo = poolOf(account) === "opencode-go";
                 return (
-                  <TableRow key={account.id} className={account.isCurrent ? "bg-info-soft/60 hover:bg-info-soft" : undefined}>
+                  <TableRow key={account.id} className={selectedIds.has(account.id) ? "bg-muted/50" : account.isCurrent ? "bg-info-soft/60 hover:bg-info-soft" : undefined}>
+                    <TableCell className="px-4">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(account.id)}
+                        onChange={() => toggleAccountSelection(account.id)}
+                        aria-label={`选择账号 ${account.name || account.email || account.id}`}
+                        className="size-4 cursor-pointer accent-foreground"
+                      />
+                    </TableCell>
                     <TableCell className="px-4 py-3">
                       <button type="button" className="group block max-w-[210px] text-left" onClick={() => setSelected(account)}>
                         <span className="flex items-center gap-1.5 truncate text-sm font-medium group-hover:underline group-hover:underline-offset-4">

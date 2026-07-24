@@ -88,3 +88,30 @@ describe("account list pagination", () => {
   })
 })
 
+describe("bulk account operations", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  it("updates and deletes only owned accounts while skipping banned account enablement", () => {
+    const db = createDatabase(":memory:")
+    const now = new Date().toISOString()
+    for (const id of ["owner", "other"]) {
+      db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+        .run(id, id, id, id, "USER", "hash", now, now)
+    }
+    const repository = new AccountRepository("owner", db, new SecretVault(encryptionKey))
+    const ready = repository.createProviderAccount({ name: "ready", poolType: "xai-grok", externalId: "ready" })
+    const banned = repository.createProviderAccount({ name: "banned", poolType: "xai-grok", externalId: "banned" })
+    const other = new AccountRepository("other", db, new SecretVault(encryptionKey))
+      .createProviderAccount({ name: "other", poolType: "xai-grok", externalId: "other" })
+    repository.updateState(banned.id, { adminState: "DISABLED", disabledReason: "XAI_ACCOUNT_BANNED" })
+
+    expect(repository.bulkSetAdminState([ready.id, ready.id, banned.id, other.id, "missing"], "ENABLED"))
+      .toEqual({ updated: 1, skippedBanned: 1, notFound: 2 })
+    expect(repository.bulkSetAdminState([ready.id, banned.id], "DISABLED"))
+      .toEqual({ updated: 2, skippedBanned: 0, notFound: 0 })
+    expect(repository.get(ready.id)?.adminState).toBe("DISABLED")
+    expect(repository.bulkDelete([ready.id, other.id, "missing"])).toEqual({ deleted: 1, notFound: 2 })
+    expect(repository.get(ready.id)).toBeNull()
+    expect(new AccountRepository("other", db, new SecretVault(encryptionKey)).get(other.id)).not.toBeNull()
+  })
+})
