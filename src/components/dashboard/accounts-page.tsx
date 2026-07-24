@@ -31,11 +31,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, PaginationBar, StatsStrip, formatDate } from "./page-kit";
 import { QuotaForecastPanel } from "./quota-forecast-panel";
-import { AccountBadges, BillingSafetyBadge, getPoolLabel, getPoolQuotaKinds, getQuota, PoolTypeBadge, QuotaStatus, StatusBadge } from "./status-ui";
+import { AccountBadges, BillingSafetyBadge, getPoolLabel, getPoolQuotaKinds, getQuota, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
 import type { Account } from "./types";
 import { ImportJobProgress, ImportTaskCenter, type ImportJob, useImportJobStream } from "./import-task-center";
+import { PoolTypeFilterBar, type PoolFilterOption } from "./pool-type-filter";
 
 interface AccountStats {
   total: number;
@@ -67,6 +68,7 @@ const POOL_FILTERS = [
   { key: "openai-cpa", label: "OpenAI CPA" },
   { key: "openai-oauth", label: "OpenAI OAuth" },
   { key: "xai-grok", label: "xAI Grok" },
+  { key: "kimi-code", label: "Kimi Code" },
 ] as const;
 
 const STATUS_FILTERS = [
@@ -106,6 +108,8 @@ export function AccountsPage() {
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [xaiImportFormat, setXaiImportFormat] = useState<XaiImportFormat | null>(null);
+  const [kimiOauthOpen, setKimiOauthOpen] = useState(false);
+  const [kimiRefreshOpen, setKimiRefreshOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -135,6 +139,36 @@ export function AccountsPage() {
   const accounts = resource.data?.items ?? resource.data?.accounts ?? [];
   const total = resource.data?.total ?? accounts.length;
   const stats = resource.data?.stats;
+
+  const poolOptions = useMemo<PoolFilterOption[]>(() => {
+    const fromApi = (resource.data?.poolTypes ?? [])
+      .map((item) => {
+        const meta = POOL_TYPE_META[item.type]
+        return {
+          key: item.type,
+          label: item.label || meta?.label || item.type,
+          // Prefer short Chinese copy for the mobile dropdown; API descriptions are English ops notes.
+          description: meta?.description || item.description,
+        }
+      })
+      .filter((item) => item.key);
+    const fallback = POOL_FILTERS.filter((item) => item.key !== "all").map((item) => ({
+      key: item.key,
+      label: item.label,
+      description: POOL_TYPE_META[item.key]?.description,
+    }));
+    const options = fromApi.length > 0 ? fromApi : fallback;
+    return [{ key: "all", label: "全部", description: "查看所有 Provider 账号" }, ...options];
+  }, [resource.data?.poolTypes]);
+
+  const poolCounts = useMemo(() => {
+    const byPool = stats?.byPoolType ?? {};
+    const counts: Record<string, number | undefined> = { all: stats?.total };
+    for (const [key, value] of Object.entries(byPool)) {
+      counts[key] = value?.total;
+    }
+    return counts;
+  }, [stats]);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,7 +262,7 @@ export function AccountsPage() {
         title="多 Provider 账号池"
         description="按 Provider 独立管理凭据、额度、导入与调度。先选择号池，再使用该 Provider 支持的接入方式。"
         actions={
-          <div className="flex gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             <Button variant="outline" size="sm" onClick={() => void resource.refresh()} disabled={resource.loading}>
               <RefreshCw data-icon="inline-start" />刷新缓存
             </Button>
@@ -253,27 +287,29 @@ export function AccountsPage() {
                   <DropdownMenuItem onSelect={() => setXaiImportFormat("xai-sso")}><KeyRound />xAI SSO</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+            ) : poolFilter === "kimi-code" ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><Button size="sm"><KeyRound data-icon="inline-start" />连接 Kimi 账号</Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setKimiRefreshOpen(true)}><FileUp />Refresh Token</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : null}
           </div>
         }
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="inline-flex items-center rounded-lg border bg-card p-0.5">
-          {POOL_FILTERS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => { setPoolFilter(tab.key); setPage(1); }}
-              className={`h-7 rounded-md px-3 text-xs font-medium transition-colors ${
-                poolFilter === tab.key ? "bg-[#171717] text-white" : "text-muted-foreground hover:text-foreground"
-              }`}
-              aria-current={poolFilter === tab.key ? "true" : undefined}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      <div className="mb-4 min-w-0 rounded-xl border bg-card p-3 sm:p-3.5">
+        <PoolTypeFilterBar
+          value={poolFilter}
+          onChange={(next) => {
+            setPoolFilter(next);
+            setPage(1);
+          }}
+          options={poolOptions}
+          counts={poolCounts}
+        />
       </div>
 
       <div className="mb-4">
@@ -306,25 +342,27 @@ export function AccountsPage() {
         title="账号"
         description={`${total} 个匹配账号。额度耗尽和账号异常会自动切换，永久封禁账号会从调度中移除。`}
         action={
-          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-            <div className="relative min-w-48 flex-1 sm:w-64 sm:flex-none">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative w-full min-w-0 sm:w-64 sm:flex-none">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号、邮箱或标识" className="h-8 rounded-md bg-white pl-8 text-xs" />
+              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号、邮箱或标识" className="h-8 w-full rounded-md bg-white pl-8 text-xs" />
             </div>
-            <select
-              className="h-8 rounded-md border bg-white px-2 text-xs"
-              value={statusFilter}
-              onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }}
-            >
-              {STATUS_FILTERS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
-            </select>
-            <select
-              className="h-8 rounded-md border bg-white px-2 text-xs"
-              value={sort}
-              onChange={(event) => { setSort(event.target.value); setPage(1); }}
-            >
-              {SORT_OPTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
-            </select>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
+              <select
+                className="h-8 w-full rounded-md border bg-white px-2 text-xs sm:w-auto"
+                value={statusFilter}
+                onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }}
+              >
+                {STATUS_FILTERS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+              </select>
+              <select
+                className="h-8 w-full rounded-md border bg-white px-2 text-xs sm:w-auto"
+                value={sort}
+                onChange={(event) => { setSort(event.target.value); setPage(1); }}
+              >
+                {SORT_OPTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+              </select>
+            </div>
           </div>
         }
       >
@@ -338,6 +376,8 @@ export function AccountsPage() {
               <Button size="sm" onClick={() => setConnectorOpen(true)}><Puzzle />连接 Go 账号</Button>
             ) : poolFilter === "xai-grok" ? (
               <Button size="sm" onClick={() => setXaiImportFormat("cpa-json")}><Upload />导入 xAI 账号</Button>
+            ) : poolFilter === "kimi-code" ? (
+              <Button size="sm" onClick={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</Button>
             ) : poolFilter === "openai-cpa" || poolFilter === "openai-oauth" ? (
               <Button size="sm" onClick={() => setImportOpen(true)}><Upload />导入 Sub2API JSON</Button>
             ) : <span className="text-xs text-muted-foreground">请先在上方选择一个号池。</span>}
@@ -434,6 +474,8 @@ export function AccountsPage() {
 
       <ConnectorSheet open={connectorOpen} onOpenChange={setConnectorOpen} downloadInfo={downloadInfo} />
      <Sub2ApiImportDialog open={importOpen} poolType={poolFilter === "all" ? "openai-cpa" : poolFilter} onOpenChange={setImportOpen} onCreated={() => setJobVersion((value) => value + 1)} />
+      <KimiOauthLoginDialog open={kimiOauthOpen} onOpenChange={setKimiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
+      <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <XaiSsoImportDialog format={xaiImportFormat} open={Boolean(xaiImportFormat)} onOpenChange={(open) => { if (!open) setXaiImportFormat(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
      <AccountDetailSheet
         account={selected}
@@ -837,6 +879,162 @@ function XaiSsoImportDialog({ format, open, onOpenChange, onCreated }: { format:
           <Button onClick={() => void handleSubmit()} disabled={submitting || liveJob?.status === "RUNNING" || liveJob?.status === "QUEUED"}>
             {submitting ? "正在创建任务" : liveJob ? "重新导入" : "开始后台导入"}
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function KimiOauthLoginDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const { adminFetch } = useAdmin();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [userCode, setUserCode] = useState<string | null>(null);
+  const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "waiting" | "success">("idle");
+  const pollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      if (pollRef.current) window.clearTimeout(pollRef.current);
+      pollRef.current = null;
+      setLoading(false);
+      setError(null);
+      setSessionId(null);
+      setUserCode(null);
+      setVerifyUrl(null);
+      setStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    async function start() {
+      setLoading(true);
+      setError(null);
+      setStatus("idle");
+      try {
+        const response = await adminFetch("/api/admin/accounts/kimi-oauth/start", { method: "POST" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload?.error?.message || "启动 Kimi OAuth 失败");
+        if (cancelled) return;
+        setSessionId(payload.sessionId);
+        setUserCode(payload.userCode);
+        setVerifyUrl(payload.verificationUriComplete || payload.verificationUri);
+        setStatus("waiting");
+        if (payload.verificationUriComplete) {
+          window.open(payload.verificationUriComplete, "_blank", "noopener,noreferrer");
+        }
+        const poll = async (id: string) => {
+          if (cancelled) return;
+          try {
+            const pollResp = await adminFetch("/api/admin/accounts/kimi-oauth/poll", {
+              method: "POST",
+              body: JSON.stringify({ sessionId: id }),
+            });
+            const pollPayload = await pollResp.json().catch(() => ({}));
+            if (!pollResp.ok) throw new Error(pollPayload?.error?.message || "轮询失败");
+            if (pollPayload.status === "success") {
+              setStatus("success");
+              onCreated();
+              window.setTimeout(() => onOpenChange(false), 800);
+              return;
+            }
+            if (pollPayload.status === "expired") throw new Error("设备码已过期，请重试");
+            if (pollPayload.status === "denied") throw new Error(pollPayload.description || "授权被拒绝");
+            const waitSec = Math.max(1, Number(pollPayload.interval || 5));
+            pollRef.current = window.setTimeout(() => void poll(id), waitSec * 1000);
+          } catch (cause) {
+            setError(cause instanceof Error ? cause.message : "轮询失败");
+            setStatus("idle");
+          }
+        };
+        pollRef.current = window.setTimeout(() => void poll(payload.sessionId), Math.max(1, Number(payload.interval || 5)) * 1000);
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "启动失败");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void start();
+    return () => {
+      cancelled = true;
+      if (pollRef.current) window.clearTimeout(pollRef.current);
+    };
+  }, [open, adminFetch, onCreated, onOpenChange]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Kimi OAuth 登录</DialogTitle>
+          <DialogDescription>
+            模拟 Kimi Code CLI 设备码登录。浏览器完成授权后，账号会自动写入号池。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          {loading ? <p className="text-muted-foreground">正在申请设备码…</p> : null}
+          {error ? <p className="text-destructive">{error}</p> : null}
+          {userCode ? (
+            <div className="rounded-md border bg-muted/30 p-3">
+              <p className="text-xs text-muted-foreground">用户码</p>
+              <p className="mt-1 font-mono text-lg tracking-[0.2em]">{userCode}</p>
+              {verifyUrl ? (
+                <a className="mt-2 inline-block text-xs text-info underline" href={verifyUrl} target="_blank" rel="noreferrer">
+                  打开授权页
+                </a>
+              ) : null}
+            </div>
+          ) : null}
+          {status === "waiting" ? <p className="text-muted-foreground">等待浏览器授权完成…</p> : null}
+          {status === "success" ? <p className="text-success">登录成功，账号已导入。</p> : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function KimiRefreshTokenDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const { adminFetch } = useAdmin();
+  const [tokenText, setTokenText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [job, setJob] = useState<ImportJob | null>(null);
+  const liveJob = useImportJobStream(job, onCreated);
+
+  async function onSubmit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await adminFetch("/api/admin/import-jobs", {
+        method: "POST",
+        body: JSON.stringify({ poolType: "kimi-code", format: "refresh-token", input: tokenText }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || "创建导入任务失败");
+      setJob(payload.job as ImportJob);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "导入失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); if (!next) { setTokenText(""); setJob(null); setError(null); } }}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>导入 Kimi Refresh Token</DialogTitle>
+          <DialogDescription>每行一个 refresh token。后台会刷新 access_token 并写入 kimi-code 号池。</DialogDescription>
+        </DialogHeader>
+        <Textarea value={tokenText} onChange={(e) => setTokenText(e.target.value)} rows={8} placeholder={"refresh_token_1\nrefresh_token_2"} />
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {liveJob ? <ImportJobProgress job={liveJob} /> : null}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
+          <Button onClick={() => void onSubmit()} disabled={busy || !tokenText.trim()}>{busy ? "提交中…" : "开始导入"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

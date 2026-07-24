@@ -7,6 +7,7 @@ export const POOL_TYPE_META: Record<string, { label: string; description: string
   "openai-cpa": { label: "OpenAI CPA", description: "ChatGPT Access Token", quotaKinds: ["fiveHour", "weekly"] },
   "openai-oauth": { label: "OpenAI OAuth", description: "OAuth 授权", quotaKinds: ["fiveHour", "weekly"] },
   "xai-grok": { label: "xAI Grok", description: "xAI 免费 OAuth，滚动 24h 100 万 token", quotaKinds: ["rolling24h"] },
+  "kimi-code": { label: "Kimi Code", description: "Kimi Code 设备码 OAuth，5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
 };
 
 export function getPoolLabel(poolType?: string | null) {
@@ -23,6 +24,7 @@ export function PoolTypeBadge({ poolType }: { poolType?: string | null }) {
   const isCpa = type === "openai-cpa";
   const isOauth = type === "openai-oauth";
   const isGrok = type === "xai-grok";
+  const isKimi = type === "kimi-code";
   return (
     <Badge
       variant="outline"
@@ -33,7 +35,9 @@ export function PoolTypeBadge({ poolType }: { poolType?: string | null }) {
             ? "border-cyan/30 bg-cyan-soft text-cyan-deep"
             : isGrok
               ? "border-emerald/30 bg-emerald-soft text-emerald-deep"
-              : "border-info/20 bg-info-soft text-info"
+              : isKimi
+                ? "border-orange-300/40 bg-orange-50 text-orange-700"
+                : "border-info/20 bg-info-soft text-info"
       }`}
     >
       {meta?.label ?? type}
@@ -114,6 +118,9 @@ export function BillingSafetyBadge({ account }: { account: Account }) {
   const poolType = account.poolType || "opencode-go";
   if (poolType === "xai-grok") {
     return <Badge variant="outline" className="h-5 rounded-sm border-emerald/30 bg-emerald-soft px-1.5 text-[11px] text-emerald-deep">OAuth Free</Badge>;
+  }
+  if (poolType === "kimi-code") {
+    return <Badge variant="outline" className="h-5 rounded-sm border-orange-300/40 bg-orange-50 px-1.5 text-[11px] text-orange-700">Kimi OAuth</Badge>;
   }
   if (poolType === "openai-cpa" || poolType === "openai-oauth") {
     return <Badge variant="outline" className="h-5 rounded-sm border-violet/20 bg-violet-soft px-1.5 text-[11px] text-violet-deep">{poolType === "openai-oauth" ? "OAuth" : "Access Token"}</Badge>;

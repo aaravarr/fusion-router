@@ -34,13 +34,14 @@ const palette = ["#0070f3", "#7928ca", "#0a7a3e", "#ab570a", "#ee0000", "#00a0a0
 type RangeKey = "1h" | "6h" | "24h" | "7d" | "30d";
 type Granularity = "auto" | "5m" | "1m" | "1h" | "1d";
 
-type PoolTypeFilter = "" | "opencode-go" | "openai-cpa" | "openai-oauth" | "xai-grok";
+type PoolTypeFilter = "" | "opencode-go" | "openai-cpa" | "openai-oauth" | "xai-grok" | "kimi-code";
 const poolTypeOptions: { value: PoolTypeFilter; label: string }[] = [
   { value: "", label: "全部号池" },
   { value: "opencode-go", label: "OpenCode Go" },
   { value: "openai-cpa", label: "OpenAI CPA" },
   { value: "openai-oauth", label: "OpenAI OAuth" },
   { value: "xai-grok", label: "xAI Grok" },
+  { value: "kimi-code", label: "Kimi Code" },
 ];
 
 const rangeHours: Record<RangeKey, number> = { "1h": 1, "6h": 6, "24h": 24, "7d": 168, "30d": 720 };

@@ -15,6 +15,7 @@ const poolOptions = [
   { value: "openai-cpa", label: "OpenAI CPA" },
   { value: "openai-oauth", label: "OpenAI OAuth" },
   { value: "xai-grok", label: "xAI Grok" },
+  { value: "kimi-code", label: "Kimi Code" },
 ] as const;
 
 const chartConfig: ChartConfig = {

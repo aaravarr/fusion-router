@@ -26,6 +26,7 @@
 | opencode-go | 浏览器扩展（auth cookie -> goApiKey） | 5h + weekly + monthly | opencode.ai/zen/go/v1 |
 | openai-cpa | Sub2API JSON 导入（at- token，无刷新） | 5h + weekly | chatgpt.com/backend-api/codex |
 | openai-oauth | Sub2API JSON 导入（OAuth + refresh token） | 5h + weekly | chatgpt.com/backend-api/codex |
+| kimi-code | Kimi Code 设备码 OAuth（模拟 kimi-code CLI） | 5h + weekly | api.kimi.com/coding/v1 |
 
 ### 调度逻辑
 
@@ -80,6 +81,15 @@ docker run --rm -p 3000:3000 -v opencode-data:/data opencode-api
 3. 在插件中配置后端地址和 API Key
 4. Google 登录后自动上报 auth cookie + workspaceId
 5. 后端自动创建 Go API Key、读取订阅和额度
+
+### Kimi Code 账号（OAuth 设备码登录）
+
+1. 在「账号池」切换到 **Kimi Code**
+2. 点击「Kimi OAuth 登录」
+3. 浏览器打开 Kimi 授权页并输入用户码（会自动打开 erification_uri_complete）
+4. 授权完成后，系统保存 access/refresh token，并拉取 /models 与 /usages
+
+也可直接导入 refresh token（每行一个）。
 
 ### OpenAI CPA / OAuth 账号（Sub2API JSON 导入）
 

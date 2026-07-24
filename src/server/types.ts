@@ -6,7 +6,7 @@ export const BILLING_GUARDS = ["VERIFIED_GO_ONLY", "PAYG_FALLBACK_ENABLED", "UNV
 const _ROLLING_24H = "ROLLING_24H"
 export const QUOTA_KINDS = ["FIVE_HOUR", "WEEKLY", "MONTHLY", "UNKNOWN_GO_LIMIT", _ROLLING_24H, "PROVIDER_RATE_LIMIT"] as const
 
-export const POOL_TYPES = ["opencode-go", "openai-cpa", "openai-oauth", "xai-grok"] as const
+export const POOL_TYPES = ["opencode-go", "openai-cpa", "openai-oauth", "xai-grok", "kimi-code"] as const
 export type PoolType = (typeof POOL_TYPES)[number]
 
 export type AdminState = (typeof ADMIN_STATES)[number]
@@ -75,6 +75,7 @@ export interface ProviderAccountData {
   // For openai-cpa (AT token): { token, chatgptAccountId, planType }
   // For openai-oauth (refreshable): { token, refreshToken, expiresAt, clientId, chatgptAccountId, planType }
   // For xai-grok (xAI free OAuth): { token, refreshToken, expiresAt, clientId, email, subscriptionTier, entitlementStatus }
+  // For kimi-code (Kimi Code OAuth device flow): { token, refreshToken, expiresAt, clientId, email, subject }
   token?: string
   refreshToken?: string
   expiresAt?: string
@@ -118,3 +119,4 @@ export interface QuotaSnapshot {
   limitValue?: number | null
   remainingValue?: number | null
 }
+

@@ -38,7 +38,7 @@ interface ProviderModelCatalog {
 }
 interface ProviderModelsPayload { catalogs?: ProviderModelCatalog[] }
 
-const POOL_OPTIONS = ["opencode-go", "openai-cpa", "openai-oauth", "xai-grok"] as const;
+const POOL_OPTIONS = ["opencode-go", "openai-cpa", "openai-oauth", "xai-grok", "kimi-code"] as const;
 
 export function RoutingPage() {
   const routingResource = useAdminResource<RoutingPayload>("/api/admin/routing");

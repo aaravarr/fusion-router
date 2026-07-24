@@ -6,6 +6,7 @@ import { AccountRepository, ProviderCredentialRepository } from "./repository"
 import type { PoolType } from "./types"
 import { convertSsoToBuild, decodeJwtClaims, jwtClaimString } from "./xai-sso-device"
 import { exchangeXaiRefreshToken } from "./providers/xai-grok"
+import { refreshKimiAccessToken, KIMI_CODE_CLIENT_ID } from "./kimi-oauth"
 import { tryGetProvider } from "./providers"
 
 export const IMPORT_FORMATS = ["sub2api-json", "cpa-json", "refresh-token", "xai-sso"] as const
@@ -92,6 +93,7 @@ function poolForSub2Account(account: JsonRecord): PoolType | null {
   const type = firstString(account, "type").toLowerCase()
   const credentials = recordValue(account.credentials)
   if (platform === "grok" || platform === "xai") return credentials.refresh_token || credentials.access_token ? "xai-grok" : null
+  if (platform === "kimi" || platform === "kimi-code" || platform === "moonshot") return credentials.refresh_token || credentials.access_token ? "kimi-code" : null
   if (platform !== "openai") return null
   const authMode = firstString(credentials, "auth_mode").toLowerCase()
   if (credentials.refresh_token && type === "oauth" && authMode !== "personalaccesstoken" && authMode !== "personal_access_token") return "openai-oauth"
@@ -162,11 +164,15 @@ export function parseImportInput(poolType: PoolType, format: ImportFormat, input
   if (format === "sub2api-json") seeds = parseSub2Api(input, poolType)
   else if (format === "cpa-json") seeds = parseCpaJson(input, poolType)
   else {
-    if (poolType !== "xai-grok") throw new Error("此导入方式仅支持 xAI Grok")
+    if (poolType !== "xai-grok" && poolType !== "kimi-code") throw new Error("此导入方式仅支持 xAI Grok 或 Kimi Code")
     const values = input.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
-    seeds = values.map((value, index) => format === "xai-sso"
-      ? { label: `SSO #${index + 1}`, poolType, ssoToken: value }
-      : { label: `Refresh Token #${index + 1}`, poolType, refreshToken: value.replace(/^refresh_token\s*[=:]\s*/i, "") })
+    seeds = values.map((value, index) => {
+      if (format === "xai-sso") {
+        if (poolType !== "xai-grok") throw new Error("xAI SSO 仅支持 xAI Grok 号池")
+        return { label: `SSO #${index + 1}`, poolType, ssoToken: value }
+      }
+      return { label: `Refresh Token #${index + 1}`, poolType, refreshToken: value.replace(/^refresh_token\s*[=:]\s*/i, "") }
+    })
   }
   if (seeds.length > MAX_IMPORT_ITEMS) throw new Error(`单次最多导入 ${MAX_IMPORT_ITEMS} 个账号`)
   return seeds
@@ -260,6 +266,19 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
     updateItem(db, jobId, index, "RUNNING", "正在刷新 OAuth 凭据")
     const result = await exchangeXaiRefreshToken(seed.refreshToken, seed.clientId)
     seed = { ...seed, ...result, idToken: result.idToken || seed.idToken }
+  }
+  if (!seed.accessToken && seed.refreshToken && seed.poolType === "kimi-code") {
+    updateItem(db, jobId, index, "RUNNING", "正在刷新 Kimi OAuth 凭据")
+    const result = await refreshKimiAccessToken(seed.refreshToken, seed.clientId || KIMI_CODE_CLIENT_ID)
+    seed = {
+      ...seed,
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresAt: String(result.expiresAt),
+      tokenType: result.tokenType,
+      scope: result.scope,
+      clientId: seed.clientId || KIMI_CODE_CLIENT_ID,
+    }
   }
   if (!seed.accessToken) throw new Error("凭据缺少可用的 access_token")
 
@@ -439,3 +458,4 @@ export function startImportJobRunner(db: AppDatabase = getDatabase(), options: I
   const jobs = db.prepare("SELECT id FROM import_jobs WHERE status='QUEUED' ORDER BY created_at").all() as { id: string }[]
   for (const job of jobs) void runImportJob(job.id, db, options)
 }
+

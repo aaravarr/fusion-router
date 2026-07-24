@@ -42,6 +42,16 @@ export const POOL_TYPE_METADATA: Record<PoolType, PoolTypeMeta> = {
       { key: "chatgptAccountId", label: "ChatGPT Account ID", required: false, type: "text" },
     ],
   },
+  "kimi-code": {
+    type: "kimi-code",
+    label: "Kimi Code",
+    description: "Kimi Code OAuth device login. Upstream: api.kimi.com/coding/v1. Quota from /usages (5h + weekly).",
+    quotaKinds: ["FIVE_HOUR", "WEEKLY"] as readonly QuotaKind[],
+    credentialFields: [
+      { key: "refreshToken", label: "Refresh Token", required: true, type: "password" },
+      { key: "clientId", label: "Client ID (optional)", required: false, type: "text" },
+    ],
+  },
 }
 
 // ─── Registry ────────────────────────────────────────────────────────────

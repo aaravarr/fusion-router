@@ -41,6 +41,14 @@ export const PROVIDER_DOMAIN_PRESETS: DomainPresetGroup[] = [
     ],
   },
   {
+    poolType: "kimi-code",
+    label: "Kimi Code",
+    domains: [
+      { domain: "auth.kimi.com", label: "auth.kimi.com", description: "Kimi Code OAuth device authorization + token refresh." },
+      { domain: "api.kimi.com", label: "api.kimi.com", description: "Kimi Code inference /models /usages upstream." },
+    ],
+  },
+  {
     poolType: "github",
     label: "GitHub",
     domains: [
