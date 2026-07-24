@@ -4,6 +4,7 @@ import { requireSession } from "../_auth"
 import { RoutingService } from "@/server/routing"
 import { tryGetProvider, POOL_TYPE_METADATA } from "@/server/providers"
 import type { AccountListSort, AccountListStatusFilter } from "@/server/repository"
+import { CustomProviderRepository } from "@/server/custom-providers"
 
 export const runtime = "nodejs"
 
@@ -76,8 +77,9 @@ export async function GET(request: Request) {
     page: listed.page,
     pageSize: listed.pageSize,
     stats: listed.stats,
-    poolTypes: Object.keys(POOL_TYPE_METADATA).map((key) => {
+    poolTypes: [...Object.keys(POOL_TYPE_METADATA).map((key) => {
       const meta = POOL_TYPE_METADATA[key as keyof typeof POOL_TYPE_METADATA]
+      if (!meta) return null
       return {
         type: meta.type,
         label: meta.label,
@@ -85,7 +87,13 @@ export async function GET(request: Request) {
         quotaKinds: meta.quotaKinds,
         credentialFields: meta.credentialFields,
       }
-    }),
+    }).filter(Boolean), ...new CustomProviderRepository(user.id, db).list().map((provider) => ({
+      type: provider.poolType,
+      label: provider.name,
+      description: provider.description || `${provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · ${provider.baseUrl}`,
+      quotaKinds: provider.balanceConfig ? ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD"] : [],
+      credentialFields: [{ key: "token", label: "API Key", required: true, type: "password" }],
+    }))],
     poolPreferences: new RoutingService(user.id, db).getPoolPreferences(),
   })
 }

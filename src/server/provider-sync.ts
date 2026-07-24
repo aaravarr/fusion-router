@@ -30,9 +30,14 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
         ) {
           continue
         }
-        db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
-          VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
-          usage_percent=MAX(usage_percent, excluded.usage_percent),
+        const conflictUpdate = account.poolType.startsWith("custom:")
+          ? `usage_percent=excluded.usage_percent,
+          reset_at=excluded.reset_at,
+          source=excluded.source,
+          limit_value=excluded.limit_value,
+          remaining_value=excluded.remaining_value,
+          observation_version=observation_version+1,last_observed_at=excluded.last_observed_at`
+          : `usage_percent=MAX(usage_percent, excluded.usage_percent),
           reset_at=excluded.reset_at,
           source=CASE WHEN excluded.usage_percent >= usage_percent THEN excluded.source ELSE source END,
           limit_value=COALESCE(excluded.limit_value, limit_value),
@@ -41,7 +46,10 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
             WHEN remaining_value IS NULL THEN excluded.remaining_value
             ELSE MIN(remaining_value, excluded.remaining_value)
           END,
-          observation_version=observation_version+1,last_observed_at=excluded.last_observed_at`)
+          observation_version=observation_version+1,last_observed_at=excluded.last_observed_at`
+        db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
+          VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
+          ${conflictUpdate}`)
           .run(ownerUserId, accountId, window.kind, window.usagePercent, window.resetAt, window.source, window.lastObservedAt, window.limitValue ?? null, window.remainingValue ?? null)
       }
       if (account.poolType === "xai-grok") {

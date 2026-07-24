@@ -1,9 +1,15 @@
 import type { PoolType, PoolTypeMeta, Provider } from "./types"
 import type { AccountRecord, QuotaKind } from "../types"
 
+let customProviderFactory: ((poolType: PoolType) => Provider) | null = null
+
+export function setCustomProviderFactory(factory: (poolType: PoolType) => Provider): void {
+  customProviderFactory = factory
+}
+
 // ─── Pool Type Metadata ──────────────────────────────────────────────────
 
-export const POOL_TYPE_METADATA: Record<PoolType, PoolTypeMeta> = {
+export const POOL_TYPE_METADATA: Partial<Record<PoolType, PoolTypeMeta>> = {
   "opencode-go": {
     type: "opencode-go",
     label: "OpenCode Go",
@@ -57,13 +63,13 @@ class ProviderRegistry {
   }
 
   get(poolType: PoolType): Provider {
-    const provider = this.providers.get(poolType)
+    const provider = this.tryGet(poolType)
     if (!provider) throw new Error(`No provider registered for pool type: ${poolType}`)
     return provider
   }
 
   tryGet(poolType: PoolType): Provider | undefined {
-    return this.providers.get(poolType)
+    return this.providers.get(poolType) ?? (poolType.startsWith("custom:") && customProviderFactory ? customProviderFactory(poolType) : undefined)
   }
 
   all(): Provider[] {

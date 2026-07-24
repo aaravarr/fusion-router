@@ -3,9 +3,10 @@ import type { AccountRecord, QuotaKind } from "../types"
 // Pool Type
 
 export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code"] as const
-export type PoolType = (typeof POOL_TYPES)[number]
+export type BuiltinPoolType = (typeof POOL_TYPES)[number]
+export type PoolType = BuiltinPoolType | `custom:${string}`
 
-export const POOL_TYPE_LABELS: Record<PoolType, string> = {
+export const POOL_TYPE_LABELS: Record<BuiltinPoolType, string> = {
   "opencode-go": "OpenCode Go",
   "openai": "OpenAI",
   "xai-grok": "xAI Grok",
@@ -97,4 +98,3 @@ export interface PoolTypeMeta {
   quotaKinds: readonly QuotaKind[]
   credentialFields: { key: string; label: string; required: boolean; type: "text" | "password" | "textarea" }[]
 }
-

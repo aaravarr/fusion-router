@@ -4,10 +4,11 @@ export const SUBSCRIPTION_STATES = ["ACTIVE", "INACTIVE", "VERIFY_ERROR"] as con
 export const BILLING_GUARDS = ["VERIFIED_GO_ONLY", "PAYG_FALLBACK_ENABLED", "UNVERIFIED"] as const
 // ROLLING_24H is the xAI Grok free-tier rolling 24h token window (limit 1,000,000 tokens).
 const _ROLLING_24H = "ROLLING_24H"
-export const QUOTA_KINDS = ["FIVE_HOUR", "WEEKLY", "MONTHLY", "UNKNOWN_GO_LIMIT", _ROLLING_24H, "PROVIDER_RATE_LIMIT"] as const
+export const QUOTA_KINDS = ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD", "UNKNOWN_GO_LIMIT", _ROLLING_24H, "PROVIDER_RATE_LIMIT"] as const
 
 export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code"] as const
-export type PoolType = (typeof POOL_TYPES)[number]
+export type BuiltinPoolType = (typeof POOL_TYPES)[number]
+export type PoolType = BuiltinPoolType | `custom:${string}`
 
 export type AdminState = (typeof ADMIN_STATES)[number]
 export type AuthState = (typeof AUTH_STATES)[number]
@@ -118,4 +119,3 @@ export interface QuotaSnapshot {
   limitValue?: number | null
   remainingValue?: number | null
 }
-

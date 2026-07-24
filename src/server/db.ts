@@ -280,6 +280,22 @@ CREATE TABLE IF NOT EXISTS provider_model_cache (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS custom_providers (
+  id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  base_url TEXT NOT NULL,
+  interface_type TEXT NOT NULL CHECK(interface_type IN ('chat', 'responses')),
+  models_json TEXT,
+  balance_config_json TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(owner_user_id, name)
+);
+CREATE INDEX IF NOT EXISTS custom_providers_owner_idx ON custom_providers(owner_user_id, created_at);
+
 CREATE TABLE IF NOT EXISTS model_pricing_cache (
   id TEXT PRIMARY KEY,
   models_json TEXT NOT NULL,

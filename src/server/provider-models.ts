@@ -2,6 +2,7 @@ import type { AppDatabase } from "./db"
 import { getDatabase } from "./db"
 import { AccountRepository } from "./repository"
 import { ensureProvidersRegistered, getProviderRegistry, tryGetProvider, type PoolType } from "./providers"
+import { customPoolType } from "./custom-providers"
 
 export type ProviderModelSource = "DEFAULT" | "REMOTE" | "MERGED"
 
@@ -130,9 +131,13 @@ export function getProviderModelCatalog(poolType: PoolType, db: AppDatabase = ge
   }
 }
 
-export function listProviderModelCatalogs(db: AppDatabase = getDatabase()): ProviderModelCatalog[] {
+export function listProviderModelCatalogs(db: AppDatabase = getDatabase(), ownerUserId?: string | null): ProviderModelCatalog[] {
   ensureProvidersRegistered()
-  return getProviderRegistry().registeredPoolTypes().map((poolType) => getProviderModelCatalog(poolType, db))
+  const customRows = ownerUserId
+    ? db.prepare("SELECT id FROM custom_providers WHERE enabled=1 AND owner_user_id=? ORDER BY created_at").all(ownerUserId)
+    : db.prepare("SELECT id FROM custom_providers WHERE enabled=1 ORDER BY created_at").all()
+  const custom = (customRows as { id: string }[]).map((row) => customPoolType(row.id))
+  return [...getProviderRegistry().registeredPoolTypes(), ...custom].map((poolType) => getProviderModelCatalog(poolType, db))
 }
 
 function pickReadyAccount(ownerUserId: string | null, poolType: PoolType, preferredAccountId: string | null, db: AppDatabase) {
@@ -232,7 +237,8 @@ export async function syncAllProviderModels(options: {
   const db = options.db ?? getDatabase()
   ensureProvidersRegistered()
   const results: ProviderModelCatalog[] = []
-  for (const poolType of getProviderRegistry().registeredPoolTypes()) {
+  const custom = (db.prepare("SELECT id FROM custom_providers WHERE enabled=1 ORDER BY created_at").all() as { id: string }[]).map((row) => customPoolType(row.id))
+  for (const poolType of [...getProviderRegistry().registeredPoolTypes(), ...custom]) {
     try {
       results.push(await syncProviderModels({ poolType, ownerUserId: options.ownerUserId ?? null, db }))
     } catch (cause) {

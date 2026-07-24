@@ -22,7 +22,7 @@ function setup(poolType: "opencode-go" | "xai-grok" = "opencode-go") {
   new RoutingService(ownerUserId, db).setPreferred(accountIds[0])
   return { db, apiKey: apiKey.key, credentials, hasher }
 }
-const request = (key: string) => new Request("http://localhost/v1/responses", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ model: "test" }) })
+const request = (key: string) => new Request("http://localhost/v1/responses", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.3-codex" }) })
 const requestWithModel = (key: string, model: string, endpoint = "responses") => new Request(`http://localhost/v1/${endpoint}`, {
   method: "POST",
   headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
