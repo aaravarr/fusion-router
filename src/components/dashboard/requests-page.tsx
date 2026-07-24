@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, Search } from "lucide-react";
+import { ChevronRight, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -209,13 +209,14 @@ export function RequestsPage() {
                   <TableCell className="tabular text-right font-mono text-xs">{request.latencyMs != null ? `${request.latencyMs} ms` : "—"}</TableCell>
                  <TableCell className="tabular text-right font-mono text-xs">{request.firstTokenMs != null ? `${request.firstTokenMs} ms` : "—"}</TableCell>
                  <TableCell className="tabular text-right font-mono text-xs">{request.tps != null ? request.tps : "—"}</TableCell>
-                 <TableCell className="tabular text-right font-mono text-xs">
+                  <TableCell className="tabular text-right font-mono text-xs">
                     {request.totalTokens != null ? (
                       <span title={`输入 ${request.promptTokens ?? 0} / 输出 ${request.completionTokens ?? 0}`}>
                         {request.totalTokens}
                       </span>
                     ) : "—"}
                   </TableCell>
+                  <TableCell className="tabular text-right font-mono text-xs">{request.costLabel || "—"}</TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">{request.client || "—"}</TableCell>
                   <TableCell>
                     <Button variant="ghost" size="icon-sm" onClick={() => setSelected(request)} aria-label="查看请求详情">
