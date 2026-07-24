@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { SecretVault } from "./crypto"
 import { createDatabase } from "./db"
-import { parseImportInput, retryImportJobItem, startImportJobRunner } from "./import-jobs"
+import { parseImportInput, retryImportJobItem, rollbackImportJob, startImportJobRunner } from "./import-jobs"
 import { AccountRepository } from "./repository"
 import { XAIGrokProvider } from "./providers/xai-grok"
 
@@ -75,6 +75,39 @@ describe("xAI quota and account state", () => {
 })
 
 describe("durable import runner", () => {
+  it("撤销任务时只删除该任务新建且未被后续任务复用的账号", () => {
+    const db = createDatabase(":memory:")
+    const createdAt = "2026-07-24T01:00:00.000Z"
+    const laterAt = "2026-07-24T02:00:00.000Z"
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES (?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("rollback-owner", "rollback-owner", "rollback-owner", "Rollback owner", "USER", "hash", createdAt, createdAt)
+    const accounts = new AccountRepository("rollback-owner", db, new SecretVault(encryptionKey))
+    const removable = accounts.createProviderAccount({ name: "removable", poolType: "xai-grok", externalId: "removable" })
+    const reused = accounts.createProviderAccount({ name: "reused", poolType: "xai-grok", externalId: "reused" })
+
+    const insertJob = db.prepare(`INSERT INTO import_jobs(
+      id,owner_user_id,pool_type,format,status,total_items,processed_items,succeeded_items,failed_items,current_step,
+      payload_ciphertext,created_at,started_at,completed_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    insertJob.run("rollback-job", "rollback-owner", "xai-grok", "cpa-json", "COMPLETED", 2, 2, 2, 0, "全部导入完成", "cipher", createdAt, createdAt, createdAt, createdAt)
+    insertJob.run("later-job", "rollback-owner", "xai-grok", "cpa-json", "COMPLETED", 1, 1, 1, 0, "全部导入完成", "cipher", laterAt, laterAt, laterAt, laterAt)
+    const insertItem = db.prepare(`INSERT INTO import_job_items(
+      id,job_id,item_index,label,status,step,account_id,account_created,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    insertItem.run("removable-item", "rollback-job", 0, "removable", "COMPLETED", "导入完成", removable.id, 1, createdAt, createdAt)
+    insertItem.run("reused-item", "rollback-job", 1, "reused", "COMPLETED", "导入完成", reused.id, 1, createdAt, createdAt)
+    insertItem.run("later-item", "later-job", 0, "reused", "COMPLETED", "导入完成", reused.id, 0, laterAt, laterAt)
+
+    const result = rollbackImportJob("rollback-owner", "rollback-job", db)
+    expect(result).toMatchObject({ deleted: 1, skippedReused: 1, missing: 0 })
+    expect(accounts.get(removable.id)).toBeNull()
+    expect(accounts.get(reused.id)).not.toBeNull()
+    expect(result.job.rolledBackAt).toBeTruthy()
+    expect(result.job.rolledBackAccounts).toBe(1)
+    expect(() => rollbackImportJob("rollback-owner", "rollback-job", db)).toThrow("已经撤销")
+    db.close()
+  })
+
   it("服务重启后保留已完成项，只恢复未完成项并继续更新进度", async () => {
     const db = createDatabase(":memory:")
     const timestamp = new Date().toISOString()

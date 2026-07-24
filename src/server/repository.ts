@@ -346,6 +346,10 @@ export class AccountRepository {
    * `provider_credentials` separately. Defaults match createCpaAccount.
    */
   createProviderAccount(input: { name: string; poolType: PoolType; email?: string | null; subscriptionState?: string; externalId?: string | null }): AccountRecord {
+    return this.createProviderAccountTracked(input).account
+  }
+
+  createProviderAccountTracked(input: { name: string; poolType: PoolType; email?: string | null; subscriptionState?: string; externalId?: string | null }): { account: AccountRecord; created: boolean } {
     if (input.externalId) {
       const existing = this.db.prepare("SELECT id,disabled_reason FROM accounts WHERE owner_user_id=? AND pool_type=? AND external_id=?").get(this.ownerUserId, input.poolType, input.externalId) as { id: string; disabled_reason: string | null } | undefined
       if (existing) {
@@ -356,7 +360,7 @@ export class AccountRepository {
           this.db.prepare(`UPDATE accounts SET name=?,email=COALESCE(?,email),admin_state='ENABLED',auth_state='VALID',disabled_reason=NULL,disabled_at=NULL,last_error=NULL,updated_at=? WHERE id=? AND owner_user_id=?`)
             .run(input.name, input.email ?? null, nowIso(), existing.id, this.ownerUserId)
         }
-        return this.get(existing.id)!
+        return { account: this.get(existing.id)!, created: false }
       }
     }
     const id = randomUUID()
@@ -372,7 +376,7 @@ export class AccountRepository {
       new Date(Date.now() + 60_000).toISOString(), ordinal, timestamp, timestamp, input.externalId ?? null,
     )
     if (input.email) this.db.prepare("UPDATE accounts SET email=? WHERE id=? AND owner_user_id=?").run(input.email, id, this.ownerUserId)
-    return this.get(id)!
+    return { account: this.get(id)!, created: true }
   }
 
 

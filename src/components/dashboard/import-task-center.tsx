@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Clock3, LoaderCircle, RefreshCw, RotateCcw, XCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCcw, Undo2, XCircle } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { useAdmin } from "./admin-context";
@@ -14,6 +14,7 @@ export interface ImportJobItem {
   status: string;
   step?: string | null;
   accountId?: string | null;
+  accountCreated?: boolean;
   error?: string | null;
   updatedAt?: string | null;
 }
@@ -32,6 +33,9 @@ export interface ImportJob {
   createdAt: string;
   startedAt?: string | null;
   completedAt?: string | null;
+  rolledBackAt?: string | null;
+  rolledBackAccounts?: number;
+  rollbackAccountCount?: number;
   updatedAt: string;
   items?: ImportJobItem[];
 }
@@ -81,6 +85,8 @@ export function ImportJobProgress({
   collapsible = false,
   onRetryItem,
   retryingIndex,
+  onRollback,
+  rollingBack = false,
 }: {
   job: ImportJob;
   detailed?: boolean;
@@ -88,6 +94,8 @@ export function ImportJobProgress({
   collapsible?: boolean;
   onRetryItem?: (itemIndex: number) => void;
   retryingIndex?: number | null;
+  onRollback?: () => void;
+  rollingBack?: boolean;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const progress = job.totalItems ? Math.round((job.processedItems / job.totalItems) * 100) : 0;
@@ -131,8 +139,23 @@ export function ImportJobProgress({
           <span className={job.failedItems ? "text-destructive" : undefined}>失败 {job.failedItems}</span>
           {runningItems.length ? <span className="text-info">进行中 {runningItems.length}</span> : null}
           <span>{progress}%</span>
+          {job.rolledBackAt ? <span className="text-destructive">已撤销，删除 {job.rolledBackAccounts ?? 0} 个账号</span> : null}
         </div>
         {job.error ? <p className="mt-3 text-xs text-destructive">{job.error}</p> : null}
+        {!job.rolledBackAt && (job.status === "COMPLETED" || job.status === "FAILED") && (job.rollbackAccountCount ?? 0) > 0 && onRollback ? (
+          <div className="mt-3 flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-destructive/30 px-2 text-[11px] text-destructive hover:bg-destructive/5 hover:text-destructive"
+              disabled={rollingBack}
+              onClick={onRollback}
+            >
+              {rollingBack ? <LoaderCircle className="size-3.5 animate-spin" /> : <Undo2 className="size-3.5" />}
+              撤销导入（删除 {job.rollbackAccountCount} 个账号）
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {showDetails ? (
@@ -188,11 +211,15 @@ function LiveJob({
   onCompleted,
   onRetryItem,
   retryingIndex,
+  onRollback,
+  rollingBack,
 }: {
   initial: ImportJob;
   onCompleted: () => void;
   onRetryItem: (jobId: string, itemIndex: number) => void;
   retryingIndex: { jobId: string; itemIndex: number } | null;
+  onRollback: (job: ImportJob) => void;
+  rollingBack: boolean;
 }) {
   const job = useImportJobStream(initial, onCompleted);
   if (!job) return null;
@@ -204,6 +231,8 @@ function LiveJob({
       defaultExpanded={job.status === "RUNNING" || job.status === "QUEUED"}
       onRetryItem={(itemIndex) => onRetryItem(job.id, itemIndex)}
       retryingIndex={retryingIndex?.jobId === job.id ? retryingIndex.itemIndex : null}
+      onRollback={() => onRollback(job)}
+      rollingBack={rollingBack}
     />
   );
 }
@@ -224,6 +253,8 @@ export function ImportTaskCenter({
   const collapsedTouchedRef = useRef(false);
   const [retrying, setRetrying] = useState<{ jobId: string; itemIndex: number } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [rollingBackJobId, setRollingBackJobId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -253,7 +284,6 @@ export function ImportTaskCenter({
   // Reset auto-collapse policy when switching pool/version, then reload.
   useEffect(() => {
     collapsedTouchedRef.current = false;
-    setLoading(true);
     void load();
   }, [load, version, poolType]);
 
@@ -281,6 +311,35 @@ export function ImportTaskCenter({
       setActionError(cause instanceof Error ? cause.message : "重试失败");
     } finally {
       setRetrying(null);
+    }
+  }
+
+  async function rollbackJob(job: ImportJob) {
+    const count = job.rollbackAccountCount ?? 0;
+    if (!window.confirm(`确认撤销这次导入任务吗？\n\n将永久删除该任务新建的 ${count} 个账号，此操作无法恢复。`)) return;
+    setRollingBackJobId(job.id);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const response = await adminFetch(`/api/admin/import-jobs/${encodeURIComponent(job.id)}/rollback`, { method: "POST" });
+      const payload = await response.json().catch(() => null) as {
+        job?: ImportJob;
+        deleted?: number;
+        skippedReused?: number;
+        missing?: number;
+        error?: { message?: string };
+        message?: string;
+      } | null;
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "撤销导入失败");
+      const suffix = payload?.skippedReused ? `，另有 ${payload.skippedReused} 个账号因被后续任务复用而保留` : "";
+      setActionNotice(`已撤销导入，删除 ${payload?.deleted ?? 0} 个账号${suffix}。`);
+      if (payload?.job) setJobs((current) => current.map((item) => item.id === job.id ? payload.job! : item));
+      await load();
+      onAccountsChanged();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "撤销导入失败");
+    } finally {
+      setRollingBackJobId(null);
     }
   }
 
@@ -321,6 +380,11 @@ export function ImportTaskCenter({
               {actionError}
             </div>
           ) : null}
+          {actionNotice ? (
+            <div className="rounded-md border border-success/20 bg-success-soft px-3 py-2 text-xs text-success" role="status">
+              {actionNotice}
+            </div>
+          ) : null}
           {loading && !jobs.length ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <LoaderCircle className="size-4 animate-spin" />正在读取任务
@@ -333,6 +397,8 @@ export function ImportTaskCenter({
               onCompleted={() => { onAccountsChanged(); void load(); }}
               onRetryItem={retryItem}
               retryingIndex={retrying}
+              onRollback={rollbackJob}
+              rollingBack={rollingBackJobId === job.id}
             />
           ))}
         </div>

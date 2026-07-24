@@ -46,6 +46,8 @@ interface ImportJobRow {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  rolled_back_at: string | null
+  rolled_back_accounts: number
   updated_at: string
 }
 
@@ -91,12 +93,10 @@ function normalizeExpiry(value: string, expiresIn?: number): string | undefined 
 
 function poolForSub2Account(account: JsonRecord): PoolType | null {
   const platform = firstString(account, "platform").toLowerCase()
-  const type = firstString(account, "type").toLowerCase()
   const credentials = recordValue(account.credentials)
   if (platform === "grok" || platform === "xai") return credentials.refresh_token || credentials.access_token ? "xai-grok" : null
   if (platform === "kimi" || platform === "kimi-code" || platform === "moonshot") return credentials.refresh_token || credentials.access_token ? "kimi-code" : null
   if (platform !== "openai") return null
-  const authMode = firstString(credentials, "auth_mode").toLowerCase()
   // AT token / OAuth / api key all land in the unified openai pool.
   return credentials.access_token || credentials.api_key || credentials.refresh_token ? "openai" : null
 }
@@ -194,8 +194,10 @@ export function parseImportInput(poolType: PoolType, format: ImportFormat, input
 }
 
 function publicJob(row: ImportJobRow, db: AppDatabase, withItems = true) {
-  const items = withItems ? db.prepare(`SELECT item_index AS itemIndex,label,status,step,account_id AS accountId,error,updated_at AS updatedAt
+  const items = withItems ? db.prepare(`SELECT item_index AS itemIndex,label,status,step,account_id AS accountId,account_created AS accountCreated,error,updated_at AS updatedAt
     FROM import_job_items WHERE job_id=? ORDER BY item_index`).all(row.id) : undefined
+  const rollbackAccountCount = Number((db.prepare(`SELECT COUNT(DISTINCT account_id) AS value FROM import_job_items
+    WHERE job_id=? AND account_created=1 AND account_id IS NOT NULL`).get(row.id) as { value: number }).value)
   return {
     id: row.id,
     poolType: row.pool_type,
@@ -210,6 +212,9 @@ function publicJob(row: ImportJobRow, db: AppDatabase, withItems = true) {
     createdAt: row.created_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    rolledBackAt: row.rolled_back_at,
+    rolledBackAccounts: row.rolled_back_accounts,
+    rollbackAccountCount,
     updatedAt: row.updated_at,
     ...(withItems ? { items } : {}),
   }
@@ -243,10 +248,10 @@ export function createImportJob(ownerUserId: string, poolType: PoolType, format:
   return getImportJob(ownerUserId, id, db)!
 }
 
-function updateItem(db: AppDatabase, jobId: string, index: number, status: string, step: string, accountId?: string | null, error?: string | null) {
+function updateItem(db: AppDatabase, jobId: string, index: number, status: string, step: string, accountId?: string | null, error?: string | null, accountCreated = false) {
   const timestamp = nowIso()
-  db.prepare("UPDATE import_job_items SET status=?,step=?,account_id=COALESCE(?,account_id),error=?,updated_at=? WHERE job_id=? AND item_index=?")
-    .run(status, step, accountId ?? null, error ?? null, timestamp, jobId, index)
+  db.prepare("UPDATE import_job_items SET status=?,step=?,account_id=COALESCE(?,account_id),account_created=MAX(account_created,?),error=?,updated_at=? WHERE job_id=? AND item_index=?")
+    .run(status, step, accountId ?? null, Number(accountCreated), error ?? null, timestamp, jobId, index)
   const counts = db.prepare(`SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('COMPLETED','FAILED') THEN 1 ELSE 0 END) AS processed,
     SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) AS failed
     FROM import_job_items WHERE job_id=?`).get(jobId) as { total: number; processed: number; succeeded: number; failed: number }
@@ -268,7 +273,7 @@ function externalId(seed: ImportSeed, email: string, subject: string): string {
   return createHash("sha256").update(`${seed.poolType}:${identity}`).digest("hex").slice(0, 24)
 }
 
-async function importSeed(ownerUserId: string, jobId: string, index: number, initial: ImportSeed, db: AppDatabase): Promise<string> {
+async function importSeed(ownerUserId: string, jobId: string, index: number, initial: ImportSeed, db: AppDatabase): Promise<{ accountId: string; accountCreated: boolean }> {
   const accounts = new AccountRepository(ownerUserId, db)
   const credentials = new ProviderCredentialRepository(ownerUserId, db)
   let seed = { ...initial }
@@ -311,12 +316,13 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
   const identity = decodeIdentity(seed)
   const accountName = identity.email || seed.label
   updateItem(db, jobId, index, "RUNNING", "正在保存加密凭据")
-  const account = accounts.createProviderAccount({
+  const { account, created: accountCreated } = accounts.createProviderAccountTracked({
     name: accountName,
     poolType: seed.poolType,
     email: identity.email || null,
     externalId: externalId(seed, identity.email, identity.subject),
   })
+  updateItem(db, jobId, index, "RUNNING", "正在保存加密凭据", account.id, undefined, accountCreated)
   const credentialData: Record<string, string> = { token: seed.accessToken }
   if (seed.refreshToken) credentialData.refreshToken = seed.refreshToken
   if (seed.clientId) credentialData.clientId = seed.clientId
@@ -328,7 +334,7 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
   credentials.upsert({ accountId: account.id, poolType: seed.poolType, credentialData })
   if (seed.concurrency && seed.concurrency > 0) accounts.updateState(account.id, { maxConcurrency: Math.min(64, seed.concurrency) })
 
-  updateItem(db, jobId, index, "RUNNING", seed.poolType === "xai-grok" ? "正在探测真实额度" : "正在验证账号", account.id)
+  updateItem(db, jobId, index, "RUNNING", seed.poolType === "xai-grok" ? "正在探测真实额度" : "正在验证账号", account.id, undefined, accountCreated)
   // Account + credentials are already persisted. Post-import probe/validation is
   // best-effort: bulk xAI SSO imports can hit temporary 403/rate-limit noise on
   // the probe endpoint even when the OAuth tokens are valid for later inference.
@@ -354,7 +360,7 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
       disabledAt: null,
       lastError: message.slice(0, 500),
     })
-    updateItem(db, jobId, index, "RUNNING", `账号已保存，探测失败：${message.slice(0, 80)}`, account.id)
+    updateItem(db, jobId, index, "RUNNING", `账号已保存，探测失败：${message.slice(0, 80)}`, account.id, undefined, accountCreated)
   }
   // Newly imported ready account: refresh that provider's model catalog.
   try {
@@ -363,14 +369,14 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
   } catch {
     // Model catalog refresh is best-effort and must not fail the import.
   }
-  return account.id
+  return { accountId: account.id, accountCreated }
 }
 
 const runnerGlobal = globalThis as typeof globalThis & { __accountImportJobs?: Set<string> }
 const activeJobs = (runnerGlobal.__accountImportJobs ??= new Set<string>())
 
 interface ImportRunnerOptions {
-  processItem?: (ownerUserId: string, jobId: string, index: number, seed: ImportSeed, db: AppDatabase) => Promise<string>
+  processItem?: (ownerUserId: string, jobId: string, index: number, seed: ImportSeed, db: AppDatabase) => Promise<string | { accountId: string; accountCreated: boolean }>
 }
 
 export async function runImportJob(jobId: string, db: AppDatabase = getDatabase(), options: ImportRunnerOptions = {}): Promise<void> {
@@ -391,8 +397,10 @@ export async function runImportJob(jobId: string, db: AppDatabase = getDatabase(
         if (terminalItems.has(index)) continue
         try {
           updateItem(db, jobId, index, "RUNNING", "正在读取账号凭据")
-          const accountId = await (options.processItem ?? importSeed)(job.owner_user_id, jobId, index, seeds[index], db)
-          updateItem(db, jobId, index, "COMPLETED", "导入完成", accountId)
+          const imported = await (options.processItem ?? importSeed)(job.owner_user_id, jobId, index, seeds[index], db)
+          const accountId = typeof imported === "string" ? imported : imported.accountId
+          const accountCreated = typeof imported === "string" ? true : imported.accountCreated
+          updateItem(db, jobId, index, "COMPLETED", "导入完成", accountId, undefined, accountCreated)
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : "导入失败"
           updateItem(db, jobId, index, "FAILED", "导入失败", null, message)
@@ -437,8 +445,8 @@ async function runSingleImportItem(jobId: string, itemIndex: number, seed: Impor
     if (!job) return
     try {
       updateItem(db, jobId, itemIndex, "RUNNING", "正在重试导入")
-      const accountId = await importSeed(job.owner_user_id, jobId, itemIndex, seed, db)
-      updateItem(db, jobId, itemIndex, "COMPLETED", "导入完成", accountId)
+      const imported = await importSeed(job.owner_user_id, jobId, itemIndex, seed, db)
+      updateItem(db, jobId, itemIndex, "COMPLETED", "导入完成", imported.accountId, undefined, imported.accountCreated)
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "导入失败"
       updateItem(db, jobId, itemIndex, "FAILED", "导入失败", null, message)
@@ -453,6 +461,7 @@ async function runSingleImportItem(jobId: string, itemIndex: number, seed: Impor
 export function retryImportJobItem(ownerUserId: string, jobId: string, itemIndex: number, db: AppDatabase = getDatabase()) {
   const job = db.prepare("SELECT * FROM import_jobs WHERE id=? AND owner_user_id=?").get(jobId, ownerUserId) as ImportJobRow | undefined
   if (!job) throw new Error("导入任务不存在")
+  if (job.rolled_back_at) throw new Error("该导入任务已撤销，不能再重试")
   const item = db.prepare("SELECT item_index,status FROM import_job_items WHERE job_id=? AND item_index=?").get(jobId, itemIndex) as { item_index: number; status: string } | undefined
   if (!item) throw new Error("导入项不存在")
   if (item.status !== "FAILED") throw new Error("仅支持重试失败的导入项")
@@ -476,6 +485,61 @@ export function retryImportJobItem(ownerUserId: string, jobId: string, itemIndex
   return getImportJob(ownerUserId, jobId, db)!
 }
 
+export interface RollbackImportJobResult {
+  job: NonNullable<ReturnType<typeof getImportJob>>
+  deleted: number
+  skippedReused: number
+  missing: number
+}
+
+export function rollbackImportJob(ownerUserId: string, jobId: string, db: AppDatabase = getDatabase()): RollbackImportJobResult {
+  const job = db.prepare("SELECT * FROM import_jobs WHERE id=? AND owner_user_id=?").get(jobId, ownerUserId) as ImportJobRow | undefined
+  if (!job) throw new Error("导入任务不存在")
+  if (job.status === "QUEUED" || job.status === "RUNNING") throw new Error("导入任务仍在运行，暂时不能撤销")
+  if (job.rolled_back_at) throw new Error("该导入任务已经撤销")
+
+  const candidates = db.prepare(`SELECT DISTINCT i.account_id AS accountId
+    FROM import_job_items i
+    JOIN accounts a ON a.id=i.account_id AND a.owner_user_id=?
+    WHERE i.job_id=? AND i.account_created=1 AND i.account_id IS NOT NULL`).all(ownerUserId, jobId) as { accountId: string }[]
+  const accounts = new AccountRepository(ownerUserId, db)
+  const result = { deleted: 0, skippedReused: 0, missing: 0 }
+
+  db.transaction(() => {
+    for (const candidate of candidates) {
+      const laterReference = db.prepare(`SELECT 1
+        FROM import_job_items i
+        JOIN import_jobs j ON j.id=i.job_id
+        WHERE i.account_id=? AND i.job_id<>? AND i.status='COMPLETED'
+          AND j.owner_user_id=? AND j.created_at>? AND j.rolled_back_at IS NULL
+        LIMIT 1`).get(candidate.accountId, jobId, ownerUserId, job.created_at)
+      if (laterReference) {
+        result.skippedReused += 1
+      } else if (accounts.delete(candidate.accountId)) {
+        result.deleted += 1
+      } else {
+        result.missing += 1
+      }
+    }
+
+    const timestamp = nowIso()
+    db.prepare(`UPDATE import_job_items
+      SET step=CASE WHEN account_created=1 THEN '已撤销导入' ELSE step END,updated_at=?
+      WHERE job_id=?`).run(timestamp, jobId)
+    db.prepare(`UPDATE import_jobs SET rolled_back_at=?,rolled_back_accounts=?,current_step=?,updated_at=?
+      WHERE id=? AND owner_user_id=?`).run(
+        timestamp,
+        result.deleted,
+        result.skippedReused ? `已撤销，删除 ${result.deleted} 个账号，保留 ${result.skippedReused} 个后续复用账号` : `已撤销，删除 ${result.deleted} 个账号`,
+        timestamp,
+        jobId,
+        ownerUserId,
+      )
+  }).immediate()
+
+  return { job: getImportJob(ownerUserId, jobId, db)!, ...result }
+}
+
 export function startImportJobRunner(db: AppDatabase = getDatabase(), options: ImportRunnerOptions = {}): void {
   db.transaction(() => {
     db.prepare("UPDATE import_jobs SET status='QUEUED',current_step='服务重启，等待恢复',updated_at=? WHERE status='RUNNING'").run(nowIso())
@@ -484,4 +548,3 @@ export function startImportJobRunner(db: AppDatabase = getDatabase(), options: I
   const jobs = db.prepare("SELECT id FROM import_jobs WHERE status='QUEUED' ORDER BY created_at").all() as { id: string }[]
   for (const job of jobs) void runImportJob(job.id, db, options)
 }
-

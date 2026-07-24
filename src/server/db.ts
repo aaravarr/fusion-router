@@ -237,6 +237,8 @@ CREATE TABLE IF NOT EXISTS import_jobs (
   created_at TEXT NOT NULL,
   started_at TEXT,
   completed_at TEXT,
+  rolled_back_at TEXT,
+  rolled_back_accounts INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS import_jobs_owner_created_idx ON import_jobs(owner_user_id, created_at DESC);
@@ -249,6 +251,7 @@ CREATE TABLE IF NOT EXISTS import_job_items (
   status TEXT NOT NULL,
   step TEXT,
   account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+  account_created INTEGER NOT NULL DEFAULT 0,
   error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -310,6 +313,7 @@ export function createDatabase(filename: string): AppDatabase {
   ensureUserColumns(db)
   ensureCurrentQuotaColumns(db)
   ensureResponseConversationColumns(db)
+  ensureCurrentImportJobColumns(db)
   db.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
   return db
 }
@@ -416,6 +420,25 @@ function ensureCurrentGatewayRequestColumns(db: AppDatabase): void {
   }
 }
 
+function ensureCurrentImportJobColumns(db: AppDatabase): void {
+  const jobColumns = new Set((db.prepare("PRAGMA table_info(import_jobs)").all() as { name: string }[]).map((column) => column.name))
+  if (!jobColumns.has("rolled_back_at")) db.exec("ALTER TABLE import_jobs ADD COLUMN rolled_back_at TEXT")
+  if (!jobColumns.has("rolled_back_accounts")) db.exec("ALTER TABLE import_jobs ADD COLUMN rolled_back_accounts INTEGER NOT NULL DEFAULT 0")
+
+  const itemColumns = new Set((db.prepare("PRAGMA table_info(import_job_items)").all() as { name: string }[]).map((column) => column.name))
+  if (!itemColumns.has("account_created")) {
+    db.exec("ALTER TABLE import_job_items ADD COLUMN account_created INTEGER NOT NULL DEFAULT 0")
+    db.exec(`UPDATE import_job_items SET account_created=1
+      WHERE account_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM import_jobs j JOIN accounts a ON a.id=import_job_items.account_id
+        WHERE j.id=import_job_items.job_id
+          AND a.owner_user_id=j.owner_user_id
+          AND a.created_at>=COALESCE(j.started_at,j.created_at)
+          AND a.created_at<=COALESCE(j.completed_at,j.updated_at)
+      )`)
+  }
+}
+
 function resetLegacyAccountDomain(db: AppDatabase): void {
   const columns = db.prepare("PRAGMA table_info(accounts)").all() as { name: string }[]
   if (!columns.length || columns.some((column) => column.name === "auth_cookie_ciphertext")) return
@@ -431,7 +454,7 @@ function resetLegacyAccountDomain(db: AppDatabase): void {
   }
 }
 
-const CURRENT_ACCOUNT_SCHEMA_VERSION = 7
+const CURRENT_ACCOUNT_SCHEMA_VERSION = 8
 const globalDatabase = globalThis as typeof globalThis & {
   __opencodeApiDb?: AppDatabase
   __opencodeApiAccountSchemaVersion?: number
@@ -454,6 +477,7 @@ export function getDatabase(): AppDatabase {
     ensureCurrentGatewayRequestColumns(globalDatabase.__opencodeApiDb)
     ensureCurrentQuotaColumns(globalDatabase.__opencodeApiDb)
     ensureResponseConversationColumns(globalDatabase.__opencodeApiDb)
+    ensureCurrentImportJobColumns(globalDatabase.__opencodeApiDb)
     globalDatabase.__opencodeApiDb.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
     globalDatabase.__opencodeApiAccountSchemaVersion = CURRENT_ACCOUNT_SCHEMA_VERSION
   }
