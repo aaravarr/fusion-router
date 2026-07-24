@@ -246,7 +246,17 @@ export class AccountRepository {
       ? Math.round((usageSamples.reduce((sum, value) => sum + value, 0) / usageSamples.length) * 100) / 100
       : null
 
+    const availabilityRank = (account: AccountRecord) => {
+      const flags = classify(account)
+      if (flags.ready) return 0
+      if (flags.blocked) return 1
+      if (!flags.disabled && !flags.banned) return 2
+      return 3
+    }
     accounts.sort((left, right) => {
+      const rankDifference = availabilityRank(left) - availabilityRank(right)
+      if (rankDifference !== 0) return rankDifference
+
       if (sort === "name") {
         return String(left.name || left.email || left.id).localeCompare(String(right.name || right.email || right.id), "zh-CN")
       }

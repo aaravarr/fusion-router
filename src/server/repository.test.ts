@@ -69,7 +69,7 @@ describe("account list pagination", () => {
     const all = repository.listPage({ page: 1, pageSize: 2, poolType: "xai-grok", sort: "usage" })
     expect(all.total).toBe(3)
     expect(all.items).toHaveLength(2)
-    expect(all.items[0].id).toBe(over.id)
+    expect(all.items.map((item) => item.id)).toEqual([ready.id, over.id])
     expect(all.stats).toMatchObject({ total: 3, overQuota: 1, banned: 1, ready: 1 })
     expect(all.stats.avgUsagePercent).toBeCloseTo((126.5 + 12.25) / 2, 2)
     // Chip counts should still include non-selected pools.
