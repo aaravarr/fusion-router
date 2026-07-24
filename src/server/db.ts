@@ -277,6 +277,14 @@ CREATE TABLE IF NOT EXISTS provider_model_cache (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS model_pricing_cache (
+  id TEXT PRIMARY KEY,
+  models_json TEXT NOT NULL,
+  fetched_at TEXT,
+  updated_at TEXT NOT NULL,
+  error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS response_conversations (
   id TEXT PRIMARY KEY,
   continuity_key TEXT NOT NULL UNIQUE,

@@ -1,5 +1,6 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../_auth";
+import { estimateUsageCost, formatUsd } from "@/server/model-pricing";
 
 export const runtime = "nodejs";
 
@@ -89,6 +90,19 @@ function mapRequest(row: RequestRow) {
     converted: row.converted === 1,
     transformSummary: row.transform_summary,
     tps,
+    ...(() => {
+      const cost = estimateUsageCost({
+        model: row.model,
+        promptTokens: row.prompt_tokens,
+        completionTokens: row.completion_tokens,
+        cachedTokens: row.cached_tokens,
+      })
+      return {
+        costUsd: cost.costUsd,
+        costLabel: formatUsd(cost.costUsd),
+        pricingModelId: cost.matchedModelId,
+      }
+    })(),
   };
 }
 

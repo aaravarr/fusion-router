@@ -43,8 +43,9 @@ function providerSupportsModel(poolType: PoolType, model: string | null): boolea
   if (!provider) return true
   if (typeof provider.supportsModel === "function") return provider.supportsModel(model)
   // Prefer cached catalog when present; getAvailableModels already falls back to defaults.
+  // Empty catalog means "unknown / no models", not "supports everything".
   const catalog = provider.getAvailableModels([])
-  return catalog.length === 0 || catalog.includes(model)
+  return catalog.includes(model)
 }
 
 export class RoutingService {

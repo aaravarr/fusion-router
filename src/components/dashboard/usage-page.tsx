@@ -91,6 +91,17 @@ function formatMs(value: number | null | undefined): string {
   return `${(value / 1000).toFixed(2)} s`;
 }
 
+
+function formatUsd(value?: number | null) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (value === 0) return "$0";
+  const abs = Math.abs(value);
+  if (abs < 0.0001) return `$${value.toExponential(2)}`;
+  if (abs < 0.01) return `$${value.toFixed(4)}`;
+  if (abs < 1) return `$${value.toFixed(3)}`;
+  return `$${value.toFixed(2)}`;
+}
+
 export function UsagePage() {
   const [range, setRange] = useState<RangeKey>("24h");
   const [granularity, setGranularity] = useState<Granularity>("auto");
@@ -206,6 +217,29 @@ export function UsagePage() {
                 </Panel>
               </div>
 
+              <Panel title="模型费用排行" description="按 OpenRouter 参考价估算的模型费用（非实际账单）。">
+                {data.byModel.some((b) => (b.costUsd ?? 0) > 0) ? (
+                  <div className="divide-y">
+                    {[...data.byModel]
+                      .sort((a, b) => (b.costUsd ?? 0) - (a.costUsd ?? 0))
+                      .slice(0, 12)
+                      .map((bucket) => (
+                        <div key={bucket.key} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">{bucket.label}</p>
+                            <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                              {formatNumber(bucket.totalTokens)} tokens · {formatNumber(bucket.requests)} 请求
+                            </p>
+                          </div>
+                          <span className="shrink-0 font-mono text-sm font-medium">{formatUsd(bucket.costUsd)}</span>
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <EmptyState title="暂无费用数据" description="需要先在智能路由页刷新 OpenRouter 价格缓存，且请求带有 Token 统计。" />
+                )}
+              </Panel>
+
               <div className="grid gap-4 xl:grid-cols-2">
                 <Panel title="按服务账号" description="各账号的 Token 分段对比。">
                   {data.byAccount.length ? (
@@ -240,23 +274,33 @@ function KpiRow({ summary }: { summary: UsageStats["summary"] }) {
     { label: "平均 TTFT", value: formatMs(summary.avgFirstTokenMs), note: "首 Token 时间" },
     { label: "平均 TPS", value: summary.tpsSampleCount > 0 ? summary.avgTps.toFixed(1) : "—", note: `样本 ${summary.tpsSampleCount}` },
     { label: "总 Token", value: formatNumber(summary.totalTokens), note: "输入 + 输出" },
+    { label: "估算费用", value: formatUsd(summary.costUsd), note: "OpenRouter 参考价" },
     { label: "输入 Token", value: formatNumber(summary.promptTokens), note: "含缓存" },
     { label: "输出 Token", value: formatNumber(summary.completionTokens), note: "含推理" },
     { label: "缓存 Token", value: formatNumber(summary.cachedTokens), note: "命中缓存" },
     { label: "推理 Token", value: formatNumber(summary.reasoningTokens), note: "思维链" },
   ];
+  const cols = 6
+  const cells: Array<{ label: string; value: string; note?: string; empty?: boolean }> = items.map((item) => ({ ...item }))
+  while (cells.length % cols !== 0) {
+    cells.push({ label: `__empty_${cells.length}`, value: "", empty: true })
+  }
+
   return (
-    <section className="dashboard-surface grid overflow-hidden rounded-lg bg-white sm:grid-cols-2 lg:grid-cols-5">
-      {items.map((item) => (
-        <div
-          key={item.label}
-          className="border-b p-4 last:border-b-0 sm:min-h-28 lg:border-r lg:last:border-r-0"
-        >
-          <p className="text-xs font-medium text-muted-foreground">{item.label}</p>
-          <p className="tabular mt-3 text-2xl font-semibold tracking-[-0.04em]">{item.value}</p>
-          {item.note ? <p className="mt-1 text-[11px] text-muted-foreground">{item.note}</p> : null}
-        </div>
-      ))}
+    <section className="dashboard-surface overflow-hidden rounded-lg border bg-white">
+      <div className="-mb-px -mr-px grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+        {cells.map((item) => (
+          <div key={item.label} className="min-h-28 border-b border-r p-4">
+            {item.empty ? null : (
+              <>
+                <p className="text-xs font-medium text-muted-foreground">{item.label}</p>
+                <p className="tabular mt-3 text-2xl font-semibold tracking-[-0.04em]">{item.value}</p>
+                {item.note ? <p className="mt-1 text-[11px] text-muted-foreground">{item.note}</p> : null}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

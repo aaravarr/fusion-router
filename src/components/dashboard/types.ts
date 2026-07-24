@@ -131,6 +131,9 @@ export interface RequestRecord {
   routeReason?: string | null;
   converted?: boolean;
   transformSummary?: string | null;
+  costUsd?: number | null;
+  costLabel?: string | null;
+  pricingModelId?: string | null;
 }
 
 export interface AttemptDetail {
@@ -212,6 +215,7 @@ export interface Bucket {
   totalTokens: number;
   cachedTokens: number;
   reasoningTokens: number;
+  costUsd?: number;
   poolType?: string;
 }
 
@@ -228,6 +232,7 @@ export interface UsageSummary {
   totalTokens: number;
   cachedTokens: number;
   reasoningTokens: number;
+  costUsd?: number;
 }
 
 

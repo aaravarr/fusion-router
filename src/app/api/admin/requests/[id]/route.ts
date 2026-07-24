@@ -1,5 +1,6 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../../_auth";
+import { estimateUsageCost, formatUsd } from "@/server/model-pricing";
 
 export const runtime = "nodejs";
 
@@ -86,6 +87,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const genLatency = row.latency_ms != null ? Math.max(0, row.latency_ms - (row.local_prep_ms ?? 0) - (row.first_token_ms ?? 0)) : null;
   const tpsTokens = (row.completion_tokens ?? 0) + (row.reasoning_tokens ?? 0);
   const tps = genLatency != null && genLatency >= 50 && tpsTokens > 0 ? Number((tpsTokens / (genLatency / 1000)).toFixed(1)) : null;
+  const cost = estimateUsageCost({
+    model: row.model,
+    promptTokens: row.prompt_tokens,
+    completionTokens: row.completion_tokens,
+    cachedTokens: row.cached_tokens,
+  });
   return Response.json({
     request: {
       id: row.id,
@@ -129,6 +136,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       routeReason: row.route_reason,
       converted: row.converted === 1,
       transformSummary: row.transform_summary,
+      costUsd: cost.costUsd,
+      costLabel: formatUsd(cost.costUsd),
+      pricingModelId: cost.matchedModelId,
       request: parseJson(body?.request_body_json ?? null),
       requestTruncated: body?.request_truncated === 1,
       response: parseJson(body?.response_body_json ?? null),

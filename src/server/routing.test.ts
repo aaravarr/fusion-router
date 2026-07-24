@@ -154,6 +154,17 @@ describe("routing", () => {
     expect(selected.account.poolType).toBe("opencode-go")
   })
 
+  it("k3-256k 只路由到 kimi-code，不会落到 OpenCode Go", () => {
+    const { accounts, routing, add } = make()
+    add("go-wrong-pool")
+    const kimi = accounts.createProviderAccount({ name: "Kimi seat", poolType: "kimi-code", externalId: "kimi-k3" })
+    accounts.createProviderAccount({ name: "xAI seat", poolType: "xai-grok", externalId: "xai-k3" })
+    routing.setModel("k3-256k")
+    const selected = routing.select("k3-to-kimi", "chat/completions", new Set())
+    expect(selected.account.id).toBe(kimi.id)
+    expect(selected.account.poolType).toBe("kimi-code")
+  })
+
   it("模型路由规则只影响匹配模型，不把不支持的模型打到优先号池", () => {
     const { db, accounts, routing, add } = make()
     const go = add("go-glm")

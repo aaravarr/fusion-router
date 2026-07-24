@@ -1,5 +1,6 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../_auth";
+import { estimateUsageCost } from "@/server/model-pricing";
 
 export const runtime = "nodejs";
 
@@ -40,6 +41,7 @@ interface Bucket {
   totalTokens: number;
   cachedTokens: number;
   reasoningTokens: number;
+  costUsd: number;
   poolType?: string;
 }
 
@@ -56,6 +58,7 @@ interface UsageSummary {
   totalTokens: number;
   cachedTokens: number;
   reasoningTokens: number;
+  costUsd: number;
 }
 
 interface UsageStats {
@@ -106,7 +109,7 @@ function bucketLabel(bucketStartMs: number, gran: string): string {
 }
 
 function createBucket(key: string, label: string): Bucket {
-  return { key, label, requests: 0, ok: 0, fail: 0, latencySum: 0, firstTokenSum: 0, firstTokenCount: 0, tpsSampleCount: 0, genLatencySum: 0, genTokensForTps: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, reasoningTokens: 0 };
+  return { key, label, requests: 0, ok: 0, fail: 0, latencySum: 0, firstTokenSum: 0, firstTokenCount: 0, tpsSampleCount: 0, genLatencySum: 0, genTokensForTps: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, reasoningTokens: 0, costUsd: 0 };
 }
 
 function addRow(bucket: Bucket, row: BucketRow): void {
@@ -128,6 +131,13 @@ function addRow(bucket: Bucket, row: BucketRow): void {
   bucket.totalTokens += row.total_tokens ?? 0;
   bucket.cachedTokens += row.cached_tokens ?? 0;
   bucket.reasoningTokens += row.reasoning_tokens ?? 0;
+  const cost = estimateUsageCost({
+    model: row.model,
+    promptTokens: row.prompt_tokens,
+    completionTokens: row.completion_tokens,
+    cachedTokens: row.cached_tokens,
+  }).costUsd;
+  if (cost != null) bucket.costUsd += cost;
 }
 
 function finalizeSummary(b: Bucket, latencyCount: number): UsageSummary {
@@ -144,6 +154,7 @@ function finalizeSummary(b: Bucket, latencyCount: number): UsageSummary {
     totalTokens: b.totalTokens,
     cachedTokens: b.cachedTokens,
     reasoningTokens: b.reasoningTokens,
+    costUsd: b.costUsd,
   };
 }
 

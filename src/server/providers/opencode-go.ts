@@ -6,16 +6,35 @@ import { getSystemSettings, normalizeOfficialOpenCodeUpstreamUrl } from "../sett
 import { apiFetch } from "../api-fetch"
 
 // OpenAI Codex models served by the OpenCode Go upstream.
+// Bootstrap catalog used before /models sync succeeds. Runtime routing must
+// still honor the cached remote list once available — never "any model".
 const OPENCODE_GO_MODELS = [
   "claude-sonnet-4-5",
   "claude-sonnet-4-5-20250929",
   "claude-opus-4-5",
   "claude-opus-4-7",
   "claude-opus-4-8",
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "glm-5",
+  "glm-5.1",
+  "glm-5.2",
   "gpt-5.3-codex",
   "gpt-5.4-mini",
+  "grok-4.5",
+  "kimi-k2.5",
+  "kimi-k2.6",
+  "kimi-k2.7-code",
+  "kimi-k3",
+  "minimax-m2.5",
+  "minimax-m2.7",
+  "minimax-m3",
   "o3",
   "o4-mini",
+  "qwen3.5-plus",
+  "qwen3.6-plus",
+  "qwen3.7-max",
+  "qwen3.7-plus",
 ]
 
 function parseOpenAiModelList(body: string): string[] {
@@ -90,10 +109,10 @@ export class OpenCodeGoProvider implements Provider {
     return [...OPENCODE_GO_MODELS]
   }
 
-  // OpenCode Go proxies a broader upstream catalog (including glm/*) and
-  // forwards the requested model as-is, so any model string is eligible.
-  supportsModel(_model: string): boolean {
-    return true
+  // Only models present in the cached /models list (or bootstrap defaults)
+  // are eligible. Never claim support for arbitrary model ids.
+  supportsModel(model: string): boolean {
+    return this.getAvailableModels([]).includes(model)
   }
 
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
@@ -172,6 +191,10 @@ export class OpenCodeGoProvider implements Provider {
   classifyError(status: number, body: string, _headers: Headers): UpstreamErrorClassification | null {
     const limit = classifyGoUsageLimit(status, body)
     if (limit) return limit
+    const lower = body.toLowerCase()
+    if (/model .+ is not supported/.test(lower) || (lower.includes("not supported") && lower.includes("model"))) {
+      return { shouldSwitchAccount: true, errorType: "ModelError" }
+    }
     if (status === 401 || status === 403) return { shouldSwitchAccount: false, errorType: "AuthenticationError" }
     return null
   }

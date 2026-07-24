@@ -221,8 +221,89 @@ export function RoutingPage() {
           adminFetch={adminFetch}
           onRefresh={() => void providerModelsResource.refresh()}
         />
+        <ModelPricingSection adminFetch={adminFetch} />
       </div>
     </>
+  );
+}
+
+
+
+interface ModelPricingStatus {
+  source: string;
+  modelCount: number;
+  fetchedAt: string | null;
+  updatedAt: string | null;
+  error: string | null;
+  stale: boolean;
+}
+
+function ModelPricingSection({ adminFetch }: { adminFetch: (path: string, init?: RequestInit) => Promise<Response> }) {
+  const resource = useAdminResource<{ pricing?: ModelPricingStatus }>("/api/admin/model-pricing");
+  const pricing = resource.data?.pricing;
+  const [refreshing, setRefreshing] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function refreshPricing() {
+    setRefreshing(true);
+    setMessage(null);
+    try {
+      const response = await adminFetch("/api/admin/model-pricing", { method: "POST" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message || "刷新价格失败");
+      setMessage(`已更新 ${payload?.pricing?.modelCount ?? 0} 个模型价格`);
+      await resource.refresh();
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "刷新价格失败");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="模型价格缓存"
+      description="从 OpenRouter /models 拉取参考价，用于请求日志与用量看板的费用估算。仅启动时自动拉取，平时可手动刷新。"
+      action={
+        <Button size="sm" variant="outline" onClick={() => void refreshPricing()} disabled={refreshing || resource.loading}>
+          <RefreshCw data-icon="inline-start" className={refreshing ? "animate-spin" : undefined} />
+          {refreshing ? "更新中" : "更新价格"}
+        </Button>
+      }
+    >
+      {resource.error ? <ErrorState message={resource.error} onRetry={() => void resource.refresh()} /> : null}
+      {!resource.error ? (
+        <div className="space-y-3 p-4 sm:p-5">
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div className="rounded-md border bg-[#fafafa] p-3">
+              <p className="text-[11px] text-muted-foreground">来源</p>
+              <p className="mt-1 text-sm font-medium">OpenRouter</p>
+            </div>
+            <div className="rounded-md border bg-[#fafafa] p-3">
+              <p className="text-[11px] text-muted-foreground">模型数</p>
+              <p className="mt-1 font-mono text-sm font-medium">{pricing?.modelCount ?? 0}</p>
+            </div>
+            <div className="rounded-md border bg-[#fafafa] p-3">
+              <p className="text-[11px] text-muted-foreground">最近拉取</p>
+              <p className="mt-1 font-mono text-xs">{formatDate(pricing?.fetchedAt)}</p>
+            </div>
+            <div className="rounded-md border bg-[#fafafa] p-3">
+              <p className="text-[11px] text-muted-foreground">状态</p>
+              <p className="mt-1 text-sm font-medium">{pricing?.stale ? "未缓存" : pricing?.error ? "有错误" : "可用"}</p>
+            </div>
+          </div>
+          {pricing?.error ? (
+            <p className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">
+              {pricing.error}
+            </p>
+          ) : null}
+          {message ? <p className="text-xs text-muted-foreground" role="status">{message}</p> : null}
+          <p className="text-[11px] leading-5 text-muted-foreground">
+            费用为 OpenRouter 公开参考价估算（USD），不等于上游实际账单。模型 ID 会做短名匹配（如 grok-4.5 → x-ai/grok-4.5）。
+          </p>
+        </div>
+      ) : null}
+    </Panel>
   );
 }
 

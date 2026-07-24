@@ -11,4 +11,9 @@ export async function register() {
       console.error("[provider-models] startup sync failed", error instanceof Error ? error.message : error)
     }),
   )
+  void import("@/server/model-pricing").then(({ ensureModelPricingLoaded }) =>
+    ensureModelPricingLoaded().catch((error) => {
+      console.error("[model-pricing] startup load failed", error instanceof Error ? error.message : error)
+    }),
+  )
 }

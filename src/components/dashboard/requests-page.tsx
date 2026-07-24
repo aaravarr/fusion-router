@@ -166,7 +166,7 @@ export function RequestsPage() {
         ) : !items.length ? (
           <EmptyState title="暂无请求记录" description="没有匹配当前过滤条件的请求，尝试调整搜索或过滤。" />
         ) : (
-          <Table className="min-w-[1280px]">
+          <Table className="min-w-[1360px]">
             <TableHeader className="bg-[#fafafa]">
               <TableRow>
                 <TableHead className="px-4 text-xs text-muted-foreground">时间</TableHead>
@@ -180,6 +180,7 @@ export function RequestsPage() {
                <TableHead className="text-right text-xs text-muted-foreground">TTFT</TableHead>
                <TableHead className="text-right text-xs text-muted-foreground">TPS</TableHead>
                <TableHead className="text-right text-xs text-muted-foreground">Tokens</TableHead>
+                <TableHead className="text-right text-xs text-muted-foreground">费用</TableHead>
                 <TableHead className="text-xs text-muted-foreground">客户端</TableHead>
                 <TableHead className="w-14" />
               </TableRow>
@@ -295,6 +296,15 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
                 <div className="space-y-6">
                   <BasicInfo request={detail.request} poolType={poolType} />
                   <TokenBreakdown request={detail.request} />
+                  <div className="rounded-md border bg-[#fafafa] p-3">
+                    <h3 className="mb-2 text-sm font-medium">估算费用</h3>
+                    <p className="font-mono text-lg font-semibold tracking-[-0.03em]">{detail.request.costLabel || "—"}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {detail.request.pricingModelId
+                        ? `按 OpenRouter 价格匹配：${detail.request.pricingModelId}`
+                        : "未匹配到 OpenRouter 价格（服务启动缓存，或到智能路由页底部刷新价格）"}
+                    </p>
+                  </div>
                   <FailoverTimeline attempts={detail.attempts} />
                   <HeadersBlock headers={detail.request.headers} />
                   <JsonBlock title="请求体" value={detail.request.request} truncated={detail.request.requestTruncated} />
@@ -322,6 +332,7 @@ function BasicInfo({ request, poolType }: { request: RequestDetail["request"]; p
     { label: "密钥", value: request.apiKeyName || request.apiKeyPrefix || "—" },
     { label: "__account__", value: request.accountName || "—", full: true },
     { label: "模型", value: request.model || "—" },
+    { label: "费用", value: request.costLabel || "—" },
     { label: "路径", value: formatRouteLabel(request) },
     { label: "是否转换", value: request.converted ? "已转换" : "未转换" },
     { label: "注入工具", value: hasInjectedServerTools(request) ? "已注入 web_search + x_search" : "未注入内置工具" },

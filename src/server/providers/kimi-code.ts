@@ -31,7 +31,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 30_000
 const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
-const DEFAULT_MODELS = ["kimi-for-coding"] as const
+const DEFAULT_MODELS = ["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"] as const
 const PASSTHROUGH_HEADERS = ["accept-language", "anthropic-version", "anthropic-beta"] as const
 
 function roundPercent(value: number): number {
