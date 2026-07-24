@@ -88,7 +88,14 @@ const SORT_OPTIONS = [
   { key: "created", label: "创建时间" },
 ] as const;
 
-type XaiImportFormat = "cpa-json" | "refresh-token" | "xai-sso";
+type TokenImportFormat = "cpa-json" | "refresh-token" | "access-token" | "xai-sso";
+type TokenImportSpec = {
+  poolType: string;
+  format: TokenImportFormat;
+  title: string;
+  description: string;
+  placeholder: string;
+};
 
 function poolOf(account: Account) {
   return account.poolType || "opencode-go";
@@ -106,7 +113,7 @@ export function AccountsPage() {
   const [selected, setSelected] = useState<Account | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [xaiImportFormat, setXaiImportFormat] = useState<XaiImportFormat | null>(null);
+  const [tokenImport, setTokenImport] = useState<TokenImportSpec | null>(null);
   const [kimiOauthOpen, setKimiOauthOpen] = useState(false);
   const [kimiRefreshOpen, setKimiRefreshOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
@@ -162,10 +169,15 @@ export function AccountsPage() {
 
   const poolCounts = useMemo(() => {
     const byPool = stats?.byPoolType ?? {};
-    const counts: Record<string, number | undefined> = { all: stats?.total };
+    const counts: Record<string, number | undefined> = {};
+    let all = 0;
     for (const [key, value] of Object.entries(byPool)) {
-      counts[key] = value?.total;
+      const total = value?.total ?? 0;
+      counts[key] = total;
+      all += total;
     }
+    // Prefer sum of per-pool totals so chip badges stay stable when a single pool is selected.
+    counts.all = all;
     return counts;
   }, [stats]);
 
@@ -275,23 +287,66 @@ export function AccountsPage() {
             {poolFilter === "opencode-go" ? (
               <Button size="sm" onClick={() => setConnectorOpen(true)}><Puzzle data-icon="inline-start" />连接 Go 账号</Button>
             ) : poolFilter === "openai" ? (
-              <Button size="sm" onClick={() => setImportOpen(true)}><Upload data-icon="inline-start" />导入 Sub2API JSON</Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><Button size="sm"><Upload data-icon="inline-start" />导入 OpenAI 账号</Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-auto min-w-44">
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setImportOpen(true)}><FileUp />Sub2API JSON</DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="whitespace-nowrap"
+                    onSelect={() => setTokenImport({
+                      poolType: "openai",
+                      format: "refresh-token",
+                      title: "导入 OpenAI OAuth Refresh Token",
+                      description: "每行一个 OAuth refresh token。后台会刷新 access_token 并写入统一 OpenAI 号池。",
+                      placeholder: "每行一个 refresh token",
+                    })}
+                  ><KeyRound />OAuth Refresh Token</DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="whitespace-nowrap"
+                    onSelect={() => setTokenImport({
+                      poolType: "openai",
+                      format: "access-token",
+                      title: "导入 OpenAI Access Token",
+                      description: "每行一个 Access Token（支持 at-* PAT）。无 refresh token，无法自动刷新。",
+                      placeholder: "每行一个 access token（如 at-...）",
+                    })}
+                  ><KeyRound />Access Token</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : poolFilter === "xai-grok" ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button size="sm"><Upload data-icon="inline-start" />导入 xAI 账号</Button></DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={() => setXaiImportFormat("cpa-json")}><FileUp />CPA JSON</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setImportOpen(true)}><FileUp />Sub2API JSON</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setXaiImportFormat("refresh-token")}><KeyRound />Refresh Token</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setXaiImportFormat("xai-sso")}><KeyRound />xAI SSO</DropdownMenuItem>
+                <DropdownMenuContent align="end" className="w-auto min-w-44">
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setTokenImport({
+                    poolType: "xai-grok",
+                    format: "cpa-json",
+                    title: "导入 xAI CPA JSON",
+                    description: "兼容 CLIProxyAPI xAI auth JSON 与 grok2api Grok Build JSON/JSONL 导出。",
+                    placeholder: "粘贴 JSON，或选择一个或多个 JSON 文件",
+                  })}><FileUp />CPA JSON</DropdownMenuItem>
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setImportOpen(true)}><FileUp />Sub2API JSON</DropdownMenuItem>
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setTokenImport({
+                    poolType: "xai-grok",
+                    format: "refresh-token",
+                    title: "导入 xAI Refresh Token",
+                    description: "每行一个 refresh token。后台会刷新凭据、识别账号并探测真实额度。",
+                    placeholder: "每行一个 refresh token",
+                  })}><KeyRound />Refresh Token</DropdownMenuItem>
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setTokenImport({
+                    poolType: "xai-grok",
+                    format: "xai-sso",
+                    title: "导入 xAI SSO",
+                    description: "每行一个 Grok Web SSO Key，后台通过 Device Flow 转换为 OAuth 凭据。",
+                    placeholder: "每行一个 SSO Token（eyJ...）",
+                  })}><KeyRound />xAI SSO</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : poolFilter === "kimi-code" ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button size="sm"><KeyRound data-icon="inline-start" />连接 Kimi 账号</Button></DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setKimiRefreshOpen(true)}><FileUp />Refresh Token</DropdownMenuItem>
+                <DropdownMenuContent align="end" className="w-auto min-w-44">
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</DropdownMenuItem>
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setKimiRefreshOpen(true)}><FileUp />Refresh Token</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null}
@@ -374,11 +429,17 @@ export function AccountsPage() {
             action={query || statusFilter !== "all" ? undefined : poolFilter === "opencode-go" ? (
               <Button size="sm" onClick={() => setConnectorOpen(true)}><Puzzle />连接 Go 账号</Button>
             ) : poolFilter === "xai-grok" ? (
-              <Button size="sm" onClick={() => setXaiImportFormat("cpa-json")}><Upload />导入 xAI 账号</Button>
+              <Button size="sm" onClick={() => setTokenImport({
+                poolType: "xai-grok",
+                format: "cpa-json",
+                title: "导入 xAI CPA JSON",
+                description: "兼容 CLIProxyAPI xAI auth JSON 与 grok2api Grok Build JSON/JSONL 导出。",
+                placeholder: "粘贴 JSON，或选择一个或多个 JSON 文件",
+              })}><Upload />导入 xAI 账号</Button>
             ) : poolFilter === "kimi-code" ? (
               <Button size="sm" onClick={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</Button>
             ) : poolFilter === "openai" ? (
-              <Button size="sm" onClick={() => setImportOpen(true)}><Upload />导入 Sub2API JSON</Button>
+              <Button size="sm" onClick={() => setImportOpen(true)}><Upload />导入 OpenAI 账号</Button>
             ) : <span className="text-xs text-muted-foreground">请先在上方选择一个号池。</span>}
           />
         ) : null}
@@ -475,7 +536,7 @@ export function AccountsPage() {
      <Sub2ApiImportDialog open={importOpen} poolType={poolFilter === "all" ? "openai" : poolFilter} onOpenChange={setImportOpen} onCreated={() => setJobVersion((value) => value + 1)} />
       <KimiOauthLoginDialog open={kimiOauthOpen} onOpenChange={setKimiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
-      <XaiSsoImportDialog format={xaiImportFormat} open={Boolean(xaiImportFormat)} onOpenChange={(open) => { if (!open) setXaiImportFormat(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
+      <TokenLineImportDialog spec={tokenImport} open={Boolean(tokenImport)} onOpenChange={(open) => { if (!open) setTokenImport(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
      <AccountDetailSheet
         account={selected}
         onOpenChange={(open) => { if (!open) setSelected(null); }}
@@ -795,31 +856,42 @@ function Sub2ApiImportDialog({ open, poolType, onOpenChange, onCreated }: { open
   );
 }
 
-function XaiSsoImportDialog({ format, open, onOpenChange, onCreated }: { format: XaiImportFormat | null; open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+function TokenLineImportDialog({
+  spec,
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  spec: TokenImportSpec | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: () => void;
+}) {
   const { adminFetch } = useAdmin();
   const [tokenText, setTokenText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [job, setJob] = useState<ImportJob | null>(null);
   const liveJob = useImportJobStream(job, onCreated);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const meta = format === "cpa-json"
-    ? { title: "导入 xAI CPA JSON", description: "兼容 CLIProxyAPI xAI auth JSON 与 grok2api Grok Build JSON/JSONL 导出。", placeholder: "粘贴 JSON，或选择一个或多个 JSON 文件" }
-    : format === "refresh-token"
-      ? { title: "导入 xAI Refresh Token", description: "每行一个 refresh token。后台会刷新凭据、识别账号并探测真实额度。", placeholder: "每行一个 refresh token" }
-      : { title: "导入 xAI SSO", description: "每行一个 Grok Web SSO Key，后台通过 Device Flow 转换为 OAuth 凭据。", placeholder: "每行一个 SSO Token（eyJ...）" };
 
   function reset() {
-    setTokenText(""); setError(null); setJob(null);
+    setTokenText("");
+    setError(null);
+    setJob(null);
   }
 
   async function handleSubmit() {
-    if (!format || !tokenText.trim()) { setError("请填写要导入的凭据"); return; }
-    setSubmitting(true); setError(null); setJob(null);
+    if (!spec || !tokenText.trim()) {
+      setError("请填写要导入的凭据");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    setJob(null);
     try {
       const response = await adminFetch("/api/admin/import-jobs", {
         method: "POST",
-        body: JSON.stringify({ poolType: "xai-grok", format, input: tokenText }),
+        body: JSON.stringify({ poolType: spec.poolType, format: spec.format, input: tokenText }),
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "导入任务创建失败");
@@ -837,39 +909,17 @@ function XaiSsoImportDialog({ format, open, onOpenChange, onCreated }: { format:
     <Dialog open={open} onOpenChange={(next) => { if (!next) reset(); onOpenChange(next); }}>
       <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-lg">
         <DialogHeader className="border-b px-5 py-4">
-          <DialogTitle>{meta.title}</DialogTitle>
-          <DialogDescription>{meta.description}</DialogDescription>
+          <DialogTitle>{spec?.title || "导入凭据"}</DialogTitle>
+          <DialogDescription>{spec?.description || "粘贴凭据后开始导入。"}</DialogDescription>
         </DialogHeader>
         <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">
           <Textarea
             value={tokenText}
             onChange={(e) => setTokenText(e.target.value)}
-            placeholder={meta.placeholder}
+            placeholder={spec?.placeholder || "每行一条凭据"}
             className="min-h-[200px] resize-y rounded-md font-mono text-xs leading-5"
             spellCheck={false}
           />
-          {format === "cpa-json" ? (
-            <div>
-              <input ref={fileRef} type="file" accept=".json,.jsonl,application/json" multiple className="hidden" onChange={(event) => {
-                const files = Array.from(event.target.files ?? []);
-                if (files.length) void Promise.all(files.map(async (file) => {
-                  const text = (await file.text()).replace(/^\uFEFF/, "").trim();
-                  try {
-                    const parsed = JSON.parse(text) as unknown;
-                    return Array.isArray(parsed) ? parsed : [parsed];
-                  } catch {
-                    return text.split(/\r?\n/).map((line) => line.trim().replace(/,$/, "")).filter(Boolean).map((line) => JSON.parse(line) as unknown);
-                  }
-                })).then((groups) => {
-                  setError(null);
-                  setTokenText(JSON.stringify(groups.flat(), null, 2));
-                }).catch(() => setError("文件中包含无效的 JSON / JSONL"));
-                event.currentTarget.value = "";
-              }} />
-              <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}><FileUp />选择 JSON / JSONL 文件</Button>
-            </div>
-          ) : null}
-          <p className="text-[11px] leading-4 text-muted-foreground">任务最多 3 路并发，关闭页面后仍会继续；服务重启会恢复未完成任务。</p>
           {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
           {liveJob ? <ImportJobProgress job={liveJob} /> : null}
         </div>
@@ -883,6 +933,7 @@ function XaiSsoImportDialog({ format, open, onOpenChange, onCreated }: { format:
     </Dialog>
   );
 }
+
 
 function KimiOauthLoginDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
   const { adminFetch } = useAdmin();

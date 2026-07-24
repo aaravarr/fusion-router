@@ -72,6 +72,9 @@ describe("account list pagination", () => {
     expect(all.items[0].id).toBe(over.id)
     expect(all.stats).toMatchObject({ total: 3, overQuota: 1, banned: 1, ready: 1 })
     expect(all.stats.avgUsagePercent).toBeCloseTo((126.5 + 12.25) / 2, 2)
+    // Chip counts should still include non-selected pools.
+    expect(all.stats.byPoolType["xai-grok"]?.total).toBe(3)
+    expect(all.stats.byPoolType["opencode-go"]?.total).toBe(1)
 
     const blocked = repository.listPage({ page: 1, pageSize: 50, poolType: "xai-grok", status: "over_quota" })
     expect(blocked.total).toBe(1)

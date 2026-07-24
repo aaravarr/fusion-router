@@ -62,6 +62,7 @@ const formatLabels: Record<string, string> = {
   "sub2api-json": "Sub2API JSON",
   "cpa-json": "CPA JSON",
   "refresh-token": "Refresh Token",
+  "access-token": "Access Token",
   "xai-sso": "xAI SSO",
 };
 

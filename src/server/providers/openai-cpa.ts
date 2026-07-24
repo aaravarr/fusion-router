@@ -49,6 +49,36 @@ const CODEX_MODELS = [
 
 const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
 
+export async function exchangeOpenAIRefreshToken(
+  refreshToken: string,
+  clientId = OPENAI_CLIENT_ID,
+): Promise<{
+  accessToken: string
+  refreshToken: string
+  expiresAt: string
+}> {
+  const resp = await apiFetch(OPENAI_TOKEN_URL, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId || OPENAI_CLIENT_ID,
+    }).toString(),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  const body = await resp.text()
+  if (!resp.ok) throw new Error(`OpenAI refresh token 刷新失败（HTTP ${resp.status}）`)
+  const token = JSON.parse(body) as { access_token?: string; refresh_token?: string; expires_in?: number }
+  if (!token.access_token) throw new Error("OpenAI refresh token 响应缺少 access_token")
+  return {
+    accessToken: token.access_token,
+    refreshToken: token.refresh_token || refreshToken,
+    expiresAt: String(Math.floor(Date.now() / 1000) + (token.expires_in ?? 3600)),
+  }
+}
+
+
 // Headers forwarded from the incoming request to the upstream.
 const PASSTHROUGH_HEADERS = [
   "accept",

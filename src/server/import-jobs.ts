@@ -6,10 +6,11 @@ import { AccountRepository, ProviderCredentialRepository } from "./repository"
 import type { PoolType } from "./types"
 import { convertSsoToBuild, decodeJwtClaims, jwtClaimString } from "./xai-sso-device"
 import { exchangeXaiRefreshToken } from "./providers/xai-grok"
+import { exchangeOpenAIRefreshToken } from "./providers/openai-cpa"
 import { refreshKimiAccessToken, KIMI_CODE_CLIENT_ID } from "./kimi-oauth"
 import { tryGetProvider } from "./providers"
 
-export const IMPORT_FORMATS = ["sub2api-json", "cpa-json", "refresh-token", "xai-sso"] as const
+export const IMPORT_FORMATS = ["sub2api-json", "cpa-json", "refresh-token", "access-token", "xai-sso"] as const
 export type ImportFormat = (typeof IMPORT_FORMATS)[number]
 export type ImportJobStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED"
 
@@ -163,15 +164,29 @@ export function parseImportInput(poolType: PoolType, format: ImportFormat, input
   let seeds: ImportSeed[]
   if (format === "sub2api-json") seeds = parseSub2Api(input, poolType)
   else if (format === "cpa-json") seeds = parseCpaJson(input, poolType)
-  else {
-    if (poolType !== "xai-grok" && poolType !== "kimi-code") throw new Error("此导入方式仅支持 xAI Grok 或 Kimi Code")
+  else if (format === "access-token") {
+    if (poolType !== "openai") throw new Error("Access Token 导入仅支持 OpenAI 号池")
+    const values = input.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+    seeds = values.map((value, index) => ({
+      label: `Access Token #${index + 1}`,
+      poolType,
+      accessToken: value.replace(/^(access_token|token)\s*[=:]\s*/i, ""),
+    }))
+  } else {
+    if (poolType !== "xai-grok" && poolType !== "kimi-code" && poolType !== "openai") {
+      throw new Error("此导入方式仅支持 OpenAI、xAI Grok 或 Kimi Code")
+    }
     const values = input.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
     seeds = values.map((value, index) => {
       if (format === "xai-sso") {
         if (poolType !== "xai-grok") throw new Error("xAI SSO 仅支持 xAI Grok 号池")
         return { label: `SSO #${index + 1}`, poolType, ssoToken: value }
       }
-      return { label: `Refresh Token #${index + 1}`, poolType, refreshToken: value.replace(/^refresh_token\s*[=:]\s*/i, "") }
+      return {
+        label: `Refresh Token #${index + 1}`,
+        poolType,
+        refreshToken: value.replace(/^refresh_token\s*[=:]\s*/i, ""),
+      }
     })
   }
   if (seeds.length > MAX_IMPORT_ITEMS) throw new Error(`单次最多导入 ${MAX_IMPORT_ITEMS} 个账号`)
@@ -278,6 +293,17 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
       tokenType: result.tokenType,
       scope: result.scope,
       clientId: seed.clientId || KIMI_CODE_CLIENT_ID,
+    }
+  }
+  if (!seed.accessToken && seed.refreshToken && seed.poolType === "openai") {
+    updateItem(db, jobId, index, "RUNNING", "正在刷新 OpenAI OAuth 凭据")
+    const result = await exchangeOpenAIRefreshToken(seed.refreshToken, seed.clientId)
+    seed = {
+      ...seed,
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      expiresAt: result.expiresAt,
+      clientId: seed.clientId || "app_EMoamEEZ73f0CkXaXp7hrann",
     }
   }
   if (!seed.accessToken) throw new Error("凭据缺少可用的 access_token")

@@ -149,12 +149,10 @@ export class AccountRepository {
     const sort = (query.sort || "recent") as AccountListSort
     const term = String(query.q || "").trim().toLowerCase()
 
+    // Intentionally omit pool_type from SQL so byPoolType chip counts stay global
+    // (still respect search term). Pool filter is applied after status filtering.
     const conditions = ["owner_user_id = ?"]
     const params: Array<string | number> = [this.ownerUserId]
-    if (poolType) {
-      conditions.push("pool_type = ?")
-      params.push(poolType)
-    }
     if (term) {
       conditions.push("(LOWER(COALESCE(name,'')) LIKE ? OR LOWER(COALESCE(email,'')) LIKE ? OR LOWER(id) LIKE ? OR LOWER(COALESCE(workspace_id,'')) LIKE ? OR LOWER(COALESCE(external_id,'')) LIKE ?)")
       const like = `%${term}%`
@@ -209,18 +207,29 @@ export class AccountRepository {
       })
     }
 
-    const stats = emptyAccountStats()
-    const usageSamples: number[] = []
+    // Pool chip counts must ignore the active poolType filter; otherwise selecting
+    // "xai-grok" would zero out OpenCode Go / 全部 badges.
+    const byPoolType: Record<string, AccountPoolStats> = {}
     for (const account of accounts) {
       const flags = classify(account)
-      const pool = stats.byPoolType[account.poolType] ?? emptyPoolStats()
+      const pool = byPoolType[account.poolType] ?? emptyPoolStats()
       pool.total += 1
       if (flags.ready) pool.ready += 1
       if (flags.blocked) pool.blocked += 1
       if (flags.inactive) pool.inactive += 1
       if (flags.overQuota) pool.overQuota += 1
-      stats.byPoolType[account.poolType] = pool
+      byPoolType[account.poolType] = pool
+    }
 
+    if (poolType) {
+      accounts = accounts.filter((account) => account.poolType === poolType)
+    }
+
+    const stats = emptyAccountStats()
+    stats.byPoolType = byPoolType
+    const usageSamples: number[] = []
+    for (const account of accounts) {
+      const flags = classify(account)
       stats.total += 1
       if (flags.ready) stats.ready += 1
       if (flags.blocked) stats.blocked += 1

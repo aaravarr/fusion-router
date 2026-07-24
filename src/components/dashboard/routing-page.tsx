@@ -58,7 +58,7 @@ export function RoutingPage() {
   const [updatingPool, setUpdatingPool] = useState<string | null>(null);
   const [poolMessage, setPoolMessage] = useState<string | null>(null);
   const [candidatePage, setCandidatePage] = useState(1);
-  const [candidatePageSize, setCandidatePageSize] = useState(20);
+  const [candidatePageSize, setCandidatePageSize] = useState(10);
   const [candidateQuery, setCandidateQuery] = useState("");
   const [candidatePool, setCandidatePool] = useState<string>("all");
 
@@ -176,7 +176,7 @@ export function RoutingPage() {
                   </select>
                 </div>
                 {pagedCandidates.length ? (
-                  <div className="divide-y">
+                  <div className="max-h-[min(360px,50vh)] divide-y overflow-y-auto overscroll-contain">
                     {pagedCandidates.map((account, index) => {
                       const ordinal = (safeCandidatePage - 1) * candidatePageSize + index + 1;
                       return (
