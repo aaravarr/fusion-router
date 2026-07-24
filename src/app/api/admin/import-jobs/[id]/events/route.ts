@@ -25,7 +25,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         } else {
           controller.enqueue(encoder.encode(": keep-alive\n\n"))
         }
-        if (job.status === "COMPLETED" || job.status === "FAILED") {
+        if (job.status === "PAUSED" || job.status === "COMPLETED" || job.status === "FAILED") {
           if (timer) clearInterval(timer)
           controller.close()
         }

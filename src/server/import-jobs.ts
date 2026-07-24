@@ -12,7 +12,7 @@ import { tryGetProvider } from "./providers"
 
 export const IMPORT_FORMATS = ["sub2api-json", "cpa-json", "refresh-token", "access-token", "xai-sso"] as const
 export type ImportFormat = (typeof IMPORT_FORMATS)[number]
-export type ImportJobStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED"
+export type ImportJobStatus = "QUEUED" | "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED"
 
 interface ImportSeed {
   label: string
@@ -255,7 +255,7 @@ function updateItem(db: AppDatabase, jobId: string, index: number, status: strin
   const counts = db.prepare(`SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('COMPLETED','FAILED') THEN 1 ELSE 0 END) AS processed,
     SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS succeeded,SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) AS failed
     FROM import_job_items WHERE job_id=?`).get(jobId) as { total: number; processed: number; succeeded: number; failed: number }
-  db.prepare("UPDATE import_jobs SET processed_items=?,succeeded_items=?,failed_items=?,current_step=?,updated_at=? WHERE id=?")
+  db.prepare("UPDATE import_jobs SET processed_items=?,succeeded_items=?,failed_items=?,current_step=CASE WHEN status='PAUSED' THEN current_step ELSE ? END,updated_at=? WHERE id=?")
     .run(counts.processed || 0, counts.succeeded || 0, counts.failed || 0, step, timestamp, jobId)
 }
 
@@ -375,7 +375,7 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
 const runnerGlobal = globalThis as typeof globalThis & { __accountImportJobs?: Set<string> }
 const activeJobs = (runnerGlobal.__accountImportJobs ??= new Set<string>())
 
-interface ImportRunnerOptions {
+export interface ImportRunnerOptions {
   processItem?: (ownerUserId: string, jobId: string, index: number, seed: ImportSeed, db: AppDatabase) => Promise<string | { accountId: string; accountCreated: boolean }>
 }
 
@@ -392,6 +392,8 @@ export async function runImportJob(jobId: string, db: AppDatabase = getDatabase(
     let cursor = 0
     const workers = Array.from({ length: Math.min(3, seeds.length) }, async () => {
       for (;;) {
+        const state = db.prepare("SELECT status FROM import_jobs WHERE id=?").get(jobId) as { status: ImportJobStatus } | undefined
+        if (state?.status !== "RUNNING") return
         const index = cursor++
         if (index >= seeds.length) return
         if (terminalItems.has(index)) continue
@@ -408,16 +410,20 @@ export async function runImportJob(jobId: string, db: AppDatabase = getDatabase(
       }
     })
     await Promise.all(workers)
-    const counts = db.prepare("SELECT succeeded_items,failed_items FROM import_jobs WHERE id=?").get(jobId) as { succeeded_items: number; failed_items: number }
-    const timestamp = nowIso()
-    db.prepare("UPDATE import_jobs SET status='COMPLETED',current_step=?,completed_at=?,updated_at=? WHERE id=?")
-      .run(counts.failed_items ? "导入完成，部分账号失败" : "全部导入完成", timestamp, timestamp, jobId)
+    const latest = db.prepare("SELECT status,succeeded_items,failed_items FROM import_jobs WHERE id=?").get(jobId) as { status: ImportJobStatus; succeeded_items: number; failed_items: number }
+    if (latest.status === "RUNNING") {
+      const timestamp = nowIso()
+      db.prepare("UPDATE import_jobs SET status='COMPLETED',current_step=?,completed_at=?,updated_at=? WHERE id=?")
+        .run(latest.failed_items ? "导入完成，部分账号失败" : "全部导入完成", timestamp, timestamp, jobId)
+    }
   } catch (cause) {
     const timestamp = nowIso()
     db.prepare("UPDATE import_jobs SET status='FAILED',error=?,current_step='任务异常终止',completed_at=?,updated_at=? WHERE id=?")
       .run(cause instanceof Error ? cause.message : "导入任务失败", timestamp, timestamp, jobId)
   } finally {
     activeJobs.delete(jobId)
+    const latest = db.prepare("SELECT status FROM import_jobs WHERE id=?").get(jobId) as { status: ImportJobStatus } | undefined
+    if (latest?.status === "QUEUED") void runImportJob(jobId, db, options)
   }
 }
 
@@ -485,6 +491,32 @@ export function retryImportJobItem(ownerUserId: string, jobId: string, itemIndex
   return getImportJob(ownerUserId, jobId, db)!
 }
 
+export function pauseImportJob(ownerUserId: string, jobId: string, db: AppDatabase = getDatabase()) {
+  const timestamp = nowIso()
+  const changed = db.prepare(`UPDATE import_jobs SET status='PAUSED',current_step='暂停中，等待当前处理项完成',updated_at=?
+    WHERE id=? AND owner_user_id=? AND status IN ('QUEUED','RUNNING') AND rolled_back_at IS NULL`).run(timestamp, jobId, ownerUserId).changes
+  if (!changed) {
+    const job = db.prepare("SELECT status FROM import_jobs WHERE id=? AND owner_user_id=?").get(jobId, ownerUserId) as { status: ImportJobStatus } | undefined
+    if (!job) throw new Error("导入任务不存在")
+    if (job.status === "PAUSED") throw new Error("导入任务已经暂停")
+    throw new Error("仅支持暂停排队中或运行中的导入任务")
+  }
+  return getImportJob(ownerUserId, jobId, db)!
+}
+
+export function resumeImportJob(ownerUserId: string, jobId: string, db: AppDatabase = getDatabase(), options: ImportRunnerOptions = {}) {
+  const timestamp = nowIso()
+  const changed = db.prepare(`UPDATE import_jobs SET status='QUEUED',current_step='等待继续导入',updated_at=?
+    WHERE id=? AND owner_user_id=? AND status='PAUSED' AND rolled_back_at IS NULL`).run(timestamp, jobId, ownerUserId).changes
+  if (!changed) {
+    const job = db.prepare("SELECT status FROM import_jobs WHERE id=? AND owner_user_id=?").get(jobId, ownerUserId) as { status: ImportJobStatus } | undefined
+    if (!job) throw new Error("导入任务不存在")
+    throw new Error("仅支持继续已暂停的导入任务")
+  }
+  void runImportJob(jobId, db, options)
+  return getImportJob(ownerUserId, jobId, db)!
+}
+
 export interface RollbackImportJobResult {
   job: NonNullable<ReturnType<typeof getImportJob>>
   deleted: number
@@ -542,6 +574,8 @@ export function rollbackImportJob(ownerUserId: string, jobId: string, db: AppDat
 
 export function startImportJobRunner(db: AppDatabase = getDatabase(), options: ImportRunnerOptions = {}): void {
   db.transaction(() => {
+    db.prepare(`UPDATE import_job_items SET status='QUEUED',step='任务已暂停，等待继续',updated_at=?
+      WHERE status='RUNNING' AND EXISTS (SELECT 1 FROM import_jobs j WHERE j.id=import_job_items.job_id AND j.status='PAUSED')`).run(nowIso())
     db.prepare("UPDATE import_jobs SET status='QUEUED',current_step='服务重启，等待恢复',updated_at=? WHERE status='RUNNING'").run(nowIso())
     db.prepare("UPDATE import_job_items SET status='QUEUED',step='等待恢复',updated_at=? WHERE status='RUNNING'").run(nowIso())
   })()

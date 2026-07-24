@@ -57,6 +57,7 @@ const statusLabels: Record<string, string> = {
   banned: "已封禁",
   queued: "排队中",
   running: "处理中",
+  paused: "已暂停",
   completed: "已完成",
   failed: "失败",
   unknown: "未知",

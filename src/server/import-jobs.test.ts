@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { SecretVault } from "./crypto"
 import { createDatabase } from "./db"
-import { parseImportInput, retryImportJobItem, rollbackImportJob, startImportJobRunner } from "./import-jobs"
+import { parseImportInput, pauseImportJob, resumeImportJob, retryImportJobItem, rollbackImportJob, runImportJob, startImportJobRunner } from "./import-jobs"
 import { AccountRepository } from "./repository"
 import { XAIGrokProvider } from "./providers/xai-grok"
 
@@ -75,6 +75,44 @@ describe("xAI quota and account state", () => {
 })
 
 describe("durable import runner", () => {
+  it("暂停后不再领取新账号，并可继续完成剩余任务", async () => {
+    const db = createDatabase(":memory:")
+    const timestamp = new Date().toISOString()
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES (?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("pause-owner", "pause-owner", "pause-owner", "Pause owner", "USER", "hash", timestamp, timestamp)
+    const accounts = new AccountRepository("pause-owner", db, new SecretVault(encryptionKey))
+    const existing = accounts.createProviderAccount({ name: "existing", poolType: "xai-grok", externalId: "pause-existing" })
+    const seeds = Array.from({ length: 4 }, (_, index) => ({ label: `account-${index}`, poolType: "xai-grok", accessToken: `token-${index}` }))
+    db.prepare(`INSERT INTO import_jobs(id,owner_user_id,pool_type,format,status,total_items,current_step,payload_ciphertext,created_at,updated_at)
+      VALUES('pause-job','pause-owner','xai-grok','cpa-json','QUEUED',4,'等待处理',?,?,?)`)
+      .run(new SecretVault().encrypt(JSON.stringify(seeds)), timestamp, timestamp)
+    const insertItem = db.prepare(`INSERT INTO import_job_items(id,job_id,item_index,label,status,step,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?)`)
+    seeds.forEach((seed, index) => insertItem.run(`pause-item-${index}`, "pause-job", index, seed.label, "QUEUED", "等待处理", timestamp, timestamp))
+
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const processItem = vi.fn(async () => {
+      if (processItem.mock.calls.length <= 3) await gate
+      return { accountId: existing.id, accountCreated: false }
+    })
+    const running = runImportJob("pause-job", db, { processItem })
+    await vi.waitFor(() => expect(processItem).toHaveBeenCalledTimes(3))
+    expect(pauseImportJob("pause-owner", "pause-job", db).status).toBe("PAUSED")
+    release()
+    await running
+
+    expect(db.prepare("SELECT status,processed_items FROM import_jobs WHERE id='pause-job'").get()).toEqual({ status: "PAUSED", processed_items: 3 })
+    expect(db.prepare("SELECT COUNT(*) AS count FROM import_job_items WHERE job_id='pause-job' AND status='QUEUED'").get()).toEqual({ count: 1 })
+
+    expect(resumeImportJob("pause-owner", "pause-job", db, { processItem }).status).toBe("RUNNING")
+    await vi.waitFor(() => {
+      expect(db.prepare("SELECT status,processed_items FROM import_jobs WHERE id='pause-job'").get()).toEqual({ status: "COMPLETED", processed_items: 4 })
+    })
+    expect(processItem).toHaveBeenCalledTimes(4)
+    db.close()
+  })
+
   it("撤销任务时只删除该任务新建且未被后续任务复用的账号", () => {
     const db = createDatabase(":memory:")
     const createdAt = "2026-07-24T01:00:00.000Z"

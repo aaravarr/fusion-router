@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCcw, Undo2, XCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock3, LoaderCircle, Pause, Play, RotateCcw, Undo2, XCircle } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { useAdmin } from "./admin-context";
@@ -23,7 +23,7 @@ export interface ImportJob {
   id: string;
   poolType: string;
   format: string;
-  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+  status: "QUEUED" | "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED";
   totalItems: number;
   processedItems: number;
   succeededItems: number;
@@ -42,16 +42,16 @@ export interface ImportJob {
 
 export function useImportJobStream(initial: ImportJob | null, onCompleted?: () => void) {
   const [streamedJob, setStreamedJob] = useState<ImportJob | null>(null);
-  const job = streamedJob?.id === initial?.id ? streamedJob : initial;
+  const job = streamedJob && initial && streamedJob.id === initial.id && streamedJob.updatedAt >= initial.updatedAt ? streamedJob : initial;
   const jobId = job?.id;
   const jobStatus = job?.status;
   useEffect(() => {
-    if (!jobId || jobStatus === "COMPLETED" || jobStatus === "FAILED") return;
+    if (!jobId || jobStatus === "PAUSED" || jobStatus === "COMPLETED" || jobStatus === "FAILED") return;
     const source = new EventSource(`/api/admin/import-jobs/${encodeURIComponent(jobId)}/events`);
     const update = (event: MessageEvent<string>) => {
       const next = JSON.parse(event.data) as ImportJob;
       setStreamedJob(next);
-      if (next.status === "COMPLETED" || next.status === "FAILED") {
+      if (next.status === "PAUSED" || next.status === "COMPLETED" || next.status === "FAILED") {
         source.close();
         onCompleted?.();
       }
@@ -74,6 +74,7 @@ function itemStatusLabel(status: string) {
   if (status === "COMPLETED") return "成功";
   if (status === "FAILED") return "失败";
   if (status === "RUNNING") return "进行中";
+  if (status === "PAUSED") return "已暂停";
   if (status === "QUEUED") return "排队中";
   return status;
 }
@@ -87,6 +88,9 @@ export function ImportJobProgress({
   retryingIndex,
   onRollback,
   rollingBack = false,
+  onPause,
+  onResume,
+  changingState = false,
 }: {
   job: ImportJob;
   detailed?: boolean;
@@ -96,6 +100,9 @@ export function ImportJobProgress({
   retryingIndex?: number | null;
   onRollback?: () => void;
   rollingBack?: boolean;
+  onPause?: () => void;
+  onResume?: () => void;
+  changingState?: boolean;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const progress = job.totalItems ? Math.round((job.processedItems / job.totalItems) * 100) : 0;
@@ -142,6 +149,22 @@ export function ImportJobProgress({
           {job.rolledBackAt ? <span className="text-destructive">已撤销，删除 {job.rolledBackAccounts ?? 0} 个账号</span> : null}
         </div>
         {job.error ? <p className="mt-3 text-xs text-destructive">{job.error}</p> : null}
+        {(job.status === "RUNNING" || job.status === "QUEUED") && onPause ? (
+          <div className="mt-3 flex justify-end">
+            <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" disabled={changingState} onClick={onPause}>
+              {changingState ? <LoaderCircle className="size-3.5 animate-spin" /> : <Pause className="size-3.5" />}
+              暂停任务
+            </Button>
+          </div>
+        ) : null}
+        {job.status === "PAUSED" && onResume ? (
+          <div className="mt-3 flex justify-end">
+            <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" disabled={changingState} onClick={onResume}>
+              {changingState ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+              继续任务
+            </Button>
+          </div>
+        ) : null}
         {!job.rolledBackAt && (job.status === "COMPLETED" || job.status === "FAILED") && (job.rollbackAccountCount ?? 0) > 0 && onRollback ? (
           <div className="mt-3 flex justify-end">
             <Button
@@ -213,6 +236,9 @@ function LiveJob({
   retryingIndex,
   onRollback,
   rollingBack,
+  onPause,
+  onResume,
+  changingState,
 }: {
   initial: ImportJob;
   onCompleted: () => void;
@@ -220,6 +246,9 @@ function LiveJob({
   retryingIndex: { jobId: string; itemIndex: number } | null;
   onRollback: (job: ImportJob) => void;
   rollingBack: boolean;
+  onPause: (job: ImportJob) => void;
+  onResume: (job: ImportJob) => void;
+  changingState: boolean;
 }) {
   const job = useImportJobStream(initial, onCompleted);
   if (!job) return null;
@@ -228,11 +257,14 @@ function LiveJob({
       job={job}
       detailed
       collapsible
-      defaultExpanded={job.status === "RUNNING" || job.status === "QUEUED"}
+      defaultExpanded={job.status === "RUNNING" || job.status === "QUEUED" || job.status === "PAUSED"}
       onRetryItem={(itemIndex) => onRetryItem(job.id, itemIndex)}
       retryingIndex={retryingIndex?.jobId === job.id ? retryingIndex.itemIndex : null}
       onRollback={() => onRollback(job)}
       rollingBack={rollingBack}
+      onPause={() => onPause(job)}
+      onResume={() => onResume(job)}
+      changingState={changingState}
     />
   );
 }
@@ -255,6 +287,7 @@ export function ImportTaskCenter({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [rollingBackJobId, setRollingBackJobId] = useState<string | null>(null);
+  const [changingStateJobId, setChangingStateJobId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -273,7 +306,7 @@ export function ImportTaskCenter({
       // Only auto-collapse/expand when the user has not manually toggled.
       // Use a ref so this does not recreate `load` and retrigger effects.
       if (!collapsedTouchedRef.current) {
-        const hasActive = detailed.some((job) => job.status === "RUNNING" || job.status === "QUEUED");
+        const hasActive = detailed.some((job) => job.status === "RUNNING" || job.status === "QUEUED" || job.status === "PAUSED");
         setCollapsed(!hasActive);
       }
     } finally {
@@ -343,6 +376,24 @@ export function ImportTaskCenter({
     }
   }
 
+  async function changeJobState(job: ImportJob, action: "pause" | "resume") {
+    setChangingStateJobId(job.id);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const response = await adminFetch(`/api/admin/import-jobs/${encodeURIComponent(job.id)}/${action}`, { method: "POST" });
+      const payload = await response.json().catch(() => null) as { job?: ImportJob; error?: { message?: string }; message?: string } | null;
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || (action === "pause" ? "暂停任务失败" : "继续任务失败"));
+      if (payload?.job) setJobs((current) => current.map((item) => item.id === job.id ? payload.job! : item));
+      setActionNotice(action === "pause" ? "任务已暂停；正在处理的账号完成后将停止领取新账号。" : "任务已继续执行。");
+      await load();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : (action === "pause" ? "暂停任务失败" : "继续任务失败"));
+    } finally {
+      setChangingStateJobId(null);
+    }
+  }
+
   if (!loading && !jobs.length) return null;
 
   return (
@@ -399,12 +450,16 @@ export function ImportTaskCenter({
               retryingIndex={retrying}
               onRollback={rollbackJob}
               rollingBack={rollingBackJobId === job.id}
+              onPause={(item) => void changeJobState(item, "pause")}
+              onResume={(item) => void changeJobState(item, "resume")}
+              changingState={changingStateJobId === job.id}
             />
           ))}
         </div>
       ) : (
         <div className="px-4 py-3 text-xs text-muted-foreground">
           已折叠。运行中 {jobs.filter((job) => job.status === "RUNNING" || job.status === "QUEUED").length} ·
+          已暂停 {jobs.filter((job) => job.status === "PAUSED").length} ·
           失败 {jobs.filter((job) => job.failedItems > 0 || job.status === "FAILED").length}
         </div>
       )}
