@@ -12,8 +12,7 @@ import type { QuotaForecastResult } from "./types";
 const poolOptions = [
   { value: "all", label: "全部号池" },
   { value: "opencode-go", label: "OpenCode Go" },
-  { value: "openai-cpa", label: "OpenAI CPA" },
-  { value: "openai-oauth", label: "OpenAI OAuth" },
+  { value: "openai", label: "OpenAI" },
   { value: "xai-grok", label: "xAI Grok" },
   { value: "kimi-code", label: "Kimi Code" },
 ] as const;

@@ -23,8 +23,8 @@ export const PROVIDER_DOMAIN_PRESETS: DomainPresetGroup[] = [
     ],
   },
   {
-    poolType: "openai-cpa",
-    label: "OpenAI CPA / OAuth",
+    poolType: "openai",
+    label: "OpenAI",
     domains: [
       { domain: "chatgpt.com", label: "chatgpt.com", description: "Codex responses + wham/usage endpoints." },
       { domain: "auth.openai.com", label: "auth.openai.com", description: "PAT whoami + OAuth token refresh." },

@@ -146,7 +146,7 @@ function Metric({ icon: Icon, label, value, note, tone }: { icon: typeof UsersRo
 }
 
 function PoolTypeStatCard({ poolType, counts }: { poolType: string; counts: { total: number; ready: number; blocked: number; inactive: number } }) {
-  const labels: Record<string, string> = { "opencode-go": "OpenCode Go", "openai-cpa": "OpenAI CPA", "openai-oauth": "OpenAI OAuth", "xai-grok": "xAI Grok", "kimi-code": "Kimi Code" };
+  const labels: Record<string, string> = { "opencode-go": "OpenCode Go", "openai": "OpenAI", "xai-grok": "xAI Grok", "kimi-code": "Kimi Code" };
   const label = labels[poolType] ?? poolType;
   return (
     <div className="space-y-3 bg-white p-4">

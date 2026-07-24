@@ -32,10 +32,8 @@ const sub2ApiPayloadSchema = z.object({
 })
 
 // Determine pool type from Sub2API account fields.
-// platform=openai + credentials.auth_mode=personalAccessToken → "openai-cpa"
-// platform=openai + type=oauth (with refresh_token)             → "openai-oauth"
-// platform=openai + type=apikey                                 → "openai-cpa" (treat as token-based)
-// platform=grok  + type=oauth (refresh_token or access_token)   → "xai-grok"
+// platform=openai (any auth mode / token shape) → "openai"
+// platform=grok  + type=oauth (refresh_token or access_token) → "xai-grok"
 // Everything else → skipped
 function resolvePoolType(platform: string, type: string, credentials: Record<string, unknown>): PoolType | null {
   const platformLower = platform.toLowerCase()
@@ -46,19 +44,8 @@ function resolvePoolType(platform: string, type: string, credentials: Record<str
     return null
   }
   if (platformLower !== "openai") return null
-  const authMode = String(credentials.auth_mode ?? "").toLowerCase()
-  if (authMode === "personalaccesstoken" || authMode === "personal_access_token") return "openai-cpa"
-  if (type === "oauth") {
-    // If it has a refresh_token, it's a full OAuth account that can be refreshed.
-    // If it only has access_token (PAT stored as oauth), treat as CPA.
-    if (credentials.refresh_token) return "openai-oauth"
-    return "openai-cpa"
-  }
-  if (type === "apikey") {
-    // API key accounts also route through the CPA provider (token-based, no refresh).
-    return "openai-cpa"
-  }
-  return null
+  const hasToken = Boolean(credentials.access_token || credentials.api_key || credentials.refresh_token)
+  return hasToken ? "openai" : null
 }
 
 // Refresh an xAI OAuth refresh_token to obtain a fresh access_token + rotated

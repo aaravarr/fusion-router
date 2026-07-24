@@ -21,24 +21,14 @@ export const POOL_TYPE_METADATA: Record<PoolType, PoolTypeMeta> = {
       { key: "clientId", label: "Client ID (optional)", required: false, type: "text" },
     ],
   },
-  "openai-cpa": {
-    type: "openai-cpa",
-    label: "OpenAI CPA",
-    description: "OpenAI Codex Personal Access Token (at-*). Upstream: chatgpt.com/backend-api/codex/responses",
+  "openai": {
+    type: "openai",
+    label: "OpenAI",
+    description: "OpenAI Codex (AT token or OAuth refresh). Upstream: chatgpt.com/backend-api/codex/responses",
     quotaKinds: ["FIVE_HOUR", "WEEKLY"] as readonly QuotaKind[],
     credentialFields: [
-      { key: "token", label: "Access Token (at-*)", required: true, type: "password" },
-      { key: "chatgptAccountId", label: "ChatGPT Account ID", required: false, type: "text" },
-    ],
-  },
-  "openai-oauth": {
-    type: "openai-oauth",
-    label: "OpenAI OAuth",
-    description: "OpenAI OAuth subscription with refresh token. Upstream: chatgpt.com/backend-api/codex/responses",
-    quotaKinds: ["FIVE_HOUR", "WEEKLY"] as readonly QuotaKind[],
-    credentialFields: [
-      { key: "accessToken", label: "Access Token", required: true, type: "password" },
-      { key: "refreshToken", label: "Refresh Token", required: true, type: "password" },
+      { key: "token", label: "Access Token", required: true, type: "password" },
+      { key: "refreshToken", label: "Refresh Token (optional)", required: false, type: "password" },
       { key: "chatgptAccountId", label: "ChatGPT Account ID", required: false, type: "text" },
     ],
   },

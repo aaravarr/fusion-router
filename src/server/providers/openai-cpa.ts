@@ -1,10 +1,9 @@
 /**
- * OpenAI CPA (Codex Personal Access Token) Provider
+ * OpenAI Codex Provider
  *
- * Uses at-* prefixed Personal Access Tokens to directly access the OpenAI Codex
- * API at chatgpt.com/backend-api/codex. Supports quota management via the
- * /wham/usage endpoint and credential validation via the auth.openai.com whoami
- * endpoint.
+ * Unified pool for OpenAI Codex accounts: Personal Access Tokens (at-*) and
+ * OAuth accounts with refresh tokens. Refresh is applied automatically when
+ * refreshToken is present. Upstream: chatgpt.com/backend-api/codex.
  */
 
 import type {
@@ -157,17 +156,10 @@ function identifyExhaustedWindow(
 // ─── Provider ────────────────────────────────────────────────────────────
 
 export class OpenAICPAProvider implements Provider {
-  readonly poolType: PoolType
- readonly displayName = "OpenAI CPA"
+  readonly poolType: PoolType = "openai"
+  readonly displayName = "OpenAI"
 
-  // Override displayName for OAuth pool type variant
-  get displayPoolName(): string {
-    return this.poolType === "openai-oauth" ? "OpenAI OAuth" : "OpenAI CPA"
-  }
-
-  constructor(poolType: PoolType = "openai-cpa") {
-    this.poolType = poolType
-  }
+  constructor() {}
 
   private readonly vault = new SecretVault()
 

@@ -4,10 +4,10 @@
 
 ## 能力
 
-- **多 Provider 号池**：OpenCode Go（浏览器扩展接入）、OpenAI CPA（at- token 直接验证）、OpenAI OAuth（refresh token 自动刷新）
+- **多 Provider 号池**：OpenCode Go（浏览器扩展接入）、OpenAI Codex（AT token / OAuth 统一号池，有 refresh token 则自动刷新）
 - **Sub2API JSON 导入**：粘贴 Sub2API 导出的账号 JSON 批量导入，自动识别 platform 和凭证类型
 - **per-pool-type 首选账号**：每种号池类型独立配置第一候选，调度时优先走该号池的偏好账号
-- **模型路由优先级**：按模型 pattern 配置号池优先级（如 gpt-5* 优先走 openai-cpa），支持通配符和批量配置
+- **模型路由优先级**：按模型 pattern 配置号池优先级（如 gpt-5* 优先走 openai），支持通配符和批量配置
 - **/models 聚合**：自动聚合所有活跃 provider 的可用模型列表
 - **统一域名镜像**：全局域名级镜像映射表，所有出站请求透明走镜像，调用侧无感知
 - **额度管理**：5h / weekly / monthly 窗口，从上游 API 响应头被动采集 + 主动查询
@@ -24,8 +24,7 @@
 | Pool Type | 接入方式 | 额度窗口 | 上游 |
 |-----------|---------|---------|------|
 | opencode-go | 浏览器扩展（auth cookie -> goApiKey） | 5h + weekly + monthly | opencode.ai/zen/go/v1 |
-| openai-cpa | Sub2API JSON 导入（at- token，无刷新） | 5h + weekly | chatgpt.com/backend-api/codex |
-| openai-oauth | Sub2API JSON 导入（OAuth + refresh token） | 5h + weekly | chatgpt.com/backend-api/codex |
+| openai | Sub2API JSON 导入（AT token 或 OAuth refresh token） | 5h + weekly | chatgpt.com/backend-api/codex |
 | kimi-code | Kimi Code 设备码 OAuth（模拟 kimi-code CLI） | 5h + weekly | api.kimi.com/coding/v1 |
 
 ### 调度逻辑
@@ -91,13 +90,13 @@ docker run --rm -p 3000:3000 -v opencode-data:/data opencode-api
 
 也可直接导入 refresh token（每行一个）。
 
-### OpenAI CPA / OAuth 账号（Sub2API JSON 导入）
+### OpenAI 账号（Sub2API JSON 导入）
 
 1. 在 Sub2API 管理后台导出账号 JSON
 2. 在本项目的「账号池」页面点击「导入 Sub2API JSON」
 3. 粘贴导出的完整 JSON
-4. 系统自动识别 platform=openai 的账号，根据 auth_mode 和 refresh_token 归类为 openai-cpa 或 openai-oauth
-5. 带有 refresh_token 的账号会自动刷新 access_token
+4. 系统自动识别 platform=openai 的账号，统一写入 openai 号池
+5. 带有 refresh_token 的账号会自动刷新 access_token；纯 AT token 则直接使用
 
 导入 JSON 格式示例：
 

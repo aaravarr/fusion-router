@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { ArrowDown, ArrowUp, CheckCircle2, GripVertical, Pencil, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Check, CheckCircle2, ChevronsUpDown, GripVertical, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAdmin } from "./admin-context";
-import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel, formatDate } from "./page-kit";
+import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel, PaginationBar, formatDate } from "./page-kit";
 import { AccountBadges, BillingSafetyBadge, getPoolLabel, PoolTypeBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import type { Account, ModelRouteRule, RoutingConfig } from "./types";
@@ -38,7 +38,7 @@ interface ProviderModelCatalog {
 }
 interface ProviderModelsPayload { catalogs?: ProviderModelCatalog[] }
 
-const POOL_OPTIONS = ["opencode-go", "openai-cpa", "openai-oauth", "xai-grok", "kimi-code"] as const;
+const POOL_OPTIONS = ["opencode-go", "openai", "xai-grok", "kimi-code"] as const;
 
 export function RoutingPage() {
   const routingResource = useAdminResource<RoutingPayload>("/api/admin/routing");
@@ -57,6 +57,38 @@ export function RoutingPage() {
   const poolPreferences = routing?.poolPreferences ?? accountsResource.data?.poolPreferences ?? {};
   const [updatingPool, setUpdatingPool] = useState<string | null>(null);
   const [poolMessage, setPoolMessage] = useState<string | null>(null);
+  const [candidatePage, setCandidatePage] = useState(1);
+  const [candidatePageSize, setCandidatePageSize] = useState(20);
+  const [candidateQuery, setCandidateQuery] = useState("");
+  const [candidatePool, setCandidatePool] = useState<string>("all");
+
+  const filteredCandidates = useMemo(() => {
+    const q = candidateQuery.trim().toLowerCase();
+    return accounts.filter((account) => {
+      if (candidatePool !== "all" && (account.poolType || "opencode-go") !== candidatePool) return false;
+      if (!q) return true;
+      const haystack = [
+        account.name,
+        account.email,
+        account.id,
+        account.workspaceId,
+        account.poolType,
+      ].map((v) => String(v || "").toLowerCase()).join(" ");
+      return haystack.includes(q);
+    });
+  }, [accounts, candidatePool, candidateQuery]);
+
+  const candidateTotal = filteredCandidates.length;
+  const candidateTotalPages = Math.max(1, Math.ceil(candidateTotal / Math.max(candidatePageSize, 1)));
+  const safeCandidatePage = Math.min(candidatePage, candidateTotalPages);
+  const pagedCandidates = useMemo(() => {
+    const start = (safeCandidatePage - 1) * candidatePageSize;
+    return filteredCandidates.slice(start, start + candidatePageSize);
+  }, [filteredCandidates, safeCandidatePage, candidatePageSize]);
+
+  useEffect(() => {
+    setCandidatePage(1);
+  }, [candidateQuery, candidatePool, candidatePageSize, accounts.length]);
 
   async function savePoolPreferred(poolType: string, value: string) {
     setUpdatingPool(poolType); setPoolMessage(null);
@@ -105,13 +137,12 @@ export function RoutingPage() {
                     {poolAccounts.length === 0 ? (
                       <span className="text-xs text-muted-foreground">暂无账号</span>
                     ) : (
-                      <Select value={current} onValueChange={(value) => void savePoolPreferred(poolType, value)} disabled={isUpdating}>
-                        <SelectTrigger className="flex-1 max-w-xs w-48"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">不指定</SelectItem>
-                          {poolAccounts.map((account) => <SelectItem key={account.id} value={account.id}>{account.name || account.email || account.id}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
+                      <PreferredAccountPicker
+                        accounts={poolAccounts}
+                        value={current}
+                        disabled={isUpdating}
+                        onChange={(value) => void savePoolPreferred(poolType, value)}
+                      />
                     )}
                   </div>
                 );
@@ -121,7 +152,64 @@ export function RoutingPage() {
             </div>
           </Panel>
           <Panel title="候选账号" description="显示缓存状态，不额外触发上游额度请求。">
-            {loading ? <LoadingTable rows={5} columns={3} /> : accounts.length ? <div className="divide-y">{accounts.map((account, index) => <div key={account.id} className="grid gap-3 px-4 py-3 sm:grid-cols-[32px_minmax(0,1fr)_auto] sm:items-center sm:px-5"><span className="font-mono text-xs text-muted-foreground">{String(index + 1).padStart(2, "0")}</span><div className="min-w-0"><p className="truncate text-sm font-medium">{account.name || account.email || account.id}</p><p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{account.workspaceId || account.id}</p></div><div className="flex flex-wrap gap-1.5"><PoolTypeBadge poolType={account.poolType} /><AccountBadges account={account} /><BillingSafetyBadge account={account} /></div></div>)}</div> : <EmptyState title="没有候选账号" description="先在账号池中添加并验证至少一个 Provider 账号。" />}
+            {loading ? <LoadingTable rows={5} columns={3} /> : accounts.length ? (
+              <>
+                <div className="flex flex-col gap-2 border-b px-4 py-3 sm:flex-row sm:items-center sm:px-5">
+                  <div className="relative min-w-0 flex-1">
+                    <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                    <Input
+                      value={candidateQuery}
+                      onChange={(event) => setCandidateQuery(event.target.value)}
+                      placeholder="搜索候选账号"
+                      className="h-8 rounded-md bg-white pl-8 text-xs"
+                    />
+                  </div>
+                  <select
+                    className="h-8 rounded-md border bg-white px-2 text-xs"
+                    value={candidatePool}
+                    onChange={(event) => setCandidatePool(event.target.value)}
+                  >
+                    <option value="all">全部号池</option>
+                    {poolTypes.map((poolType) => (
+                      <option key={poolType} value={poolType}>{getPoolLabel(poolType)}</option>
+                    ))}
+                  </select>
+                </div>
+                {pagedCandidates.length ? (
+                  <div className="divide-y">
+                    {pagedCandidates.map((account, index) => {
+                      const ordinal = (safeCandidatePage - 1) * candidatePageSize + index + 1;
+                      return (
+                        <div key={account.id} className="grid gap-3 px-4 py-3 sm:grid-cols-[32px_minmax(0,1fr)_auto] sm:items-center sm:px-5">
+                          <span className="font-mono text-xs text-muted-foreground">{String(ordinal).padStart(2, "0")}</span>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{account.name || account.email || account.id}</p>
+                            <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{account.workspaceId || account.id}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            <PoolTypeBadge poolType={account.poolType} />
+                            <AccountBadges account={account} />
+                            <BillingSafetyBadge account={account} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <EmptyState title="没有匹配的候选账号" description="调整搜索词或号池筛选后再试。" />
+                )}
+                <PaginationBar
+                  page={safeCandidatePage}
+                  pageSize={candidatePageSize}
+                  total={candidateTotal}
+                  onPageChange={setCandidatePage}
+                  onPageSizeChange={setCandidatePageSize}
+                  pageSizeOptions={[10, 20, 50, 100]}
+                />
+              </>
+            ) : (
+              <EmptyState title="没有候选账号" description="先在账号池中添加并验证至少一个 Provider 账号。" />
+            )}
           </Panel>
         </div> : null}
 
@@ -135,6 +223,134 @@ export function RoutingPage() {
         />
       </div>
     </>
+  );
+}
+
+
+function accountLabel(account: Account) {
+  return account.name || account.email || account.id;
+}
+
+function PreferredAccountPicker({
+  accounts,
+  value,
+  onChange,
+  disabled,
+}: {
+  accounts: Account[];
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selected = value !== "none" ? accounts.find((account) => account.id === value) : null;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return accounts;
+    return accounts.filter((account) => {
+      const haystack = [account.name, account.email, account.id, account.workspaceId]
+        .map((item) => String(item || "").toLowerCase())
+        .join(" ");
+      return haystack.includes(q);
+    });
+  }, [accounts, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative w-full max-w-xs flex-1">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex h-8 w-full items-center justify-between gap-2 rounded-lg border bg-white px-2.5 text-left text-xs outline-none transition-colors hover:bg-[#fafafa] disabled:cursor-not-allowed disabled:opacity-50"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="min-w-0 truncate text-foreground">
+          {selected ? accountLabel(selected) : "不指定"}
+        </span>
+        <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="absolute top-[calc(100%+4px)] right-0 z-40 w-[min(100vw-2rem,20rem)] overflow-hidden rounded-lg border bg-white shadow-md ring-1 ring-foreground/10">
+          <div className="border-b p-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+              <Input
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索账号名 / 邮箱 / ID"
+                className="h-8 rounded-md bg-[#fafafa] pl-7 text-xs"
+              />
+            </div>
+          </div>
+          <div className="max-h-64 overflow-y-auto p-1" role="listbox">
+            <button
+              type="button"
+              role="option"
+              aria-selected={value === "none"}
+              className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs hover:bg-accent"
+              onClick={() => {
+                onChange("none");
+                setOpen(false);
+              }}
+            >
+              <span>不指定</span>
+              {value === "none" ? <Check className="size-3.5 text-foreground" aria-hidden="true" /> : null}
+            </button>
+            {filtered.length ? filtered.map((account) => {
+              const active = value === account.id;
+              return (
+                <button
+                  key={account.id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  className="flex w-full items-start justify-between gap-2 rounded-md px-2.5 py-2 text-left hover:bg-accent"
+                  onClick={() => {
+                    onChange(account.id);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium">{accountLabel(account)}</span>
+                    <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+                      {account.email || account.workspaceId || account.id}
+                    </span>
+                  </span>
+                  {active ? <Check className="mt-0.5 size-3.5 shrink-0 text-foreground" aria-hidden="true" /> : null}
+                </button>
+              );
+            }) : (
+              <p className="px-2.5 py-3 text-xs text-muted-foreground">没有匹配账号</p>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

@@ -65,8 +65,7 @@ interface AccountsPayload {
 const POOL_FILTERS = [
   { key: "all", label: "全部" },
   { key: "opencode-go", label: "OpenCode Go" },
-  { key: "openai-cpa", label: "OpenAI CPA" },
-  { key: "openai-oauth", label: "OpenAI OAuth" },
+  { key: "openai", label: "OpenAI" },
   { key: "xai-grok", label: "xAI Grok" },
   { key: "kimi-code", label: "Kimi Code" },
 ] as const;
@@ -275,7 +274,7 @@ export function AccountsPage() {
             ) : null}
             {poolFilter === "opencode-go" ? (
               <Button size="sm" onClick={() => setConnectorOpen(true)}><Puzzle data-icon="inline-start" />连接 Go 账号</Button>
-            ) : poolFilter === "openai-cpa" || poolFilter === "openai-oauth" ? (
+            ) : poolFilter === "openai" ? (
               <Button size="sm" onClick={() => setImportOpen(true)}><Upload data-icon="inline-start" />导入 Sub2API JSON</Button>
             ) : poolFilter === "xai-grok" ? (
               <DropdownMenu>
@@ -378,7 +377,7 @@ export function AccountsPage() {
               <Button size="sm" onClick={() => setXaiImportFormat("cpa-json")}><Upload />导入 xAI 账号</Button>
             ) : poolFilter === "kimi-code" ? (
               <Button size="sm" onClick={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</Button>
-            ) : poolFilter === "openai-cpa" || poolFilter === "openai-oauth" ? (
+            ) : poolFilter === "openai" ? (
               <Button size="sm" onClick={() => setImportOpen(true)}><Upload />导入 Sub2API JSON</Button>
             ) : <span className="text-xs text-muted-foreground">请先在上方选择一个号池。</span>}
           />
@@ -473,7 +472,7 @@ export function AccountsPage() {
       </Panel>
 
       <ConnectorSheet open={connectorOpen} onOpenChange={setConnectorOpen} downloadInfo={downloadInfo} />
-     <Sub2ApiImportDialog open={importOpen} poolType={poolFilter === "all" ? "openai-cpa" : poolFilter} onOpenChange={setImportOpen} onCreated={() => setJobVersion((value) => value + 1)} />
+     <Sub2ApiImportDialog open={importOpen} poolType={poolFilter === "all" ? "openai" : poolFilter} onOpenChange={setImportOpen} onCreated={() => setJobVersion((value) => value + 1)} />
       <KimiOauthLoginDialog open={kimiOauthOpen} onOpenChange={setKimiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <XaiSsoImportDialog format={xaiImportFormat} open={Boolean(xaiImportFormat)} onOpenChange={(open) => { if (!open) setXaiImportFormat(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
@@ -724,7 +723,7 @@ function Sub2ApiImportDialog({ open, poolType, onOpenChange, onCreated }: { open
       <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-lg">
         <DialogHeader className="border-b px-5 py-4">
         <DialogTitle>导入 Sub2API JSON</DialogTitle>
-        <DialogDescription>粘贴 Sub2API 导出的 JSON，自动识别 platform=openai（CPA/OAuth）和 platform=grok（xAI）的账号并导入。</DialogDescription>
+        <DialogDescription>粘贴 Sub2API 导出的 JSON，自动识别 platform=openai 与 platform=grok（xAI）的账号并导入。</DialogDescription>
       </DialogHeader>
         <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">
           {/* 拖拽 / 选择 / 粘贴文件区域 */}
@@ -780,7 +779,7 @@ function Sub2ApiImportDialog({ open, poolType, onOpenChange, onCreated }: { open
             spellCheck={false}
           />
           <p className="text-[11px] leading-4 text-muted-foreground">
-            也可以直接粘贴 Sub2API 导出的完整 JSON。系统会自动识别 platform=openai（CPA/OAuth）和 platform=grok（xAI）的账号并批量导入，其余账号将被跳过。支持一次导入多个账号。
+            也可以直接粘贴 Sub2API 导出的完整 JSON。系统会自动识别 platform=openai（AT token / OAuth）和 platform=grok（xAI）的账号并批量导入，其余账号将被跳过。支持一次导入多个账号。
           </p>
           {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
           {liveJob ? <ImportJobProgress job={liveJob} /> : null}

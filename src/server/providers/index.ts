@@ -13,8 +13,7 @@ export function ensureProvidersRegistered(): void {
   globalInit.__opencodeApiProvidersInitialized = true
   const registry = getProviderRegistry()
   registry.register(new OpenCodeGoProvider())
-  registry.register(new OpenAICPAProvider("openai-cpa"))
-  registry.register(new OpenAICPAProvider("openai-oauth"))
+  registry.register(new OpenAICPAProvider())
   registry.register(new XAIGrokProvider())
   registry.register(new KimiCodeProvider())
 }

@@ -327,12 +327,12 @@ export class AccountRepository {
   }
 
   createCpaAccount(input: { name: string; email?: string | null }): AccountRecord {
-    return this.createProviderAccount({ name: input.name, email: input.email, poolType: "openai-cpa" })
+    return this.createProviderAccount({ name: input.name, email: input.email, poolType: "openai" })
   }
 
   /**
    * Generic provider-backed account creation for pool types that don't use
-   * the browser extension (openai-cpa, openai-oauth, xai-grok, ...). Stores
+   * the browser extension (openai, xai-grok, ...). Stores
    * placeholder auth/cookie ciphertext; the provider layer populates
    * `provider_credentials` separately. Defaults match createCpaAccount.
    */

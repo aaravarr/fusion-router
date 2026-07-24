@@ -96,8 +96,8 @@ function poolForSub2Account(account: JsonRecord): PoolType | null {
   if (platform === "kimi" || platform === "kimi-code" || platform === "moonshot") return credentials.refresh_token || credentials.access_token ? "kimi-code" : null
   if (platform !== "openai") return null
   const authMode = firstString(credentials, "auth_mode").toLowerCase()
-  if (credentials.refresh_token && type === "oauth" && authMode !== "personalaccesstoken" && authMode !== "personal_access_token") return "openai-oauth"
-  return credentials.access_token || credentials.api_key ? "openai-cpa" : null
+  // AT token / OAuth / api key all land in the unified openai pool.
+  return credentials.access_token || credentials.api_key || credentials.refresh_token ? "openai" : null
 }
 
 function seedFromCredential(record: JsonRecord, poolType: PoolType, fallbackLabel: string): ImportSeed {
