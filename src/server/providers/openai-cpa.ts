@@ -19,15 +19,13 @@ import type { PoolType } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
 import { apiFetch } from "../api-fetch"
+import { OPENAI_OAUTH_CLIENT_ID, OPENAI_OAUTH_TOKEN_URL } from "../openai-oauth"
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
 const CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 const OPENAI_PAT_WHOAMI_URL = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
 const CODEX_UPSTREAM_BASE_URL = "https://chatgpt.com/backend-api/codex"
-const OPENAI_AUTH_BASE_URL = "https://auth.openai.com"
-const OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
-const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const CODEX_USER_AGENT = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
 
 // Windows with limit_window_seconds <= 21600 (6h) are classified as 5h;
@@ -51,19 +49,19 @@ const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
 
 export async function exchangeOpenAIRefreshToken(
   refreshToken: string,
-  clientId = OPENAI_CLIENT_ID,
+  clientId = OPENAI_OAUTH_CLIENT_ID,
 ): Promise<{
   accessToken: string
   refreshToken: string
   expiresAt: string
 }> {
-  const resp = await apiFetch(OPENAI_TOKEN_URL, {
+  const resp = await apiFetch(OPENAI_OAUTH_TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-      client_id: clientId || OPENAI_CLIENT_ID,
+      client_id: clientId || OPENAI_OAUTH_CLIENT_ID,
     }).toString(),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
@@ -211,13 +209,13 @@ export class OpenAICPAProvider implements Provider {
 
     // Refresh the token
     try {
-      const resp = await apiFetch(OPENAI_TOKEN_URL, {
+      const resp = await apiFetch(OPENAI_OAUTH_TOKEN_URL, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "refresh_token",
           refresh_token: data.refreshToken,
-          client_id: data.clientId || OPENAI_CLIENT_ID,
+          client_id: data.clientId || OPENAI_OAUTH_CLIENT_ID,
         }).toString(),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })

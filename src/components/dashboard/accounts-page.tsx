@@ -114,6 +114,7 @@ export function AccountsPage() {
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [tokenImport, setTokenImport] = useState<TokenImportSpec | null>(null);
+  const [openaiOauthOpen, setOpenaiOauthOpen] = useState(false);
   const [kimiOauthOpen, setKimiOauthOpen] = useState(false);
   const [kimiRefreshOpen, setKimiRefreshOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
@@ -290,6 +291,8 @@ export function AccountsPage() {
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button size="sm"><Upload data-icon="inline-start" />导入 OpenAI 账号</Button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-auto min-w-44">
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setOpenaiOauthOpen(true)}><KeyRound />OpenAI OAuth 登录</DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setImportOpen(true)}><FileUp />Sub2API JSON</DropdownMenuItem>
                   <DropdownMenuItem
                     className="whitespace-nowrap"
@@ -439,7 +442,7 @@ export function AccountsPage() {
             ) : poolFilter === "kimi-code" ? (
               <Button size="sm" onClick={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</Button>
             ) : poolFilter === "openai" ? (
-              <Button size="sm" onClick={() => setImportOpen(true)}><Upload />导入 OpenAI 账号</Button>
+              <Button size="sm" onClick={() => setOpenaiOauthOpen(true)}><KeyRound />OpenAI OAuth 登录</Button>
             ) : <span className="text-xs text-muted-foreground">请先在上方选择一个号池。</span>}
           />
         ) : null}
@@ -534,6 +537,7 @@ export function AccountsPage() {
 
       <ConnectorSheet open={connectorOpen} onOpenChange={setConnectorOpen} downloadInfo={downloadInfo} />
      <Sub2ApiImportDialog open={importOpen} poolType={poolFilter === "all" ? "openai" : poolFilter} onOpenChange={setImportOpen} onCreated={() => setJobVersion((value) => value + 1)} />
+      <OpenAIOauthLoginDialog open={openaiOauthOpen} onOpenChange={setOpenaiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiOauthLoginDialog open={kimiOauthOpen} onOpenChange={setKimiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <TokenLineImportDialog spec={tokenImport} open={Boolean(tokenImport)} onOpenChange={(open) => { if (!open) setTokenImport(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
@@ -934,12 +938,130 @@ function TokenLineImportDialog({
   );
 }
 
+function OpenAIOauthLoginDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const { adminFetch } = useAdmin();
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [callbackUrl, setCallbackUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  function reset() {
+    setSessionId(null);
+    setAuthorizationUrl(null);
+    setCallbackUrl("");
+    setLoading(false);
+    setError(null);
+    setSuccess(false);
+  }
+
+  function close(next: boolean) {
+    if (!next) {
+      if (sessionId && !success) {
+        void adminFetch("/api/admin/accounts/openai-oauth/cancel", {
+          method: "POST",
+          body: JSON.stringify({ sessionId }),
+        }).catch(() => undefined);
+      }
+      reset();
+    }
+    onOpenChange(next);
+  }
+
+  async function startAuthorization() {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await adminFetch("/api/admin/accounts/openai-oauth/start", { method: "POST" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message || "生成 OpenAI 授权链接失败");
+      setSessionId(payload.sessionId);
+      setAuthorizationUrl(payload.authorizationUrl);
+      window.open(payload.authorizationUrl, "_blank", "noopener,noreferrer");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "生成 OpenAI 授权链接失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function completeAuthorization() {
+    if (!sessionId || !callbackUrl.trim()) {
+      setError("请先打开授权页，并粘贴授权后的完整回调 URL");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await adminFetch("/api/admin/accounts/openai-oauth/complete", {
+        method: "POST",
+        body: JSON.stringify({ sessionId, callbackUrl: callbackUrl.trim() }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message || "OpenAI OAuth 登录失败");
+      setSuccess(true);
+      onCreated();
+      window.setTimeout(() => close(false), 900);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "OpenAI OAuth 登录失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <DialogHeader className="border-b px-5 py-4">
+          <DialogTitle>OpenAI OAuth 登录</DialogTitle>
+          <DialogDescription>使用 Codex CLI 官方 OAuth + PKCE 授权，成功后自动写入 OpenAI 号池。</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">
+          <div className="rounded-md border bg-[#fafafa] p-3 text-xs leading-5 text-muted-foreground">
+            <p><span className="font-medium text-foreground">1.</span> 打开授权页并完成 OpenAI 登录。</p>
+            <p><span className="font-medium text-foreground">2.</span> 浏览器跳转到 localhost 后可能显示无法访问，这是正常现象。</p>
+            <p><span className="font-medium text-foreground">3.</span> 复制地址栏中的完整 URL，粘贴到下方完成授权。</p>
+          </div>
+          {!authorizationUrl ? (
+            <Button onClick={() => void startAuthorization()} disabled={loading}>
+              <KeyRound data-icon="inline-start" />{loading ? "正在生成" : "生成并打开授权链接"}
+            </Button>
+          ) : (
+            <div className="space-y-3">
+              <Button variant="outline" asChild>
+                <a href={authorizationUrl} target="_blank" rel="noopener noreferrer"><KeyRound data-icon="inline-start" />重新打开授权页</a>
+              </Button>
+              <div className="space-y-1.5">
+                <label htmlFor="openai-oauth-callback" className="text-xs font-medium">完整回调 URL</label>
+                <Textarea
+                  id="openai-oauth-callback"
+                  value={callbackUrl}
+                  onChange={(event) => setCallbackUrl(event.target.value)}
+                  placeholder="http://localhost:1455/auth/callback?code=...&state=..."
+                  className="min-h-28 resize-y font-mono text-xs"
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+          )}
+          {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
+          {success ? <div className="rounded-md border border-success/20 bg-success-soft px-3.5 py-2.5 text-xs text-success">授权成功，账号已写入 OpenAI 号池。</div> : null}
+        </div>
+        <DialogFooter className="mb-0 border-t bg-[#fafafa] px-5 py-4">
+          <Button variant="outline" onClick={() => close(false)}>取消</Button>
+          {authorizationUrl ? <Button onClick={() => void completeAuthorization()} disabled={loading || success || !callbackUrl.trim()}>{loading ? "正在兑换凭据" : "完成授权"}</Button> : null}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 
 function KimiOauthLoginDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
   const { adminFetch } = useAdmin();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [userCode, setUserCode] = useState<string | null>(null);
   const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "waiting" | "success">("idle");
@@ -949,13 +1071,14 @@ function KimiOauthLoginDialog({ open, onOpenChange, onCreated }: { open: boolean
     if (!open) {
       if (pollRef.current) window.clearTimeout(pollRef.current);
       pollRef.current = null;
-      setLoading(false);
-      setError(null);
-      setSessionId(null);
-      setUserCode(null);
-      setVerifyUrl(null);
-      setStatus("idle");
-      return;
+      const resetTimer = window.setTimeout(() => {
+        setLoading(false);
+        setError(null);
+        setUserCode(null);
+        setVerifyUrl(null);
+        setStatus("idle");
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
     }
     let cancelled = false;
     async function start() {
@@ -967,7 +1090,6 @@ function KimiOauthLoginDialog({ open, onOpenChange, onCreated }: { open: boolean
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.error?.message || "启动 Kimi OAuth 失败");
         if (cancelled) return;
-        setSessionId(payload.sessionId);
         setUserCode(payload.userCode);
         setVerifyUrl(payload.verificationUriComplete || payload.verificationUri);
         setStatus("waiting");

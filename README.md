@@ -24,7 +24,7 @@
 | Pool Type | 接入方式 | 额度窗口 | 上游 |
 |-----------|---------|---------|------|
 | opencode-go | 浏览器扩展（auth cookie -> goApiKey） | 5h + weekly + monthly | opencode.ai/zen/go/v1 |
-| openai | Sub2API JSON 导入（AT token 或 OAuth refresh token） | 5h + weekly | chatgpt.com/backend-api/codex |
+| openai | Codex CLI OAuth、Sub2API JSON、AT / refresh token | 5h + weekly | chatgpt.com/backend-api/codex |
 | kimi-code | Kimi Code 设备码 OAuth（模拟 kimi-code CLI） | 5h + weekly | api.kimi.com/coding/v1 |
 
 ### 调度逻辑
@@ -90,7 +90,17 @@ docker run --rm -p 3000:3000 -v opencode-data:/data opencode-api
 
 也可直接导入 refresh token（每行一个）。
 
-### OpenAI 账号（Sub2API JSON 导入）
+### OpenAI 账号
+
+OAuth 登录：
+
+1. 在「账号池」切换到 **OpenAI**
+2. 点击「导入 OpenAI 账号」→「OpenAI OAuth 登录」
+3. 打开授权页并完成 OpenAI 登录
+4. 跳转到 localhost 后，复制浏览器地址栏中的完整回调 URL 并粘贴回系统
+5. 系统通过 PKCE 兑换并加密保存 access/refresh token，后续自动刷新
+
+也可以从 Sub2API JSON 导入：
 
 1. 在 Sub2API 管理后台导出账号 JSON
 2. 在本项目的「账号池」页面点击「导入 Sub2API JSON」
