@@ -53,16 +53,16 @@ function routeBadgeClass(label: string): string {
 function explainRouteReason(reason?: string | null): string {
   const r = String(reason || "").trim()
   if (!r) return "—"
-  if (r === "prefer_responses_server_tools") return "为保留服务端搜索工具，强制走 Responses"
-  if (r === "responses_native") return "正常走 Responses"
-  if (r === "responses_compact") return "compact 请求，固定走 Responses"
-  if (r === "session_lineage_responses") return "会话此前走 Responses，继续沿用"
-  if (r === "session_lineage_chat") return "会话此前走 Chat，继续回退 Chat"
-  if (r.startsWith("foreign_previous_response_id")) return "本地没有对应会话历史，回退 Chat"
-  if (r.startsWith("foreign_opaque") || r.startsWith("foreign_history")) return "历史状态无法安全复用，回退 Chat"
+  if (r === "prefer_responses_server_tools") return "为了 server tools，强制留 responses"
+  if (r === "responses_native") return "正常走 responses，无特殊强制"
+  if (r === "responses_compact") return "compact 请求，固定走 responses"
+  if (r === "session_lineage_responses") return "会话历史偏 responses，继续 responses"
+  if (r === "session_lineage_chat") return "会话历史偏 chat，转 chat"
+  if (r.startsWith("foreign_previous_response_id")) return "陌生 previous id，可能转 chat"
+  if (r.startsWith("foreign_opaque") || r.startsWith("foreign_history")) return "陌生历史状态，可能转 chat"
   if (r === "raw_passthrough") return "原生透传"
   if (r === "direct") return "直接转发"
-  if (r === "chat_fallback") return "Responses 回退到 Chat"
+  if (r === "chat_fallback") return "responses 回退到 chat"
   return r
 }
 
@@ -293,7 +293,6 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
                 <ErrorState message={error} />
               ) : detail ? (
                 <div className="space-y-6">
-                  <RouteTransformPanel request={detail.request} />
                   <BasicInfo request={detail.request} poolType={poolType} />
                   <TokenBreakdown request={detail.request} />
                   <FailoverTimeline attempts={detail.attempts} />
@@ -318,39 +317,14 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
   );
 }
 
-function RouteTransformPanel({ request }: { request: RequestDetail["request"] }) {
-  const route = formatRouteLabel(request)
-  const injected = hasInjectedServerTools(request)
-  return (
-    <div className="rounded-md border bg-[#fafafa] p-3">
-      <h3 className="mb-3 text-sm font-medium">路由与转换</h3>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className={`inline-flex items-center rounded-md border px-2 py-1 font-mono text-xs font-medium ${routeBadgeClass(route)}`}>
-          {route}
-        </span>
-        <span className={`inline-flex items-center rounded-md border px-2 py-1 text-xs ${request.converted ? "border-amber-200 bg-amber-50 text-amber-800" : "border-border bg-white text-muted-foreground"}`}>
-          {request.converted ? "已转换" : "未转换"}
-        </span>
-        <span className={`inline-flex items-center rounded-md border px-2 py-1 text-xs ${injected ? "border-violet-200 bg-violet-50 text-violet-800" : "border-border bg-white text-muted-foreground"}`}>
-          {injected ? "已注入 web_search + x_search" : "未注入内置工具"}
-        </span>
-        <span className="inline-flex items-center rounded-md border border-border bg-white px-2 py-1 font-mono text-xs text-muted-foreground">
-          {request.model || "—"}
-        </span>
-      </div>
-      <p className="mt-2 text-sm text-foreground">原因：{explainRouteReason(request.routeReason)}</p>
-    </div>
-  )
-}
-
 function BasicInfo({ request, poolType }: { request: RequestDetail["request"]; poolType?: string }) {
   const rows: Array<[string, string]> = [
     ["密钥", request.apiKeyName || request.apiKeyPrefix || "—"],
     ["__account__", request.accountName || "—"],
     ["模型", request.model || "—"],
-    ["转换路径", formatRouteLabel(request)],
-    ["是否转换", request.converted ? "是" : "否"],
-    ["注入工具", hasInjectedServerTools(request) ? "是（web_search + x_search）" : "否"],
+    ["路径", formatRouteLabel(request)],
+    ["是否转换", request.converted ? "已转换" : "未转换"],
+    ["注入工具", hasInjectedServerTools(request) ? "已注入 web_search + x_search" : "未注入内置工具"],
     ["原因", explainRouteReason(request.routeReason)],
     ["Stream", request.stream ? "是" : "否"],
     ["HTTP 状态", request.status != null ? String(request.status) : "—"],

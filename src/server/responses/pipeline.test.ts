@@ -157,6 +157,15 @@ describe("shouldEagerFallbackResponses", () => {
     expect(r.eager).toBe(false)
     expect(r.reason).toBe("prefer_responses_server_tools")
   })
+
+  it("server tools preference does not override when already staying on responses", () => {
+    const r = shouldEagerFallbackResponses(
+      { model: "grok-4.5", input: "Use x_search", tools: [{ type: "x_search" }] },
+      { preferResponsesForServerTools: true },
+    )
+    expect(r.eager).toBe(false)
+    expect(r.reason).toBeUndefined()
+  })
 })
 
 describe("continuity keys", () => {

@@ -53,13 +53,23 @@ export function shouldEagerFallbackResponses(
 ): { eager: boolean; reason?: string } {
   if (!isObj(body)) return { eager: false };
 
-  // Server-side tools (web_search/x_search) only work on the Responses API.
-  // Prefer native responses even if lineage/history would normally eager to chat;
-  // continuity is handled by sanitize/rewrite instead of chat conversion.
-  if (opts?.preferResponsesForServerTools) {
+  // Compute the normal lineage/history decision first.
+  // Server-side tools only work on Responses; only then may we override an eager chat fallback.
+  // Do not stamp prefer_responses_server_tools when the request would already stay on responses.
+  const normal = decideEagerFallbackResponses(body, opts);
+  if (opts?.preferResponsesForServerTools && normal.eager) {
     return { eager: false, reason: 'prefer_responses_server_tools' };
   }
+  return normal;
+}
 
+function decideEagerFallbackResponses(
+  body: Obj,
+  opts?: {
+    preferredMode?: 'responses' | 'chat' | null;
+    storeHit?: boolean;
+  },
+): { eager: boolean; reason?: string } {
   // Responses lineage always stays on native responses.
   if (opts?.preferredMode === 'responses') {
     return { eager: false, reason: 'session_lineage_responses' };
