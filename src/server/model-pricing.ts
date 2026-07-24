@@ -45,6 +45,16 @@ export interface UsageCostResult {
   costUsd: number | null
   matchedModelId: string | null
   pricing: ModelPrice | null
+  breakdown: UsageCostBreakdown | null
+}
+
+export interface UsageCostBreakdown {
+  uncachedPromptTokens: number
+  cachedTokens: number
+  completionTokens: number
+  promptRate: number
+  cacheRate: number
+  completionRate: number
 }
 
 type PriceIndex = {
@@ -254,15 +264,23 @@ export function findModelPrice(model: string | null | undefined, db: AppDatabase
 
 export function estimateUsageCost(input: UsageCostInput, db: AppDatabase = getDatabase()): UsageCostResult {
   const pricing = findModelPrice(input.model, db)
-  if (!pricing) return { costUsd: null, matchedModelId: null, pricing: null }
+  if (!pricing) return { costUsd: null, matchedModelId: null, pricing: null, breakdown: null }
   const promptTokens = Math.max(0, Number(input.promptTokens ?? 0) || 0)
   const completionTokens = Math.max(0, Number(input.completionTokens ?? 0) || 0)
   const cachedTokens = Math.max(0, Math.min(promptTokens, Number(input.cachedTokens ?? 0) || 0))
   const uncachedPrompt = Math.max(0, promptTokens - cachedTokens)
   const cacheRate = pricing.cacheRead != null && pricing.cacheRead >= 0 ? pricing.cacheRead : pricing.prompt
+  const breakdown = {
+    uncachedPromptTokens: uncachedPrompt,
+    cachedTokens,
+    completionTokens,
+    promptRate: pricing.prompt,
+    cacheRate,
+    completionRate: pricing.completion,
+  }
   const costUsd = uncachedPrompt * pricing.prompt + cachedTokens * cacheRate + completionTokens * pricing.completion
-  if (!Number.isFinite(costUsd)) return { costUsd: null, matchedModelId: pricing.id, pricing }
-  return { costUsd, matchedModelId: pricing.id, pricing }
+  if (!Number.isFinite(costUsd)) return { costUsd: null, matchedModelId: pricing.id, pricing, breakdown: null }
+  return { costUsd, matchedModelId: pricing.id, pricing, breakdown }
 }
 
 export function formatUsd(value: number | null | undefined): string {

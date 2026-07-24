@@ -43,6 +43,14 @@ describe("model-pricing", () => {
     }, db)
     // uncached 800 * 0.000003 + cached 200 * 0.0000003 + 500 * 0.000015
     expect(cost.costUsd).toBeCloseTo(800 * 0.000003 + 200 * 0.0000003 + 500 * 0.000015, 10)
+    expect(cost.breakdown).toEqual({
+      uncachedPromptTokens: 800,
+      cachedTokens: 200,
+      completionTokens: 500,
+      promptRate: 0.000003,
+      cacheRate: 0.0000003,
+      completionRate: 0.000015,
+    })
     expect(formatUsd(cost.costUsd)).toMatch(/^\$/)
   })
 
@@ -52,6 +60,8 @@ describe("model-pricing", () => {
       Response.json({ data: [{ id: "openai/gpt-4o", name: "GPT-4o", pricing: { prompt: "0.00001", completion: "0.00003" } }] }),
     ))
     await refreshModelPricing(db)
-    expect(estimateUsageCost({ model: "totally-unknown-model-xyz", promptTokens: 10, completionTokens: 10 }, db).costUsd).toBeNull()
+    const cost = estimateUsageCost({ model: "totally-unknown-model-xyz", promptTokens: 10, completionTokens: 10 }, db)
+    expect(cost.costUsd).toBeNull()
+    expect(cost.breakdown).toBeNull()
   })
 })

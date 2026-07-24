@@ -139,6 +139,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       costUsd: cost.costUsd,
       costLabel: formatUsd(cost.costUsd),
       pricingModelId: cost.matchedModelId,
+      costBreakdown: cost.breakdown,
       request: parseJson(body?.request_body_json ?? null),
       requestTruncated: body?.request_truncated === 1,
       response: parseJson(body?.response_body_json ?? null),

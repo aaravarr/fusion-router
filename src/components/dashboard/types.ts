@@ -134,6 +134,14 @@ export interface RequestRecord {
   costUsd?: number | null;
   costLabel?: string | null;
   pricingModelId?: string | null;
+  costBreakdown?: {
+    uncachedPromptTokens: number;
+    cachedTokens: number;
+    completionTokens: number;
+    promptRate: number;
+    cacheRate: number;
+    completionRate: number;
+  } | null;
 }
 
 export interface AttemptDetail {

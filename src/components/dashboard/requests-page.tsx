@@ -49,6 +49,21 @@ function routeBadgeClass(label: string): string {
   return "border-border bg-white text-muted-foreground"
 }
 
+function formatCostCalculation(request: RequestRecord): string | null {
+  const breakdown = request.costBreakdown
+  if (!breakdown) return null
+  const formatTokens = (value: number) => new Intl.NumberFormat("zh-CN").format(value)
+  const formatRate = (value: number) => `$${(value * 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 6 })}/百万 Token`
+  const terms = [
+    `非缓存输入 ${formatTokens(breakdown.uncachedPromptTokens)} × ${formatRate(breakdown.promptRate)}`,
+  ]
+  if (breakdown.cachedTokens > 0) {
+    terms.push(`缓存输入 ${formatTokens(breakdown.cachedTokens)} × ${formatRate(breakdown.cacheRate)}`)
+  }
+  terms.push(`输出 ${formatTokens(breakdown.completionTokens)} × ${formatRate(breakdown.completionRate)}`)
+  return terms.join(" + ")
+}
+
 /** 只翻译 routeReason 技术码，不替代转换过程展示。 */
 function explainRouteReason(reason?: string | null): string {
   const r = String(reason || "").trim()
@@ -277,6 +292,8 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
     return () => window.clearTimeout(timer);
   }, [request?.id, fetchDetail]);
 
+  const costCalculation = detail ? formatCostCalculation(detail.request) : null;
+
   return (
     <Dialog open={Boolean(request)} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-2xl">
@@ -299,7 +316,12 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
                   <TokenBreakdown request={detail.request} />
                   <div className="rounded-md border bg-[#fafafa] p-3">
                     <h3 className="mb-2 text-sm font-medium">估算费用</h3>
-                    <p className="font-mono text-lg font-semibold tracking-[-0.03em]">{detail.request.costLabel || "—"}</p>
+                    <p className="flex flex-wrap items-baseline gap-x-2 font-mono">
+                      <span className="text-lg font-semibold tracking-[-0.03em]">{detail.request.costLabel || "—"}</span>
+                      {costCalculation ? (
+                        <span className="text-xs font-normal text-muted-foreground">（{costCalculation}）</span>
+                      ) : null}
+                    </p>
                     <p className="mt-1 text-[11px] text-muted-foreground">
                       {detail.request.pricingModelId
                         ? `按 OpenRouter 价格匹配：${detail.request.pricingModelId}`
