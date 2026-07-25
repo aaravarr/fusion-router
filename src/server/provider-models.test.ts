@@ -20,13 +20,13 @@ describe("provider model cache", () => {
     expect(catalog.source).toBe("DEFAULT")
     expect(catalog.models).toEqual(expect.arrayContaining(["grok-4.5"]))
 
-    writeProviderModelCache("xai-grok", ["grok-4.5", "grok-new"], { source: "REMOTE", accountId: "acc-1" }, db)
+    writeProviderModelCache("xai-grok", ["grok-new"], { source: "REMOTE", accountId: "acc-1" }, db)
     const refreshed = getProviderModelCatalog("xai-grok", db)
-    expect(refreshed.models).toEqual(expect.arrayContaining(["grok-4.5", "grok-new"]))
-    expect(refreshed.remoteModels).toEqual(expect.arrayContaining(["grok-new"]))
+    expect(refreshed.models).toEqual(["grok-new"])
+    expect(refreshed.remoteModels).toEqual(["grok-new"])
   })
 
-  it("同步时合并远程 /models 与默认列表", async () => {
+  it("同步成功时以远程 /models 为准，不混入默认列表", async () => {
     const db = createDatabase(":memory:")
     const timestamp = new Date().toISOString()
     db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES (?,?,?,?,?,'ACTIVE',?,?,?)")
@@ -36,12 +36,12 @@ describe("provider model cache", () => {
 
     const { tryGetProvider } = await import("./providers")
     const provider = tryGetProvider("xai-grok")!
-    const spy = vi.spyOn(provider, "fetchRemoteModels").mockResolvedValue(["grok-remote-a", "grok-4.5"])
+    const spy = vi.spyOn(provider, "fetchRemoteModels").mockResolvedValue(["grok-remote-a"])
 
     const catalog = await syncProviderModels({ poolType: "xai-grok", ownerUserId, accountId: account.id, db })
     expect(spy).toHaveBeenCalled()
-    expect(catalog.models).toEqual(expect.arrayContaining(["grok-4.5", "grok-remote-a"]))
-    expect(catalog.source === "REMOTE" || catalog.source === "MERGED").toBe(true)
+    expect(catalog.models).toEqual(["grok-remote-a"])
+    expect(catalog.source).toBe("REMOTE")
     expect(listProviderModelCatalogs(db).some((item) => item.poolType === "xai-grok")).toBe(true)
   })
 })

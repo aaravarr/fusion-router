@@ -36,11 +36,12 @@ function isAccountReady(account: ReturnType<AccountRepository["list"]>[number]):
     && account.useBalance === false
 }
 
-function providerSupportsModel(poolType: PoolType, model: string | null): boolean {
+function providerSupportsModel(poolType: PoolType, model: string | null, endpoint?: string): boolean {
   // No model on the request (e.g. non-inference endpoints) → every pool is fine.
   if (!model) return true
   const provider = tryGetProvider(poolType)
   if (!provider) return true
+  if (endpoint && typeof provider.supportsEndpoint === "function") return provider.supportsEndpoint(model, endpoint)
   if (typeof provider.supportsModel === "function") return provider.supportsModel(model)
   // Prefer cached catalog when present; getAvailableModels already falls back to defaults.
   // Empty catalog means "unknown / no models", not "supports everything".
@@ -99,7 +100,7 @@ export class RoutingService {
     return this.getState()
   }
 
-  select(requestId: string, _endpoint: string, triedAccountIds: Set<string>, now = new Date()): RouteSelection {
+  select(requestId: string, endpoint: string, triedAccountIds: Set<string>, now = new Date()): RouteSelection {
     return this.db.transaction(() => {
       const timestamp = now.toISOString()
       this.db.prepare("DELETE FROM route_leases WHERE owner_user_id = ? AND (completed_at IS NOT NULL OR expires_at <= ?)").run(this.ownerUserId, timestamp)
@@ -153,7 +154,7 @@ export class RoutingService {
       const otherwiseEligible = all.filter(isAccountReady)
       // Prefer accounts whose provider can actually serve the requested model.
       // e.g. glm-* must not land on xAI just because the previous seat was xAI.
-      const modelCapable = otherwiseEligible.filter((account) => providerSupportsModel(account.poolType, this.currentModel))
+      const modelCapable = otherwiseEligible.filter((account) => providerSupportsModel(account.poolType, this.currentModel, endpoint))
       // When a model is present and no provider claims it, fail closed instead of
       // shipping the request to an incompatible upstream that will 404.
       if (this.currentModel && modelCapable.length === 0 && otherwiseEligible.length > 0) {
@@ -198,7 +199,7 @@ export class RoutingService {
         : this.currentModel ? this.modelRouting.resolveModelPriority(this.currentModel) : null
       const poolTypePriority = rawPriority
         ? (() => {
-          const filtered = rawPriority.filter((pt) => providerSupportsModel(pt as PoolType, this.currentModel))
+          const filtered = rawPriority.filter((pt) => providerSupportsModel(pt as PoolType, this.currentModel, endpoint))
           return filtered.length > 0 ? filtered : null
         })()
         : null

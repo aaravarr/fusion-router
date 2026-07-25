@@ -76,6 +76,8 @@ export interface Provider {
   resolveModel(account: AccountRecord, requestedModel: string): string
   /** Whether this provider can serve the requested model. Defaults to catalog membership when omitted. */
   supportsModel?(model: string, accounts?: AccountRecord[]): boolean
+  /** Optional endpoint-level capability check for catalogs containing non-chat models. */
+  supportsEndpoint?(model: string, endpoint: string): boolean
   /**
    * Optional live catalog fetch using a ready account credential.
    * Return null when this provider cannot list models remotely.

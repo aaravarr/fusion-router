@@ -424,6 +424,11 @@ export class XAIGrokProvider implements Provider {
     return this.getAvailableModels().includes(model)
   }
 
+  supportsEndpoint(model: string, endpoint: string): boolean {
+    if ((endpoint === "responses" || endpoint === "chat/completions") && model.startsWith("grok-imagine")) return false
+    return this.supportsModel(model)
+  }
+
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
     const credential = await this.getCredential(account)
     const resp = await apiFetchWithMirrorContext(`${XAI_UPSTREAM_BASE_URL}/models`, {

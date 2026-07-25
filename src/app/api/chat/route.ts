@@ -49,7 +49,7 @@ export async function GET(request: Request) {
   const pools = [...new Map(catalogs.map((catalog) => [catalog.poolType, {
     type: catalog.poolType,
     label: catalog.label,
-    models: catalog.models,
+    models: catalog.models.filter((model) => tryGetProvider(catalog.poolType)?.supportsEndpoint?.(model, "responses") !== false),
     readyAccounts: accounts.filter((account) => account.poolType === catalog.poolType && account.ready).length,
   }])).values()]
 

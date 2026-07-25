@@ -94,6 +94,13 @@ describe("routing", () => {
     expect(() => routing.select("specific-blocked", "responses", new Set())).toThrowError(NoEligibleAccountError)
   })
 
+  it("文本聊天不会把 xAI 图像模型标记为可路由", () => {
+    const { accounts, routing } = make()
+    accounts.createProviderAccount({ name: "xAI image seat", poolType: "xai-grok", externalId: "xai-image" })
+    routing.setModel("grok-imagine-image")
+    expect(() => routing.select("xai-image-on-responses", "responses", new Set())).toThrowError(NoEligibleAccountError)
+  })
+
   it("xAI 滚动号池每次按真实剩余额度重新选择，不被当前账号粘住", () => {
     const { db, accounts, routing } = make()
     const first = accounts.createProviderAccount({ name: "xAI first", poolType: "xai-grok", externalId: "xai-first" })

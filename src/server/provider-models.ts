@@ -114,14 +114,16 @@ export function getProviderModelCatalog(poolType: PoolType, db: AppDatabase = ge
       cachedModels = null
     }
   }
-  const models = uniqueSorted([...(cachedModels ?? []), ...defaultModels])
+  // A successful remote catalog is authoritative. Re-adding bootstrap defaults
+  // here makes removed/unsupported upstream models look routable forever.
+  const models = cachedModels?.length ? cachedModels : defaultModels
   const source = (row?.source as ProviderModelSource | undefined)
     ?? (cachedModels?.length ? "REMOTE" : "DEFAULT")
   return {
     poolType,
     label,
     models,
-    source: cachedModels?.length && defaultModels.length && source !== "DEFAULT" ? "MERGED" : (cachedModels?.length ? source : "DEFAULT"),
+    source: cachedModels?.length ? source : "DEFAULT",
     accountId: row?.account_id ?? null,
     error: row?.error ?? null,
     fetchedAt: row?.fetched_at ?? null,
@@ -211,8 +213,7 @@ export async function syncProviderModels(options: {
         fetchedAt: nowIso(),
       }, db)
     }
-    const merged = uniqueSorted([...defaultModels, ...remote])
-    return writeProviderModelCache(options.poolType, merged, {
+    return writeProviderModelCache(options.poolType, remote, {
       source: "REMOTE",
       accountId: account.id,
       error: null,
