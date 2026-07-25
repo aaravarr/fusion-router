@@ -52,6 +52,8 @@ export class RoutingService {
   private readonly accounts: AccountRepository
   private readonly modelRouting: ModelRoutingRepository
   private currentModel: string | null = null
+  private constrainedPoolType: PoolType | null = null
+  private constrainedAccountId: string | null = null
 
   constructor(readonly ownerUserId: string, readonly db: AppDatabase = getDatabase()) {
     if (!ownerUserId) throw new Error("ownerUserId is required")
@@ -157,7 +159,15 @@ export class RoutingService {
       if (this.currentModel && modelCapable.length === 0 && otherwiseEligible.length > 0) {
         throw new NoEligibleAccountError("NO_ELIGIBLE")
       }
-      const capabilityPool = modelCapable.length > 0 ? modelCapable : otherwiseEligible
+      const unconstrainedCapabilityPool = modelCapable.length > 0 ? modelCapable : otherwiseEligible
+      const capabilityPool = this.constrainedAccountId
+        ? unconstrainedCapabilityPool.filter((account) => account.id === this.constrainedAccountId)
+        : this.constrainedPoolType
+          ? unconstrainedCapabilityPool.filter((account) => account.poolType === this.constrainedPoolType)
+          : unconstrainedCapabilityPool
+      if ((this.constrainedAccountId || this.constrainedPoolType) && capabilityPool.length === 0) {
+        throw new NoEligibleAccountError("NO_ELIGIBLE")
+      }
       const eligible = capabilityPool.filter((account) => !blocked.has(account.id)
         && !triedAccountIds.has(account.id)
         && (inFlight.get(account.id) ?? 0) < account.maxConcurrency)
@@ -180,7 +190,12 @@ export class RoutingService {
       // Model routing: determine pool type priority from routing rules.
       // Drop priority entries that cannot serve the model so "grok-* → xai first"
       // never forces unsupported models onto xAI when the rule is unrelated.
-      const rawPriority = this.currentModel ? this.modelRouting.resolveModelPriority(this.currentModel) : null
+      const constrainedPriority = this.constrainedAccountId
+        ? capabilityPool[0]?.poolType
+        : this.constrainedPoolType
+      const rawPriority = constrainedPriority
+        ? [constrainedPriority]
+        : this.currentModel ? this.modelRouting.resolveModelPriority(this.currentModel) : null
       const poolTypePriority = rawPriority
         ? (() => {
           const filtered = rawPriority.filter((pt) => providerSupportsModel(pt as PoolType, this.currentModel))
@@ -283,6 +298,12 @@ export class RoutingService {
   }
 
   setModel(model: string | null): void { this.currentModel = model }
+
+  /** Constrain one request without mutating the user's persistent routing preferences. */
+  setRequestConstraint(input: { poolType?: PoolType | null; accountId?: string | null }): void {
+    this.constrainedPoolType = input.poolType ?? null
+    this.constrainedAccountId = input.accountId ?? null
+  }
 
   releaseLease(leaseId: string): void {
     this.db.prepare("UPDATE route_leases SET completed_at=? WHERE id=? AND owner_user_id=? AND completed_at IS NULL")

@@ -48,6 +48,24 @@ describe("gateway", () => {
     expect(headers.get("x-org-id")).toBeNull(); expect(headers.get("x-api-key")).toBeNull()
   })
 
+  it("控制台会话可使用内部身份调用并约束指定账号", async () => {
+    const { db, credentials } = setup()
+    const accounts = db.prepare("SELECT id FROM accounts WHERE owner_user_id=? ORDER BY ordinal").all(ownerUserId) as Array<{ id: string }>
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ id: "ok" }))
+    const dashboardRequest = new Request("http://localhost/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.3-codex" }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher).handle(dashboardRequest, "responses", {
+      principal: { ownerUserId, label: "chat" },
+      routing: { accountId: accounts[1].id },
+    })
+    expect(response.status).toBe(200)
+    expect(db.prepare("SELECT api_key_id,api_key_prefix,account_id FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get())
+      .toEqual({ api_key_id: null, api_key_prefix: "chat", account_id: accounts[1].id })
+  })
+
   it("messages 入口使用 Go x-api-key 且不发送 Bearer 或组织头", async () => {
     const { db, apiKey, credentials, hasher } = setup(); const fetcher = vi.fn().mockResolvedValue(Response.json({ id: "ok" }))
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "messages")

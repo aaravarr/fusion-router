@@ -75,6 +75,25 @@ describe("routing", () => {
     expect(otherRepo.get(other.id)?.ownerUserId).toBe("user-2")
   })
 
+  it("请求级号池约束只在指定号池内调度", () => {
+    const { accounts, routing, add } = make()
+    add("go-seat")
+    const xai = accounts.createProviderAccount({ name: "xAI constrained", poolType: "xai-grok", externalId: "xai-constrained" })
+    routing.setModel("grok-4.5")
+    routing.setRequestConstraint({ poolType: "xai-grok" })
+    expect(routing.select("constrained-pool", "responses", new Set()).account.id).toBe(xai.id)
+  })
+
+  it("请求级账号约束仍遵守额度封锁", () => {
+    const { routing, add } = make()
+    const first = add("specific-one")
+    add("specific-two")
+    routing.setRequestConstraint({ accountId: first })
+    expect(routing.select("specific-ready", "responses", new Set()).account.id).toBe(first)
+    routing.markQuota(first, "WEEKLY", 600)
+    expect(() => routing.select("specific-blocked", "responses", new Set())).toThrowError(NoEligibleAccountError)
+  })
+
   it("xAI 滚动号池每次按真实剩余额度重新选择，不被当前账号粘住", () => {
     const { db, accounts, routing } = make()
     const first = accounts.createProviderAccount({ name: "xAI first", poolType: "xai-grok", externalId: "xai-first" })

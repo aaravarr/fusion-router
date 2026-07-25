@@ -9,6 +9,7 @@ import {
   CircleGauge,
   KeyRound,
   ListTree,
+  MessageSquareText,
   Menu,
   Network,
   Boxes,
@@ -28,6 +29,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useSession } from "./admin-context";
 
 const navItems = [
+  { href: "/chat", label: "聊天", description: "模型对话与调度", icon: MessageSquareText },
   { href: "/overview", label: "总览", description: "账号池健康与恢复", icon: CircleGauge },
   { href: "/usage", label: "用量看板", description: "Token 与请求趋势", icon: BarChart3 },
   { href: "/accounts", label: "账号池", description: "订阅、额度与令牌", icon: UsersRound },
@@ -86,7 +88,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main id="main-content" className="mx-auto w-full max-w-[1480px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <main id="main-content" className={pathname.startsWith("/chat")
+          ? "h-[calc(100dvh-3.5rem)] min-h-0 w-full overflow-hidden"
+          : "mx-auto w-full max-w-[1480px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8"}>
           {children}
         </main>
       </div>

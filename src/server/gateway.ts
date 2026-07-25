@@ -6,7 +6,7 @@ import { authenticateApiKey } from "./repository"
 import { AccountRepository } from "./repository"
 import { NoEligibleAccountError, RoutingService } from "./routing"
 import { getLogSettings, getSystemSettings, type LogSettings } from "./settings"
-import type { QuotaKind } from "./types"
+import type { PoolType, QuotaKind } from "./types"
 import { collectRequestHeaders } from "./client-meta"
 import { captureJsonResponse, ensureStreamUsage, extractBodyError, extractUsage, isLogOk, safeCloneBody, teeAndCapture, type CaptureResult, type TokenUsage } from "./capture"
 import { convertChatJsonToResponses, convertChatStreamToResponses, prepareChatRequestBody, prepareResponsesRequestBody, remapResponsesSuccessBody, remapResponsesSuccessStream, rememberResponsesTurn, type PrepareResponsesResult } from "./responses/pipeline"
@@ -21,6 +21,11 @@ import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToCh
 
 export interface AccessCredential { accountId: string; goApiKey: string; credentialVersion: number }
 export interface CredentialProvider { get(ownerUserId: string, accountId: string): Promise<AccessCredential> }
+export interface GatewayRequestOptions {
+  raw?: boolean
+  principal?: { ownerUserId: string; label?: string }
+  routing?: { poolType?: PoolType | null; accountId?: string | null }
+}
 
 type GoLimit = { kind: QuotaKind; retryAfterSeconds: number | null }
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
@@ -249,11 +254,18 @@ export class GatewayService {
   // code that passes a custom fetcher will bypass mirrors, which is fine
   // since tests use mocked responses.
 
-  async handle(request: Request, endpoint: string, options?: { raw?: boolean }): Promise<Response> {
+  async handle(request: Request, endpoint: string, options?: GatewayRequestOptions): Promise<Response> {
     const t0 = Date.now()
     const auth = request.headers.get("authorization")
     const plaintext = auth?.startsWith("Bearer ") ? auth.slice(7) : request.headers.get("x-api-key") ?? ""
-    const apiKey = plaintext ? authenticateApiKey(plaintext, this.db, this.keyHasher) : null
+    const apiKey = options?.principal
+      ? {
+          id: null,
+          ownerUserId: options.principal.ownerUserId,
+          prefix: options.principal.label ?? "dashboard-chat",
+          allowedModels: null,
+        }
+      : plaintext ? authenticateApiKey(plaintext, this.db, this.keyHasher) : null
     if (!apiKey) return Response.json({ error: { type: "authentication_error", message: "Invalid gateway API key" } }, { status: 401 })
 
     // /models endpoint: aggregate available models from all active providers.
@@ -362,6 +374,10 @@ export class GatewayService {
     }
     const routing = new RoutingService(apiKey.ownerUserId, this.db)
     routing.setModel(model)
+    routing.setRequestConstraint({
+      poolType: options?.routing?.poolType ?? null,
+      accountId: options?.routing?.accountId ?? null,
+    })
     this.db.prepare("INSERT INTO gateway_requests(id,owner_user_id,api_key_id,endpoint,model,started_at,stream,api_key_prefix,client,user_agent,origin,request_size_bytes,inbound_endpoint,upstream_endpoint,process_mode,route_mode,route_reason,converted,transform_summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
       .run(requestId, apiKey.ownerUserId, apiKey.id, endpoint, model, new Date().toISOString(), Number(stream), apiKey.prefix, meta.client, meta.userAgent, meta.origin, requestBytes?.byteLength ?? 0, inboundEndpoint, effectiveEndpoint, processMode, routeMode, routeReason, converted, transformSummary)
     const tried = new Set<string>()
