@@ -14,6 +14,7 @@ import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel, PaginationBar, 
 import { AccountBadges, BillingSafetyBadge, getPoolLabel, PoolTypeBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import type { Account, ModelRouteRule, RoutingConfig } from "./types";
+import { useConfirm } from "@/components/ui/confirm-provider";
 
 interface RoutingPayload extends RoutingConfig { routing?: RoutingConfig }
 interface AccountsPayload {
@@ -47,7 +48,7 @@ export function RoutingPage() {
   const providerModelsResource = useAdminResource<ProviderModelsPayload>("/api/admin/provider-models");
   const { adminFetch } = useAdmin();
   const routing = routingResource.data?.routing ?? routingResource.data;
-  const accounts = accountsResource.data?.items ?? accountsResource.data?.accounts ?? [];
+  const accounts = useMemo(() => accountsResource.data?.items ?? accountsResource.data?.accounts ?? [], [accountsResource.data]);
   const rules = modelRoutingResource.data?.rules ?? [];
   const catalogs = providerModelsResource.data?.catalogs ?? [];
   // per-pool-type 首选账号：从 routing data 取当前配置与号池类型列表
@@ -85,10 +86,6 @@ export function RoutingPage() {
     const start = (safeCandidatePage - 1) * candidatePageSize;
     return filteredCandidates.slice(start, start + candidatePageSize);
   }, [filteredCandidates, safeCandidatePage, candidatePageSize]);
-
-  useEffect(() => {
-    setCandidatePage(1);
-  }, [candidateQuery, candidatePool, candidatePageSize, accounts.length]);
 
   async function savePoolPreferred(poolType: string, value: string) {
     setUpdatingPool(poolType); setPoolMessage(null);
@@ -159,21 +156,20 @@ export function RoutingPage() {
                     <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
                     <Input
                       value={candidateQuery}
-                      onChange={(event) => setCandidateQuery(event.target.value)}
+                      onChange={(event) => { setCandidateQuery(event.target.value); setCandidatePage(1); }}
                       placeholder="搜索候选账号"
                       className="h-8 rounded-md bg-white pl-8 text-xs"
                     />
                   </div>
-                  <select
-                    className="h-8 rounded-md border bg-white px-2 text-xs"
-                    value={candidatePool}
-                    onChange={(event) => setCandidatePool(event.target.value)}
-                  >
-                    <option value="all">全部号池</option>
+                  <Select value={candidatePool} onValueChange={(value) => { setCandidatePool(value); setCandidatePage(1); }}>
+                    <SelectTrigger className="w-[132px] bg-white text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                    <SelectItem value="all">全部号池</SelectItem>
                     {poolTypes.map((poolType) => (
-                      <option key={poolType} value={poolType}>{getPoolLabel(poolType)}</option>
+                      <SelectItem key={poolType} value={poolType}>{getPoolLabel(poolType)}</SelectItem>
                     ))}
-                  </select>
+                    </SelectContent>
+                  </Select>
                 </div>
                 {pagedCandidates.length ? (
                   <div className="max-h-[min(360px,50vh)] divide-y overflow-y-auto overscroll-contain">
@@ -203,7 +199,7 @@ export function RoutingPage() {
                   pageSize={candidatePageSize}
                   total={candidateTotal}
                   onPageChange={setCandidatePage}
-                  onPageSizeChange={setCandidatePageSize}
+                  onPageSizeChange={(value) => { setCandidatePageSize(value); setCandidatePage(1); }}
                   pageSizeOptions={[10, 20, 50, 100]}
                 />
               </>
@@ -326,6 +322,10 @@ function PreferredAccountPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement | null>(null);
+  function changeOpen(next: boolean) {
+    setOpen(next);
+    if (!next) setQuery("");
+  }
   const selected = value !== "none" ? accounts.find((account) => account.id === value) : null;
 
   const filtered = useMemo(() => {
@@ -342,10 +342,10 @@ function PreferredAccountPicker({
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node)) { setOpen(false); setQuery(""); }
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") { setOpen(false); setQuery(""); }
     }
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -355,17 +355,14 @@ function PreferredAccountPicker({
     };
   }, [open]);
 
-  useEffect(() => {
-    if (!open) setQuery("");
-  }, [open]);
-
   return (
     <div ref={rootRef} className="relative w-full max-w-xs flex-1">
-      <button
+      <Button
         type="button"
+        variant="outline"
         disabled={disabled}
-        onClick={() => setOpen((prev) => !prev)}
-        className="flex h-8 w-full items-center justify-between gap-2 rounded-lg border bg-white px-2.5 text-left text-xs outline-none transition-colors hover:bg-[#fafafa] disabled:cursor-not-allowed disabled:opacity-50"
+        onClick={() => changeOpen(!open)}
+        className="h-8 w-full justify-between bg-white px-2.5 text-left text-xs font-normal"
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -373,9 +370,9 @@ function PreferredAccountPicker({
           {selected ? accountLabel(selected) : "不指定"}
         </span>
         <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      </button>
+      </Button>
       {open ? (
-        <div className="absolute top-[calc(100%+4px)] right-0 z-40 w-[min(100vw-2rem,20rem)] overflow-hidden rounded-lg border bg-white shadow-md ring-1 ring-foreground/10">
+        <div className="absolute top-[calc(100%+4px)] right-0 z-40 w-[min(100vw-2rem,20rem)] origin-top-right overflow-hidden rounded-lg border bg-white shadow-md ring-1 ring-foreground/10 duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] animate-in fade-in-0 zoom-in-95 slide-in-from-top-1">
           <div className="border-b p-2">
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
@@ -389,31 +386,33 @@ function PreferredAccountPicker({
             </div>
           </div>
           <div className="max-h-64 overflow-y-auto p-1" role="listbox">
-            <button
+            <Button
               type="button"
+              variant="ghost"
               role="option"
               aria-selected={value === "none"}
-              className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-xs hover:bg-accent"
+              className="h-auto w-full justify-between px-2.5 py-2 text-left text-xs font-normal"
               onClick={() => {
                 onChange("none");
-                setOpen(false);
+                changeOpen(false);
               }}
             >
               <span>不指定</span>
               {value === "none" ? <Check className="size-3.5 text-foreground" aria-hidden="true" /> : null}
-            </button>
+            </Button>
             {filtered.length ? filtered.map((account) => {
               const active = value === account.id;
               return (
-                <button
+                <Button
                   key={account.id}
                   type="button"
+                  variant="ghost"
                   role="option"
                   aria-selected={active}
-                  className="flex w-full items-start justify-between gap-2 rounded-md px-2.5 py-2 text-left hover:bg-accent"
+                  className="h-auto w-full items-start justify-between px-2.5 py-2 text-left font-normal"
                   onClick={() => {
                     onChange(account.id);
-                    setOpen(false);
+                    changeOpen(false);
                   }}
                 >
                   <span className="min-w-0">
@@ -423,7 +422,7 @@ function PreferredAccountPicker({
                     </span>
                   </span>
                   {active ? <Check className="mt-0.5 size-3.5 shrink-0 text-foreground" aria-hidden="true" /> : null}
-                </button>
+                </Button>
               );
             }) : (
               <p className="px-2.5 py-3 text-xs text-muted-foreground">没有匹配账号</p>
@@ -531,6 +530,7 @@ function ModelRoutingSection({ rules, loading, error, adminFetch, onRefresh }: {
   adminFetch: (path: string, init?: RequestInit) => Promise<Response>;
   onRefresh: () => void;
 }) {
+  const confirm = useConfirm();
   const [addOpen, setAddOpen] = useState(false);
   const [editRule, setEditRule] = useState<ModelRouteRule | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -548,7 +548,8 @@ function ModelRoutingSection({ rules, loading, error, adminFetch, onRefresh }: {
   }
 
   async function deleteRule(rule: ModelRouteRule) {
-    if (!window.confirm(`确认删除路由规则 ${rule.modelPattern}？`)) return;
+    const approved = await confirm({ title: "删除路由规则？", description: `${rule.modelPattern} 将不再参与模型路由匹配。`, confirmText: "删除规则", destructive: true });
+    if (!approved) return;
     setActionError(null);
     try {
       const response = await adminFetch(`/api/admin/model-routing/${encodeURIComponent(rule.id)}`, { method: "DELETE" });
@@ -634,12 +635,12 @@ function ModelRouteRow({ rule, onToggle, onEdit, onDelete, onReorder }: {
                   {getPoolLabel(pool)}
                 </span>
                 <div className="flex flex-col">
-                  <button type="button" onClick={() => moveUp(idx)} disabled={idx === 0} className="text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="上移">
+                  <Button type="button" variant="ghost" size="icon-xs" onClick={() => moveUp(idx)} disabled={idx === 0} className="text-muted-foreground" aria-label="上移">
                     <ArrowUp className="size-3" />
-                  </button>
-                  <button type="button" onClick={() => moveDown(idx)} disabled={idx === priority.length - 1} className="text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="下移">
+                  </Button>
+                  <Button type="button" variant="ghost" size="icon-xs" onClick={() => moveDown(idx)} disabled={idx === priority.length - 1} className="text-muted-foreground" aria-label="下移">
                     <ArrowDown className="size-3" />
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
@@ -675,16 +676,16 @@ function PrioritySelector({ value, onChange }: { value: string[]; onChange: (v: 
     <div className="space-y-2">
       <div className="flex flex-wrap gap-1.5">
         {POOL_OPTIONS.map((pool) => (
-          <button
+          <Button
             key={pool}
             type="button"
+            variant={selected.includes(pool) ? "default" : "outline"}
+            size="sm"
             onClick={() => toggle(pool)}
-            className={`h-7 rounded-md border px-2.5 text-xs font-medium transition-colors ${
-              selected.includes(pool) ? "border-foreground bg-foreground text-white" : "border-border bg-white text-muted-foreground hover:text-foreground"
-            }`}
+            className={selected.includes(pool) ? undefined : "bg-white text-muted-foreground"}
           >
             {getPoolLabel(pool)}
-          </button>
+          </Button>
         ))}
       </div>
       {selected.length ? (
@@ -697,8 +698,8 @@ function PrioritySelector({ value, onChange }: { value: string[]; onChange: (v: 
                 <span className="font-mono text-[10px] text-muted-foreground">{idx + 1}</span>
                 <span className="text-xs font-medium">{getPoolLabel(pool)}</span>
                 <div className="ml-auto flex gap-0.5">
-                  <button type="button" onClick={() => moveUp(idx)} disabled={idx === 0} className="text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="上移"><ArrowUp className="size-3.5" /></button>
-                  <button type="button" onClick={() => moveDown(idx)} disabled={idx === selected.length - 1} className="text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="下移"><ArrowDown className="size-3.5" /></button>
+                  <Button type="button" variant="ghost" size="icon-xs" onClick={() => moveUp(idx)} disabled={idx === 0} className="text-muted-foreground" aria-label="上移"><ArrowUp className="size-3.5" /></Button>
+                  <Button type="button" variant="ghost" size="icon-xs" onClick={() => moveDown(idx)} disabled={idx === selected.length - 1} className="text-muted-foreground" aria-label="下移"><ArrowDown className="size-3.5" /></Button>
                 </div>
               </div>
             ))}

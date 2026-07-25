@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useAdmin } from "./admin-context";
 import { formatDate } from "./page-kit";
 import { PoolTypeBadge, StatusBadge } from "./status-ui";
+import { useConfirm } from "@/components/ui/confirm-provider";
 
 export interface ImportJobItem {
   itemIndex: number;
@@ -278,6 +279,7 @@ export function ImportTaskCenter({
   onAccountsChanged: () => void;
   poolType?: string;
 }) {
+  const confirm = useConfirm();
   const { adminFetch } = useAdmin();
   const [jobs, setJobs] = useState<ImportJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -349,7 +351,8 @@ export function ImportTaskCenter({
 
   async function rollbackJob(job: ImportJob) {
     const count = job.rollbackAccountCount ?? 0;
-    if (!window.confirm(`确认撤销这次导入任务吗？\n\n将永久删除该任务新建的 ${count} 个账号，此操作无法恢复。`)) return;
+    const approved = await confirm({ title: "撤销这次导入任务？", description: `将永久删除该任务新建的 ${count} 个账号，此操作无法恢复。`, confirmText: "撤销并删除账号", destructive: true });
+    if (!approved) return;
     setRollingBackJobId(job.id);
     setActionError(null);
     setActionNotice(null);

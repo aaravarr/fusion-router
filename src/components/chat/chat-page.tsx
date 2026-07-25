@@ -299,10 +299,10 @@ export function ChatPage() {
                 <p className="mt-2 max-w-md text-sm leading-6 text-[#777]">选择模型与思考等级，默认由网关在所有可用账号中自动调度。</p>
                 <div className="mt-7 grid w-full gap-2 sm:grid-cols-2">
                   {["分析这段代码的潜在问题", "帮我整理一个实现方案", "解释一个复杂技术概念", "把这段内容写得更清楚"].map((prompt) => (
-                    <button key={prompt} type="button" onClick={() => void submit({ text: prompt })} disabled={!model}
-                      className="rounded-xl border border-[#e5e5e5] bg-white px-4 py-3 text-left text-sm text-[#444] transition-colors hover:bg-[#fafafa] disabled:opacity-50">
+                    <Button key={prompt} type="button" variant="outline" onClick={() => void submit({ text: prompt })} disabled={!model}
+                      className="h-auto justify-start rounded-xl bg-white px-4 py-3 text-left text-sm font-normal text-[#444]">
                       {prompt}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>

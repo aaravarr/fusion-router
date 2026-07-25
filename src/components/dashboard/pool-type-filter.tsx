@@ -2,6 +2,7 @@
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 
 export type PoolFilterOption = {
   key: string
@@ -95,15 +96,16 @@ export function PoolTypeFilterBar({
               const active = value === option.key
               const count = counts?.[option.key]
               return (
-                <button
+                <Button
                   key={option.key}
                   type="button"
+                  variant={active ? "default" : "outline"}
                   role="tab"
                   aria-selected={active}
                   title={option.description || option.label}
                   onClick={() => onChange(option.key)}
                   className={cn(
-                    "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs font-medium whitespace-nowrap transition-colors",
+                    "h-8 shrink-0 rounded-full px-3 text-xs whitespace-nowrap",
                     active
                       ? "border-foreground bg-foreground text-background"
                       : "border-border bg-white text-muted-foreground hover:border-foreground/20 hover:text-foreground",
@@ -120,7 +122,7 @@ export function PoolTypeFilterBar({
                       {count}
                     </span>
                   ) : null}
-                </button>
+                </Button>
               )
             })}
           </div>

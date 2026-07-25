@@ -54,6 +54,7 @@ import {
 } from "./page-kit";
 import { StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
+import { useConfirm } from "@/components/ui/confirm-provider";
 
 interface UserSummary extends SessionUser {
   accountCount?: number;
@@ -66,6 +67,7 @@ interface UsersPayload {
 
 export function UsersPage() {
   const { isAdmin, user: current, sessionFetch } = useSession();
+  const confirm = useConfirm();
   const resource = useAdminResource<UsersPayload>("/api/admin/users");
   const users = resource.data?.users ?? [];
   const adminCount = users.filter((item) => item.role === "ADMIN").length;
@@ -73,6 +75,9 @@ export function UsersPage() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [passwordUser, setPasswordUser] = useState<UserSummary | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
   if (!isAdmin)
     return (
       <Panel>
@@ -119,16 +124,19 @@ export function UsersPage() {
       );
   }
 
-  async function resetPassword(user: UserSummary) {
-    const password = window.prompt(
-      `为 ${user.username} 输入新密码（至少 6 个字符）`,
-    );
-    if (!password) return;
-    await update(user, { password });
+  async function submitPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!passwordUser || newPassword.length < 6) return;
+    setPasswordBusy(true);
+    await update(passwordUser, { password: newPassword });
+    setPasswordBusy(false);
+    setPasswordUser(null);
+    setNewPassword("");
   }
 
   async function revoke(user: UserSummary) {
-    if (!window.confirm(`注销 ${user.username} 的全部登录会话？`)) return;
+    const approved = await confirm({ title: `注销 ${user.username} 的全部会话？`, description: "该用户需要在所有设备上重新登录，当前密码不会改变。", confirmText: "注销全部会话" });
+    if (!approved) return;
     const response = await sessionFetch(
       `/api/admin/users/${user.id}/sessions`,
       { method: "DELETE" },
@@ -275,7 +283,7 @@ export function UsersPage() {
                             : "设为管理员"}
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          onSelect={() => void resetPassword(user)}
+                          onSelect={() => { setPasswordUser(user); setNewPassword(""); }}
                         >
                           重置密码
                         </DropdownMenuItem>
@@ -366,6 +374,22 @@ export function UsersPage() {
             <Button form="create-user" type="submit" disabled={busy}>
               {busy ? "正在创建" : "创建用户"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(passwordUser)} onOpenChange={(next) => { if (!next && !passwordBusy) { setPasswordUser(null); setNewPassword(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>重置用户密码</DialogTitle>
+            <DialogDescription>为 {passwordUser?.username} 设置至少 6 个字符的新密码。</DialogDescription>
+          </DialogHeader>
+          <form id="reset-user-password" onSubmit={submitPassword} className="space-y-2">
+            <Label htmlFor="reset-password">新密码</Label>
+            <Input id="reset-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={6} autoComplete="new-password" autoFocus required />
+          </form>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPasswordUser(null)} disabled={passwordBusy}>取消</Button>
+            <Button type="submit" form="reset-user-password" disabled={passwordBusy || newPassword.length < 6}>{passwordBusy ? "正在重置" : "重置密码"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

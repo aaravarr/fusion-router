@@ -13,6 +13,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAdmin } from "./admin-context";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel, formatDate } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
+import { useConfirm } from "@/components/ui/confirm-provider";
+import { Checkbox } from "@/components/ui/checkbox";
 
 type InterfaceType = "chat" | "responses";
 interface BalanceConfig { request: { url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: unknown }; extractor: string }
@@ -44,6 +46,7 @@ function errorMessage(payload: unknown, fallback: string) {
 
 export function CustomProvidersPage() {
   const { adminFetch } = useAdmin();
+  const confirm = useConfirm();
   const resource = useAdminResource<{ providers: CustomProvider[] }>("/api/admin/custom-providers");
   const providers = resource.data?.providers ?? [];
   const [editing, setEditing] = useState<CustomProvider | null | undefined>(undefined);
@@ -52,7 +55,8 @@ export function CustomProvidersPage() {
   const [message, setMessage] = useState<string | null>(null);
 
   async function remove(provider: CustomProvider) {
-    if (!window.confirm(`确认删除 Provider「${provider.name}」？其下全部 API Key 账号、额度记录和模型缓存会一并删除，此操作不可恢复。`)) return;
+    const approved = await confirm({ title: `删除 Provider“${provider.name}”？`, description: "其下全部 API Key 账号、额度记录和模型缓存会一并删除，此操作不可恢复。", confirmText: "永久删除", destructive: true });
+    if (!approved) return;
     setBusyId(provider.id); setMessage(null);
     try {
       const response = await adminFetch(`/api/admin/custom-providers/${provider.id}`, { method: "DELETE" });
@@ -201,7 +205,7 @@ function EditorSection({ title, description, children }: { title: string; descri
 
 function OptionCard({ checked, onChange, title, description }: { checked: boolean; onChange: (value: boolean) => void; title: string; description: string }) {
   return <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 transition-colors ${checked ? "border-foreground/20 bg-foreground/[0.03]" : "bg-background hover:bg-muted/30"}`}>
-    <input className="mt-0.5 size-4 accent-foreground" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <Checkbox className="mt-0.5" checked={checked} onCheckedChange={(value) => onChange(value === true)} />
     <span><span className="block text-sm font-medium">{title}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{description}</span></span>
   </label>;
 }
@@ -241,6 +245,7 @@ function formatJson(value: string): string {
 }
 
 function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvider; onClose: () => void; adminFetch: (path: string, init?: RequestInit) => Promise<Response> }) {
+  const confirm = useConfirm();
   const resource = useAdminResource<{ keys: ProviderKey[] }>(`/api/admin/custom-providers/${provider.id}/keys`);
   const [name, setName] = useState(""); const [apiKey, setApiKey] = useState(""); const [maxConcurrency, setMaxConcurrency] = useState(4);
   const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
@@ -266,7 +271,8 @@ function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvide
     await resource.refresh();
   }
   async function remove(key: ProviderKey) {
-    if (!window.confirm(`确认删除 API Key「${key.name}」？此操作不可恢复。`)) return;
+    const approved = await confirm({ title: `删除 API Key“${key.name}”？`, description: "该 Key 会立即退出调度，此操作不可恢复。", confirmText: "永久删除", destructive: true });
+    if (!approved) return;
     const response = await adminFetch(`/api/admin/custom-providers/${provider.id}/keys/${key.id}`, { method: "DELETE" });
     if (!response.ok) setError(errorMessage(await response.json().catch(() => null), "删除失败")); else await resource.refresh();
   }

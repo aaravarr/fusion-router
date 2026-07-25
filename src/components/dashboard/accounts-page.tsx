@@ -38,6 +38,9 @@ import { useAdmin } from "./admin-context";
 import type { Account } from "./types";
 import { ImportJobProgress, ImportTaskCenter, type ImportJob, useImportJobStream } from "./import-task-center";
 import { PoolTypeFilterBar, type PoolFilterOption } from "./pool-type-filter";
+import { useConfirm } from "@/components/ui/confirm-provider";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface AccountStats {
   total: number;
@@ -104,6 +107,7 @@ function poolOf(account: Account) {
 
 export function AccountsPage() {
   const { adminFetch } = useAdmin();
+  const confirm = useConfirm();
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [poolFilter, setPoolFilter] = useState<string>("all");
@@ -259,7 +263,8 @@ export function AccountsPage() {
   }
 
   async function deleteAccount(account: Account) {
-    if (!window.confirm(`确认删除 ${account.name || account.email || account.id}？该账号的连接信息将被清除，此操作不可恢复。`)) return;
+    const approved = await confirm({ title: "删除这个账号？", description: `${account.name || account.email || account.id} 的连接信息、凭据和额度记录将被永久清除。`, confirmText: "永久删除", destructive: true });
+    if (!approved) return;
     setBusyId(account.id);
     setActionError(null);
     setActionNotice(null);
@@ -310,7 +315,10 @@ export function AccountsPage() {
   async function runBulkAction(action: "enable" | "disable" | "delete") {
     const accountIds = [...selectedIds];
     if (!accountIds.length) return;
-    if (action === "delete" && !window.confirm(`确认永久删除选中的 ${accountIds.length} 个账号？关联凭据和额度记录也会一并清除，此操作不可恢复。`)) return;
+    if (action === "delete") {
+      const approved = await confirm({ title: `永久删除 ${accountIds.length} 个账号？`, description: "关联凭据和额度记录也会一并清除，此操作不可恢复。", confirmText: "永久删除", destructive: true });
+      if (!approved) return;
+    }
     setBulkBusy(action);
     setActionError(null);
     setActionNotice(null);
@@ -476,20 +484,14 @@ export function AccountsPage() {
               <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号、邮箱或标识" className="h-8 w-full rounded-md bg-white pl-8 text-xs" />
             </div>
             <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
-              <select
-                className="h-8 w-full rounded-md border bg-white px-2 text-xs sm:w-auto"
-                value={statusFilter}
-                onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }}
-              >
-                {STATUS_FILTERS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
-              </select>
-              <select
-                className="h-8 w-full rounded-md border bg-white px-2 text-xs sm:w-auto"
-                value={sort}
-                onChange={(event) => { setSort(event.target.value); setPage(1); }}
-              >
-                {SORT_OPTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
-              </select>
+              <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value); setPage(1); }}>
+                <SelectTrigger className="w-full bg-white text-xs sm:w-[132px]"><SelectValue /></SelectTrigger>
+                <SelectContent>{STATUS_FILTERS.map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={sort} onValueChange={(value) => { setSort(value); setPage(1); }}>
+                <SelectTrigger className="w-full bg-white text-xs sm:w-[132px]"><SelectValue /></SelectTrigger>
+                <SelectContent>{SORT_OPTIONS.map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
           </div>
         }
@@ -531,13 +533,10 @@ export function AccountsPage() {
             <TableHeader className="bg-[#fafafa]">
               <TableRow className="hover:bg-[#fafafa]">
                 <TableHead className="w-11 px-4">
-                  <input
-                    ref={(node) => { if (node) node.indeterminate = someVisibleSelected && !allVisibleSelected; }}
-                    type="checkbox"
-                    checked={allVisibleSelected}
-                    onChange={toggleVisibleSelection}
+                  <Checkbox
+                    checked={someVisibleSelected && !allVisibleSelected ? "indeterminate" : allVisibleSelected}
+                    onCheckedChange={toggleVisibleSelection}
                     aria-label="选择当前页全部账号"
-                    className="size-4 cursor-pointer accent-foreground"
                   />
                 </TableHead>
                 <TableHead className="w-[230px] px-4 text-xs text-muted-foreground">账号</TableHead>
@@ -557,22 +556,20 @@ export function AccountsPage() {
                 return (
                   <TableRow key={account.id} className={selectedIds.has(account.id) ? "bg-muted/50" : account.isCurrent ? "bg-info-soft/60 hover:bg-info-soft" : undefined}>
                     <TableCell className="px-4">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={selectedIds.has(account.id)}
-                        onChange={() => toggleAccountSelection(account.id)}
+                        onCheckedChange={() => toggleAccountSelection(account.id)}
                         aria-label={`选择账号 ${account.name || account.email || account.id}`}
-                        className="size-4 cursor-pointer accent-foreground"
                       />
                     </TableCell>
                     <TableCell className="px-4 py-3">
-                      <button type="button" className="group block max-w-[210px] text-left" onClick={() => setSelected(account)}>
+                      <Button type="button" variant="link" className="group h-auto max-w-[210px] justify-start p-0 text-left no-underline" onClick={() => setSelected(account)}>
                         <span className="flex items-center gap-1.5 truncate text-sm font-medium group-hover:underline group-hover:underline-offset-4">
                           {account.name || account.email || "未命名账号"}
                           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                         </span>
                         <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground">{account.workspaceId || account.id}</span>
-                      </button>
+                      </Button>
                     </TableCell>
                     <TableCell><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /></TableCell>
                     <TableCell><AccountBadges account={account} /></TableCell>

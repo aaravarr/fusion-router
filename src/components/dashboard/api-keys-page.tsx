@@ -14,12 +14,14 @@ import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
 import { copyToClipboard } from "@/lib/utils";
 import type { ApiKeyRecord } from "./types";
+import { useConfirm } from "@/components/ui/confirm-provider";
 
 interface KeysPayload { keys?: ApiKeyRecord[]; apiKeys?: ApiKeyRecord[] }
 
 export function ApiKeysPage() {
   const resource = useAdminResource<KeysPayload>("/api/admin/keys");
   const { adminFetch } = useAdmin();
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
@@ -71,7 +73,8 @@ export function ApiKeysPage() {
   }
 
   async function remove(key: ApiKeyRecord) {
-    if (!window.confirm(`确认吊销 ${key.name || key.alias || key.prefix || key.id}？此操作不可恢复。`)) return;
+    const approved = await confirm({ title: "吊销 API 密钥？", description: `${key.name || key.alias || key.prefix || key.id} 将立即失效，此操作不可恢复。`, confirmText: "确认吊销", destructive: true });
+    if (!approved) return;
     const response = await adminFetch(`/api/admin/keys/${encodeURIComponent(key.id)}`, { method: "DELETE" });
     if (response.ok) await resource.refresh();
   }

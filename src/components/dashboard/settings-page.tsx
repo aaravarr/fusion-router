@@ -21,6 +21,9 @@ import { ErrorState, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
 import type { LogsCleanupResponse } from "./types";
 import { copyToClipboard } from "@/lib/utils";
+import { useConfirm } from "@/components/ui/confirm-provider";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface Settings {
   domainMirrorMap: DomainMirrorMap;
@@ -54,6 +57,7 @@ interface SettingsPayload {
 
 export function SettingsPage() {
   const { isAdmin, sessionFetch } = useSession();
+  const confirm = useConfirm();
   const resource = useAdminResource<SettingsPayload>("/api/admin/settings");
   const accountsResource = useAdminResource<{ accounts?: MirrorAccount[] }>("/api/admin/mirror-accounts");
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -92,14 +96,13 @@ export function SettingsPage() {
     }
   }
   async function rotate(name: "cron_secret" | "api_key_pepper") {
-    if (
-      !window.confirm(
-        name === "api_key_pepper"
-          ? "轮换 API Key Pepper 会使现有 API 密钥全部失效。继续？"
-          : "轮换后外部定时任务需要使用新密钥。继续？",
-      )
-    )
-      return;
+    const approved = await confirm({
+      title: name === "api_key_pepper" ? "轮换 API Key Pepper？" : "轮换定时任务密钥？",
+      description: name === "api_key_pepper" ? "现有 API 密钥会全部失效，客户端必须重新配置。" : "外部定时任务需要改用新密钥。",
+      confirmText: "确认轮换",
+      destructive: name === "api_key_pepper",
+    });
+    if (!approved) return;
     const response = await sessionFetch("/api/admin/settings/secrets", {
       method: "POST",
       body: JSON.stringify(name === "api_key_pepper" ? { name, confirmInvalidateAllKeys: true } : { name }),
@@ -425,10 +428,13 @@ function newId(prefix: string) {
 }
 
 function DomainMirrorsEditor({ value, legacyValue, accounts, onChange }: { value: MirrorGroup[]; legacyValue: DomainMirrorMap; accounts: MirrorAccount[]; onChange: (value: MirrorGroup[]) => void }) {
+  const confirm = useConfirm();
   const groups = value.length ? value : migrateLegacyMirrorGroups(legacyValue);
   const [editingGroup, setEditingGroup] = useState<MirrorGroup | null | undefined>(undefined);
-  function removeGroup(id: string) {
-    if (!window.confirm("确定删除这个镜像组吗？组内的域名、规则和账号绑定会一起移除。")) return;
+  async function removeGroup(id: string) {
+    const group = groups.find((item) => item.id === id);
+    const approved = await confirm({ title: `删除镜像组${group?.name ? `“${group.name}”` : ""}？`, description: "组内的域名、规则和账号绑定会一起移除。保存设置后生效。", confirmText: "删除镜像组", destructive: true });
+    if (!approved) return;
     onChange(groups.filter((group) => group.id !== id));
   }
   return <div className="space-y-3">
@@ -491,18 +497,18 @@ function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group
     <DialogHeader><DialogTitle>{group ? "编辑镜像组" : "新增镜像组"}</DialogTitle><DialogDescription>先选定这组账号，再为该组配置多个镜像节点和节点选择规则。</DialogDescription></DialogHeader>
     <div className="space-y-5 py-1">
       <Field label="组名称"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 XAI 账号组" /></Field>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />启用这个镜像组</label>
-      <Field label={`账号（已选 ${accountIds.size} 个）`} description="只有选中的账号会进入本组；不选账号表示该组对匹配域名下的全部账号生效。"><Input className="mb-2 h-8 text-xs" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号" /><div className="max-h-44 overflow-y-auto rounded-md border">{filteredAccounts.map((account) => <label key={account.id} className="flex items-center gap-2 border-b px-3 py-2 text-xs last:border-b-0"><input type="checkbox" checked={accountIds.has(account.id)} onChange={() => toggle(setAccountIds, account.id)} /><span className="min-w-0 flex-1 truncate">{account.name || account.email || account.id}</span><span className="text-[11px] text-muted-foreground">{account.poolType}</span></label>)}</div></Field>
-      <Field label={`原始域名（已选 ${domains.size} 个）`} description="一组可以包含多个需要代理的原始域名。"><div className="grid max-h-44 gap-1 overflow-y-auto rounded-md border p-2 sm:grid-cols-2">{knownDomains.map((domain) => { const preset = presetDomains.find((item) => item.domain === domain); return <label key={domain} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[#fafafa]"><input type="checkbox" checked={domains.has(domain)} onChange={() => toggle(setDomains, domain)} /><span className="min-w-0 truncate font-mono">{domain}</span>{preset ? <span className="ml-auto truncate text-[10px] text-muted-foreground">{preset.label}</span> : null}</label>; })}</div><div className="mt-2 flex gap-2"><Input className="h-8 flex-1 font-mono text-xs" value={customDomain} onChange={(event) => setCustomDomain(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addCustomDomain(); } }} placeholder="其他域名，例如 custom.example.com" /><Button type="button" variant="outline" size="sm" onClick={addCustomDomain} disabled={!customDomain.trim()}>添加</Button></div></Field>
-      <Field label={`镜像节点（${mirrors.length} 个）`} description="每组可以添加多个地址；$host 会替换成请求的原始 host。"><div className="space-y-2">{mirrors.map((mirror) => <div key={mirror.id} className="grid gap-2 sm:grid-cols-[28px_140px_1fr_34px]"><input type="checkbox" checked={mirror.enabled} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, enabled: event.target.checked } : item))} /><Input className="h-8 text-xs" value={mirror.name} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, name: event.target.value } : item))} /><Input className="h-8 font-mono text-xs" value={mirror.url} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, url: event.target.value } : item))} /><Button type="button" variant="ghost" size="icon-sm" onClick={() => removeMirror(mirror.id)}><Trash2 /></Button></div>)}<div className="grid gap-2 sm:grid-cols-[140px_1fr_auto]"><Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="节点名称" /><Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.ahao1.tech/$host" /><Button type="button" variant="outline" size="sm" disabled={!mirrorName.trim() || !mirrorUrl.trim()} onClick={() => { setMirrors((current) => [...current, { id: newId("mirror"), name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }]); setMirrorName(""); setMirrorUrl(""); }}><Plus />节点</Button></div></div></Field>
-      <Field label={`路由规则（${rules.length} 条）`} description="按顺序匹配账号名称、邮箱、ID、工作区或账号池；未命中时在启用节点间稳定 Hash。"><div className="space-y-2">{rules.map((rule) => <div key={rule.id} className="grid gap-2 sm:grid-cols-[28px_1fr_150px_34px]"><input type="checkbox" checked={rule.enabled} onChange={(event) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, enabled: event.target.checked } : item))} /><Input className="h-8 font-mono text-xs" value={rule.pattern} onChange={(event) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, pattern: event.target.value } : item))} /><MirrorSelect mirrors={mirrors} value={rule.mirrorId} onChange={(mirrorId) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, mirrorId } : item))} /><Button type="button" variant="ghost" size="icon-sm" onClick={() => setRules((current) => current.filter((item) => item.id !== rule.id))}><Trash2 /></Button></div>)}<div className="grid gap-2 sm:grid-cols-[1fr_150px_auto]"><Input className="h-8 font-mono text-xs" value={pattern} onChange={(event) => setPattern(event.target.value)} placeholder="例如 @example\\.com$ 或 ^prod-" /><MirrorSelect mirrors={mirrors} value={ruleMirrorId} onChange={setRuleMirrorId} /><Button type="button" variant="outline" size="sm" disabled={!pattern.trim() || !ruleMirrorId} onClick={() => { setRules((current) => [...current, { id: newId("rule"), pattern: pattern.trim(), mirrorId: ruleMirrorId, enabled: true }]); setPattern(""); }}><Plus />规则</Button></div></div></Field>
+      <label className="flex cursor-pointer items-center gap-2 text-sm"><Checkbox checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />启用这个镜像组</label>
+      <Field label={`账号（已选 ${accountIds.size} 个）`} description="只有选中的账号会进入本组；不选账号表示该组对匹配域名下的全部账号生效。"><Input className="mb-2 h-8 text-xs" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号" /><div className="max-h-44 overflow-y-auto rounded-md border">{filteredAccounts.map((account) => <label key={account.id} className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-xs transition-colors hover:bg-muted/40 last:border-b-0"><Checkbox checked={accountIds.has(account.id)} onCheckedChange={() => toggle(setAccountIds, account.id)} /><span className="min-w-0 flex-1 truncate">{account.name || account.email || account.id}</span><span className="text-[11px] text-muted-foreground">{account.poolType}</span></label>)}</div></Field>
+      <Field label={`原始域名（已选 ${domains.size} 个）`} description="一组可以包含多个需要代理的原始域名。"><div className="grid max-h-44 gap-1 overflow-y-auto rounded-md border p-2 sm:grid-cols-2">{knownDomains.map((domain) => { const preset = presetDomains.find((item) => item.domain === domain); return <label key={domain} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors hover:bg-muted/40"><Checkbox checked={domains.has(domain)} onCheckedChange={() => toggle(setDomains, domain)} /><span className="min-w-0 truncate font-mono">{domain}</span>{preset ? <span className="ml-auto truncate text-[10px] text-muted-foreground">{preset.label}</span> : null}</label>; })}</div><div className="mt-2 flex gap-2"><Input className="h-8 flex-1 font-mono text-xs" value={customDomain} onChange={(event) => setCustomDomain(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addCustomDomain(); } }} placeholder="其他域名，例如 custom.example.com" /><Button type="button" variant="outline" size="sm" onClick={addCustomDomain} disabled={!customDomain.trim()}>添加</Button></div></Field>
+      <Field label={`镜像节点（${mirrors.length} 个）`} description="每组可以添加多个地址；$host 会替换成请求的原始 host。"><div className="space-y-2">{mirrors.map((mirror) => <div key={mirror.id} className="grid items-center gap-2 sm:grid-cols-[28px_140px_1fr_34px]"><Checkbox checked={mirror.enabled} onCheckedChange={(value) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, enabled: value === true } : item))} /><Input className="h-8 text-xs" value={mirror.name} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, name: event.target.value } : item))} /><Input className="h-8 font-mono text-xs" value={mirror.url} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, url: event.target.value } : item))} /><Button type="button" variant="ghost" size="icon-sm" onClick={() => removeMirror(mirror.id)}><Trash2 /></Button></div>)}<div className="grid gap-2 sm:grid-cols-[140px_1fr_auto]"><Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="节点名称" /><Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.ahao1.tech/$host" /><Button type="button" variant="outline" size="sm" disabled={!mirrorName.trim() || !mirrorUrl.trim()} onClick={() => { setMirrors((current) => [...current, { id: newId("mirror"), name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }]); setMirrorName(""); setMirrorUrl(""); }}><Plus />节点</Button></div></div></Field>
+      <Field label={`路由规则（${rules.length} 条）`} description="按顺序匹配账号名称、邮箱、ID、工作区或账号池；未命中时在启用节点间稳定 Hash。"><div className="space-y-2">{rules.map((rule) => <div key={rule.id} className="grid items-center gap-2 sm:grid-cols-[28px_1fr_150px_34px]"><Checkbox checked={rule.enabled} onCheckedChange={(value) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, enabled: value === true } : item))} /><Input className="h-8 font-mono text-xs" value={rule.pattern} onChange={(event) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, pattern: event.target.value } : item))} /><MirrorSelect mirrors={mirrors} value={rule.mirrorId} onChange={(mirrorId) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, mirrorId } : item))} /><Button type="button" variant="ghost" size="icon-sm" onClick={() => setRules((current) => current.filter((item) => item.id !== rule.id))}><Trash2 /></Button></div>)}<div className="grid gap-2 sm:grid-cols-[1fr_150px_auto]"><Input className="h-8 font-mono text-xs" value={pattern} onChange={(event) => setPattern(event.target.value)} placeholder="例如 @example\\.com$ 或 ^prod-" /><MirrorSelect mirrors={mirrors} value={ruleMirrorId} onChange={setRuleMirrorId} /><Button type="button" variant="outline" size="sm" disabled={!pattern.trim() || !ruleMirrorId} onClick={() => { setRules((current) => [...current, { id: newId("rule"), pattern: pattern.trim(), mirrorId: ruleMirrorId, enabled: true }]); setPattern(""); }}><Plus />规则</Button></div></div></Field>
     </div>
     <DialogFooter><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="button" disabled={!valid} onClick={() => onSave({ id: group?.id ?? newId("group"), name: name.trim(), enabled, domains: [...domains], accountIds: [...accountIds], mirrors, rules })}>保存镜像组</Button></DialogFooter>
   </DialogContent></Dialog>;
 }
 
 function MirrorSelect({ mirrors, value, onChange }: { mirrors: MirrorTarget[]; value: string; onChange: (value: string) => void }) {
-  return <select className="h-8 rounded-md border bg-white px-2 text-xs" value={value} onChange={(event) => onChange(event.target.value)}><option value="">选择节点</option>{mirrors.map((mirror) => <option key={mirror.id} value={mirror.id}>{mirror.name}</option>)}</select>;
+  return <Select value={value || "none"} onValueChange={(next) => onChange(next === "none" ? "" : next)}><SelectTrigger className="w-full bg-white text-xs"><SelectValue placeholder="选择节点" /></SelectTrigger><SelectContent><SelectItem value="none">选择节点</SelectItem>{mirrors.map((mirror) => <SelectItem key={mirror.id} value={mirror.id}>{mirror.name}</SelectItem>)}</SelectContent></Select>;
 }
 function Toggle({
   checked,
@@ -521,11 +527,10 @@ function Toggle({
     <label
       className={`flex cursor-pointer gap-3 rounded-md border p-3 ${danger && checked ? "border-destructive/25 bg-destructive/5" : "bg-[#fafafa]"}`}
     >
-      <input
-        type="checkbox"
+      <Checkbox
         checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 size-4"
+        onCheckedChange={(value) => onChange(value === true)}
+        className="mt-0.5"
       />
       <span>
         <span className="block text-sm font-medium">{label}</span>

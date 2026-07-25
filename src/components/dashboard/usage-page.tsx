@@ -149,17 +149,17 @@ export function UsagePage() {
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="inline-flex items-center rounded-lg border bg-card p-0.5">
           {rangeOrder.map((key) => (
-            <button
+            <Button
               key={key}
               type="button"
+              variant={range === key ? "default" : "ghost"}
+              size="sm"
               onClick={() => selectRange(key)}
-              className={`h-7 rounded-md px-3 text-xs font-medium transition-colors ${
-                range === key ? "bg-[#171717] text-white" : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={range === key ? undefined : "text-muted-foreground"}
               aria-current={range === key ? "true" : undefined}
             >
               {rangeLabels[key]}
-            </button>
+            </Button>
           ))}
         </div>
         <span className="text-xs text-muted-foreground">

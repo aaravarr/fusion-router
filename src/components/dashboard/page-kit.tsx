@@ -1,6 +1,7 @@
 import { AlertCircle, Inbox, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export function PageIntro({
   eyebrow,
@@ -178,19 +179,17 @@ export function PaginationBar({
       <div className="flex flex-wrap items-center gap-3">
         <span>显示 {start}-{end} / 共 {total}</span>
         {onPageSizeChange ? (
-          <label className="inline-flex items-center gap-1.5">
+          <div className="inline-flex items-center gap-1.5">
             <span>每页</span>
-            <select
-              className="h-7 rounded-md border bg-white px-2 text-xs text-foreground"
-              value={pageSize}
-              onChange={(event) => onPageSizeChange(Number(event.target.value))}
-              disabled={loading}
-            >
+            <Select value={String(pageSize)} onValueChange={(value) => onPageSizeChange(Number(value))} disabled={loading}>
+              <SelectTrigger size="sm" className="w-[72px] bg-white text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent align="start">
               {pageSizeOptions.map((size) => (
-                <option key={size} value={size}>{size}</option>
+                <SelectItem key={size} value={String(size)}>{size}</SelectItem>
               ))}
-            </select>
-          </label>
+              </SelectContent>
+            </Select>
+          </div>
         ) : null}
       </div>
       <div className="flex items-center gap-1">
@@ -205,4 +204,3 @@ export function PaginationBar({
     </div>
   )
 }
-
