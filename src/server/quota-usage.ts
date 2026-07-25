@@ -2,6 +2,9 @@ import type { AppDatabase } from "./db"
 import { getDatabase } from "./db"
 
 export const XAI_DEFAULT_TOKEN_LIMIT = 1_000_000
+export const XAI_HARD_BLOCK_TOKEN_THRESHOLD = 900_000
+export const XAI_CONSECUTIVE_FAILURE_LIMIT = 3
+export const XAI_FIXED_BLOCK_SECONDS = 24 * 60 * 60
 export const ROLLING_WINDOW_MS = 24 * 60 * 60_000
 
 // Temporary rate-limit backoff ladder (inspired by sub2api).
@@ -50,37 +53,46 @@ export function upsertLocalRollingUsage(ownerUserId: string, accountId: string, 
   const timestamp = now.toISOString()
   // Never let a zero-looking upstream header wipe higher local usage.
   // Prefer the max of local usage and any previously stored non-zero usage.
-  const previous = db.prepare(`SELECT usage_percent, remaining_value, limit_value FROM quota_windows
+  const previous = db.prepare(`SELECT usage_percent, remaining_value, limit_value, reset_at FROM quota_windows
     WHERE owner_user_id=? AND account_id=? AND kind='ROLLING_24H'`).get(ownerUserId, accountId) as {
     usage_percent: number | null
     remaining_value: number | null
     limit_value: number | null
+    reset_at: string | null
   } | undefined
-  const usagePercent = Math.max(snapshot.usagePercent, Number(previous?.usage_percent ?? 0))
+  const previousResetMs = previous?.reset_at ? Date.parse(previous.reset_at) : Number.NaN
+  const previousExpired = Number.isFinite(previousResetMs) && previousResetMs <= now.getTime()
+  const previousUsage = previousExpired ? 0 : Number(previous?.usage_percent ?? 0)
+  const previousRemaining = previousExpired ? null : previous?.remaining_value
+  const hardBlocked = snapshot.usedTokens >= XAI_HARD_BLOCK_TOKEN_THRESHOLD
+  const usagePercent = hardBlocked ? Math.max(100, previousUsage) : Math.max(snapshot.usagePercent, previousUsage)
   const limitValue = Math.max(snapshot.limitTokens, Number(previous?.limit_value ?? 0) || snapshot.limitTokens)
   // Prefer the lower remaining (more used). remaining can go negative when over quota.
-  const remainingValue = previous?.remaining_value == null
+  const remainingValue = previousRemaining == null
     ? snapshot.remainingTokens
-    : Math.min(snapshot.remainingTokens, Number(previous.remaining_value))
+    : Math.min(snapshot.remainingTokens, Number(previousRemaining))
   const usedTokens = Math.max(0, limitValue - remainingValue)
   const clampedUsage = roundPercent(Math.max(usagePercent, (usedTokens / limitValue) * 100))
-  const signedRemaining = limitValue - Math.round((clampedUsage / 100) * limitValue)
+  const signedRemaining = hardBlocked ? Math.min(0, limitValue - Math.round((clampedUsage / 100) * limitValue)) : limitValue - Math.round((clampedUsage / 100) * limitValue)
+  const activePreviousReset = previousUsage >= 100 && Number.isFinite(previousResetMs) && previousResetMs > now.getTime() ? previous!.reset_at : null
+  const resetAt = hardBlocked ? activePreviousReset ?? new Date(now.getTime() + XAI_FIXED_BLOCK_SECONDS * 1000).toISOString() : previousExpired ? null : previous?.reset_at ?? null
 
   db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
-    VALUES(?,?,'ROLLING_24H',?,NULL,'LOCAL_USAGE',?,?,?)
+    VALUES(?,?,'ROLLING_24H',?,?,'LOCAL_USAGE',?,?,?)
     ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
       usage_percent=excluded.usage_percent,
+      reset_at=excluded.reset_at,
       source='LOCAL_USAGE',
       last_observed_at=excluded.last_observed_at,
       limit_value=excluded.limit_value,
       remaining_value=excluded.remaining_value,
       observation_version=observation_version+1`)
-    .run(ownerUserId, accountId, clampedUsage, timestamp, limitValue, signedRemaining)
+    .run(ownerUserId, accountId, clampedUsage, resetAt, timestamp, limitValue, signedRemaining)
   return { usagePercent: clampedUsage, limitValue, remainingValue: signedRemaining }
 }
 
 export function isLocallyOverQuota(accountId: string, db: AppDatabase = getDatabase(), now = new Date()): boolean {
-  return computeLocalRollingUsage(accountId, db, now).usagePercent >= 100
+  return computeLocalRollingUsage(accountId, db, now).usedTokens >= XAI_HARD_BLOCK_TOKEN_THRESHOLD
 }
 
 /**
@@ -160,9 +172,9 @@ export function computeAdaptiveRateLimitSeconds(input: {
  * Decide how long an xAI free account should stay blocked after an upstream error.
  *
  * Priority:
- * 1. Explicit upstream retry/reset seconds when present
- * 2. If already over local 1M: wait only until usage falls back under 1M
- * 3. Otherwise: adaptive short/medium cooldown
+ * 1. Three consecutive switchable failures: fixed 24h block
+ * 2. Local rolling usage at or above 900k: fixed 24h block
+ * 3. Otherwise: upstream hint or adaptive short/medium cooldown
  */
 export function resolveXaiBlockSeconds(input: {
   accountId: string
@@ -171,7 +183,8 @@ export function resolveXaiBlockSeconds(input: {
   previousResetAt?: string | null
   now?: Date
   db?: AppDatabase
-}): { seconds: number; dayUnavailable: boolean; reason: "header" | "local_under_limit" | "adaptive" } {
+  consecutiveFailures?: number
+}): { seconds: number; dayUnavailable: boolean; reason: "header" | "local_threshold" | "consecutive_failures" | "adaptive" } {
   const db = input.db ?? getDatabase()
   const now = input.now ?? new Date()
   const over = isLocallyOverQuota(input.accountId, db, now)
@@ -179,15 +192,8 @@ export function resolveXaiBlockSeconds(input: {
     ? clampRetrySeconds(input.suggestedSeconds, XAI_RATE_LIMIT_FALLBACK_SECONDS, { allowShorterThanFallback: true })
     : null
 
-  if (over) {
-    const local = secondsUntilUsageBelowLimit(input.accountId, db, now)
-    if (header != null) {
-      // Trust header to shorten long local waits, but never wait longer than the
-      // time needed for local usage to fall under 1M.
-      return { seconds: Math.max(60, Math.min(local, header)), dayUnavailable: true, reason: "header" }
-    }
-    return { seconds: local, dayUnavailable: true, reason: "local_under_limit" }
-  }
+  if ((input.consecutiveFailures ?? 0) >= XAI_CONSECUTIVE_FAILURE_LIMIT) return { seconds: XAI_FIXED_BLOCK_SECONDS, dayUnavailable: true, reason: "consecutive_failures" }
+  if (over) return { seconds: XAI_FIXED_BLOCK_SECONDS, dayUnavailable: true, reason: "local_threshold" }
 
   return {
     seconds: computeAdaptiveRateLimitSeconds({

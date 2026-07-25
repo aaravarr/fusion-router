@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createDatabase } from "./db"
-import { computeAdaptiveRateLimitSeconds, computeLocalRollingUsage, resolveXaiBlockSeconds, secondsUntilUsageBelowLimit, upsertLocalRollingUsage, XAI_RATE_LIMIT_FALLBACK_SECONDS, XAI_RATE_LIMIT_REPEAT_SECONDS } from "./quota-usage"
+import { computeAdaptiveRateLimitSeconds, computeLocalRollingUsage, resolveXaiBlockSeconds, secondsUntilUsageBelowLimit, upsertLocalRollingUsage, XAI_FIXED_BLOCK_SECONDS, XAI_RATE_LIMIT_FALLBACK_SECONDS, XAI_RATE_LIMIT_REPEAT_SECONDS } from "./quota-usage"
 
 describe("quota-usage", () => {
   it("从最近 24h 成功请求汇总 xAI 滚动用量", () => {
@@ -84,6 +84,23 @@ describe("quota-usage", () => {
     expect(upserted.remainingValue).toBe(-476200)
   })
 
+  it("达到 90 万 token 后按超限固定封锁 24 小时", () => {
+    const db = createDatabase(":memory:")
+    const now = new Date("2026-07-24T12:00:00.000Z")
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("u1", "u1", "u1", "U1", "USER", "hash", now.toISOString(), now.toISOString())
+    db.prepare(`INSERT INTO accounts(id,owner_user_id,name,pool_type,workspace_id,go_key_id,credential_source,last_synced_at,auth_cookie_ciphertext,go_api_key_ciphertext,subscription_state,billing_guard,next_usage_check_at,ordinal,created_at,updated_at)
+      VALUES('a1','u1','xai','xai-grok','ws-hard-block','go','PROVIDER_IMPORT',?,?,?,'ACTIVE','VERIFIED_GO_ONLY',?,0,?,?)`)
+      .run(now.toISOString(), "cipher-cookie", "cipher-key", now.toISOString(), now.toISOString(), now.toISOString())
+    db.prepare(`INSERT INTO gateway_requests(id,owner_user_id,endpoint,model,status,outcome,attempt_count,started_at,ok,account_id,total_tokens)
+      VALUES('r1','u1','chat/completions','grok-4.5',200,'SUCCESS',1,?,1,'a1',900000)`).run(new Date(now.getTime() - 60_000).toISOString())
+
+    expect(upsertLocalRollingUsage("u1", "a1", db, now)).toMatchObject({ usagePercent: 100, remainingValue: 0 })
+    const row = db.prepare("SELECT usage_percent,remaining_value,reset_at,source FROM quota_windows WHERE account_id='a1' AND kind='ROLLING_24H'").get() as { usage_percent: number; remaining_value: number; reset_at: string; source: string }
+    expect(row).toMatchObject({ usage_percent: 100, remaining_value: 0, source: "LOCAL_USAGE" })
+    expect(Date.parse(row.reset_at) - now.getTime()).toBe(XAI_FIXED_BLOCK_SECONDS * 1000)
+  })
+
   it("只等到用量降回 1M 以下，而不是死等最早请求滚出", () => {
     const db = createDatabase(":memory:")
     const now = new Date("2026-07-24T12:00:00.000Z")
@@ -129,7 +146,7 @@ describe("quota-usage", () => {
 
     const over = resolveXaiBlockSeconds({ accountId: "a1", suggestedSeconds: 120, now, db })
     expect(over.dayUnavailable).toBe(true)
-    expect(over.reason).toBe("header")
-    expect(over.seconds).toBe(120)
+    expect(over.reason).toBe("local_threshold")
+    expect(over.seconds).toBe(XAI_FIXED_BLOCK_SECONDS)
   })
 })

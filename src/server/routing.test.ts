@@ -3,6 +3,7 @@ import { createDatabase } from "./db"
 import { SecretVault } from "./crypto"
 import { AccountRepository, ModelRoutingRepository } from "./repository"
 import { NoEligibleAccountError, RoutingService } from "./routing"
+import { upsertLocalRollingUsage } from "./quota-usage"
 
 const encryptionKey = Buffer.alloc(32, 4).toString("base64")
 const ownerUserId = "user-1"
@@ -204,5 +205,53 @@ describe("routing", () => {
     routing.setModel("grok-4.5")
     const selected = routing.select("after-day-block", "chat/completions", new Set())
     expect(selected.account.id).toBe(other.id)
+  })
+
+  it("xAI 连续三次限额失败后固定封锁 24 小时", () => {
+    const { db, accounts, routing } = make()
+    const xai = accounts.createProviderAccount({ name: "xAI unstable", poolType: "xai-grok", externalId: "xai-three-failures" })
+    const now = new Date()
+
+    routing.markQuota(xai.id, "PROVIDER_RATE_LIMIT", 60, now)
+    routing.markQuota(xai.id, "PROVIDER_RATE_LIMIT", 60, new Date(now.getTime() + 61_000))
+    routing.markQuota(xai.id, "PROVIDER_RATE_LIMIT", 60, new Date(now.getTime() + 122_000))
+
+    const row = db.prepare("SELECT usage_percent,reset_at,source FROM quota_windows WHERE account_id=? AND kind='ROLLING_24H'").get(xai.id) as { usage_percent: number; reset_at: string; source: string }
+    expect(row).toMatchObject({ usage_percent: 100, source: "UPSTREAM_429" })
+    expect(Date.parse(row.reset_at) - new Date(now.getTime() + 122_000).getTime()).toBeGreaterThanOrEqual(24 * 60 * 60_000)
+    const event = db.prepare("SELECT metadata_json FROM events WHERE account_id=? AND type='ACCOUNT_QUOTA_BLOCKED' ORDER BY rowid DESC LIMIT 1").get(xai.id) as { metadata_json: string }
+    expect(JSON.parse(event.metadata_json)).toMatchObject({ consecutiveFailures: 3, blockReason: "consecutive_failures", dayUnavailable: true })
+  })
+
+  it("xAI 达到 90 万 token 后退出调度并在 24 小时后恢复", () => {
+    const { db, accounts, routing } = make()
+    const xai = accounts.createProviderAccount({ name: "xAI threshold", poolType: "xai-grok", externalId: "xai-900k" })
+    const now = new Date()
+    db.prepare(`INSERT INTO gateway_requests(id,owner_user_id,endpoint,model,status,outcome,attempt_count,started_at,ok,account_id,total_tokens)
+      VALUES('xai-900k-request',?, 'chat/completions','grok-4.5',200,'SUCCESS',1,?,1,?,900000)`)
+      .run(ownerUserId, new Date(now.getTime() - 60_000).toISOString(), xai.id)
+    upsertLocalRollingUsage(ownerUserId, xai.id, db, now)
+    routing.setModel("grok-4.5")
+
+    expect(() => routing.select("blocked-at-900k", "chat/completions", new Set(), now)).toThrowError(NoEligibleAccountError)
+    const recovered = routing.select("recovered-after-24h", "chat/completions", new Set(), new Date(now.getTime() + 24 * 60 * 60_000 + 2_000))
+    expect(recovered.account.id).toBe(xai.id)
+  })
+
+  it("xAI 成功一次后连续失败计数重新开始", () => {
+    const { db, accounts, routing } = make()
+    const xai = accounts.createProviderAccount({ name: "xAI recovered", poolType: "xai-grok", externalId: "xai-failure-reset" })
+    const now = new Date()
+    routing.markQuota(xai.id, "PROVIDER_RATE_LIMIT", 60, now)
+    routing.markQuota(xai.id, "PROVIDER_RATE_LIMIT", 60, new Date(now.getTime() + 61_000))
+    routing.markSuccess(xai.id)
+    const successAt = new Date(Date.now() + 1_000).toISOString()
+    db.prepare("UPDATE accounts SET last_success_at=? WHERE id=?").run(successAt, xai.id)
+
+    routing.markQuota(xai.id, "PROVIDER_RATE_LIMIT", 60, new Date(now.getTime() + 122_000))
+
+    expect(db.prepare("SELECT COUNT(*) AS value FROM quota_windows WHERE account_id=? AND kind='ROLLING_24H'").get(xai.id)).toEqual({ value: 0 })
+    const event = db.prepare("SELECT metadata_json FROM events WHERE account_id=? AND type='ACCOUNT_QUOTA_BLOCKED' ORDER BY rowid DESC LIMIT 1").get(xai.id) as { metadata_json: string }
+    expect(JSON.parse(event.metadata_json)).toMatchObject({ consecutiveFailures: 1, dayUnavailable: false })
   })
 })

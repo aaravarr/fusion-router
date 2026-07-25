@@ -319,13 +319,19 @@ export class RoutingService {
     let retry = retryAfterSeconds && retryAfterSeconds > 0 && retryAfterSeconds <= 45 * 86400 ? retryAfterSeconds : 60
     let dayUnavailable = false
     let blockReason: string | null = null
+    let consecutiveFailures = 0
 
     if (account?.poolType === "xai-grok") {
+      const failureRow = this.db.prepare(`SELECT COUNT(*) AS value FROM events
+        WHERE owner_user_id=? AND account_id=? AND type='ACCOUNT_QUOTA_BLOCKED'
+          AND (? IS NULL OR created_at>?)`).get(this.ownerUserId, accountId, account.lastSuccessAt, account.lastSuccessAt) as { value: number }
+      consecutiveFailures = Number(failureRow.value) + 1
       const decision = resolveXaiBlockSeconds({
         accountId,
         suggestedSeconds: retryAfterSeconds,
         previousLimitedAt: previous?.last_observed_at,
         previousResetAt: previous?.reset_at,
+        consecutiveFailures,
         now,
         db: this.db,
       })
@@ -367,6 +373,7 @@ export class RoutingService {
         dayUnavailable,
         localUsageOverQuota: dayUnavailable,
         blockReason,
+        consecutiveFailures,
       })
     })()
   }
