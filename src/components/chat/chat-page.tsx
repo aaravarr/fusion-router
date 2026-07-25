@@ -49,7 +49,7 @@ import {
   PromptInputTools,
 } from "@/components/ai-elements/prompt-input"
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning"
-import { cn } from "@/lib/utils"
+import { cn, copyToClipboard } from "@/lib/utils"
 
 interface ChatOptions {
   models: string[]
@@ -328,7 +328,7 @@ export function ChatPage() {
                 <div className="flex items-center justify-between gap-3">
                   <p className="truncate text-[11px] text-[#999]">{message.model} · {message.routeLabel} · {message.reasoningLabel}</p>
                   <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                    {message.content ? <MessageAction tooltip="复制回答" onClick={() => void navigator.clipboard.writeText(message.content)}><Copy /></MessageAction> : null}
+                    {message.content ? <MessageAction tooltip="复制回答" onClick={() => void copyToClipboard(message.content)}><Copy /></MessageAction> : null}
                   </MessageActions>
                 </div>
               ) : null}
@@ -343,7 +343,7 @@ export function ChatPage() {
           <PromptInput onSubmit={submit} className="rounded-2xl border-[#dedede] bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08)]">
             <PromptInputBody>
               <PromptInputTextarea placeholder={model ? `询问 ${model}` : "正在加载模型…"} disabled={!model || status === "submitted" || status === "streaming"}
-                className="min-h-[62px] resize-none px-4 pt-3 text-[15px] leading-6" />
+                className="min-h-[62px] resize-none px-4 pt-3 text-base leading-6 sm:text-[15px]" />
             </PromptInputBody>
             <PromptInputFooter className="px-2.5 pb-2.5">
               <PromptInputTools className="min-w-0 gap-1">

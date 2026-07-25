@@ -20,6 +20,7 @@ import { PROVIDER_DOMAIN_PRESETS } from "./domain-presets";
 import { ErrorState, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
 import type { LogsCleanupResponse } from "./types";
+import { copyToClipboard } from "@/lib/utils";
 
 interface Settings {
   domainMirrorMap: DomainMirrorMap;
@@ -369,8 +370,8 @@ export function SettingsPage() {
             <DialogTitle>立即保存新的 Cron Secret</DialogTitle>
             <DialogDescription>该密钥只显示一次。关闭后无法再次查看，只能重新轮换。</DialogDescription>
           </DialogHeader>
-          <div className="break-all rounded-md border bg-[#fafafa] p-3 font-mono text-xs leading-5">{oneTimeCronSecret}</div>
-          <Button variant="outline" className="w-full" onClick={async () => { if (!oneTimeCronSecret) return; await navigator.clipboard.writeText(oneTimeCronSecret); setCopied(true); }}>
+          <div className="select-all break-all rounded-md border bg-[#fafafa] p-3 font-mono text-xs leading-5">{oneTimeCronSecret}</div>
+          <Button variant="outline" className="w-full" onClick={async () => { if (!oneTimeCronSecret) return; if (await copyToClipboard(oneTimeCronSecret)) setCopied(true); }}>
             {copied ? <Check /> : <Copy />}{copied ? "已复制" : "复制密钥"}
           </Button>
           <DialogFooter><Button onClick={() => { setOneTimeCronSecret(null); setCopied(false); }}>我已安全保存</Button></DialogFooter>
