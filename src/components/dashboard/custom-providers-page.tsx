@@ -1,12 +1,15 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import CodeMirror from "@uiw/react-codemirror";
+import { json } from "@codemirror/lang-json";
+import { javascript } from "@codemirror/lang-javascript";
 import { Braces, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAdmin } from "./admin-context";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel, formatDate } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
@@ -28,6 +31,9 @@ const DEFAULT_EXTRACTOR = `function(response) {
     unit: "USD"
   };
 }`;
+
+const JSON_EDITOR_EXTENSIONS = [json()];
+const JAVASCRIPT_EDITOR_EXTENSIONS = [javascript()];
 
 function errorMessage(payload: unknown, fallback: string) {
   if (!payload || typeof payload !== "object") return fallback;
@@ -145,27 +151,93 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
     finally { setSaving(false); }
   }
 
-  return <Dialog open onOpenChange={(open) => { if (!open && !saving) onClose(); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
-    <DialogHeader><DialogTitle>{provider ? "编辑 Provider" : "新建 Provider"}</DialogTitle><DialogDescription>base URL 应包含 API 版本路径，例如 https://api.example.com/v1。</DialogDescription></DialogHeader>
-    <div className="grid gap-4 sm:grid-cols-2">
-      <Field label="名称"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Internal OpenAI" /></Field>
-      <Field label="接口类型"><select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={interfaceType} onChange={(event) => setInterfaceType(event.target.value as InterfaceType)}><option value="responses">Responses API</option><option value="chat">Chat Completions API</option></select></Field>
-      <Field label="Base URL" wide><Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /></Field>
-      <Field label="描述" wide><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="用途、地域或计费说明" /></Field>
-      <Field label="模型列表（每行一个，留空自动拉取 /models）" wide><Textarea className="min-h-24 font-mono text-xs" value={models} onChange={(event) => setModels(event.target.value)} placeholder={"gpt-5.6\nclaude-sonnet-4.5"} /></Field>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />启用 Provider</label>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={balanceEnabled} onChange={(event) => setBalanceEnabled(event.target.checked)} />配置余额查询</label>
+  return <Dialog open onOpenChange={(open) => { if (!open && !saving) onClose(); }}><DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+    <DialogHeader className="border-b px-5 py-4 pr-14 sm:px-6">
+      <DialogTitle>{provider ? "编辑 Provider" : "新建 Provider"}</DialogTitle>
+      <DialogDescription>配置上游连接、模型发现和余额解析。Base URL 应包含 API 版本路径。</DialogDescription>
+    </DialogHeader>
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto bg-muted/20 p-4 sm:p-6">
+      <EditorSection title="基础信息" description="定义 Provider 的连接方式和可用模型。">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="名称"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Internal OpenAI" /></Field>
+          <Field label="接口类型"><Select value={interfaceType} onValueChange={(value) => setInterfaceType(value as InterfaceType)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses API</SelectItem><SelectItem value="chat">Chat Completions API</SelectItem></SelectContent></Select></Field>
+          <Field label="Base URL" wide><Input className="font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /></Field>
+          <Field label="描述" wide><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="用途、地域或计费说明" /></Field>
+          <div className="sm:col-span-2"><CodeEditor label="模型列表" description="每行一个；留空时自动拉取 /models。" value={models} onChange={setModels} language="text" height="112px" placeholder={"gpt-5.6\nclaude-sonnet-4.5"} /></div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <OptionCard checked={enabled} onChange={setEnabled} title="启用 Provider" description="允许该 Provider 参与模型路由和账号调度。" />
+          <OptionCard checked={balanceEnabled} onChange={setBalanceEnabled} title="配置余额查询" description="定期请求余额接口并按返回值控制调度。" />
+        </div>
+      </EditorSection>
+
       {balanceEnabled ? <>
-        <Field label="余额接口 URL" wide><Input className="font-mono text-xs" value={balanceUrl} onChange={(event) => setBalanceUrl(event.target.value)} /></Field>
-        <Field label="请求方法"><select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={balanceMethod} onChange={(event) => setBalanceMethod(event.target.value as "GET" | "POST")}><option>GET</option><option>POST</option></select></Field>
-        <Field label="Headers JSON"><Textarea className="min-h-28 font-mono text-xs" value={balanceHeaders} onChange={(event) => setBalanceHeaders(event.target.value)} /></Field>
-        <Field label="Body JSON（可选）"><Textarea className="min-h-28 font-mono text-xs" value={balanceBody} onChange={(event) => setBalanceBody(event.target.value)} placeholder={'{"scope":"billing"}'} /></Field>
-        <Field label="Extractor 函数" wide><Textarea className="min-h-56 font-mono text-xs" value={extractor} onChange={(event) => setExtractor(event.target.value)} /></Field>
+        <EditorSection title="余额请求" description="使用模板变量 {{baseUrl}} 和 {{apiKey}} 构造请求。">
+          <div className="grid gap-4 sm:grid-cols-[1fr_160px]">
+            <Field label="余额接口 URL"><Input className="font-mono text-xs" value={balanceUrl} onChange={(event) => setBalanceUrl(event.target.value)} placeholder="{{baseUrl}}/user/balance" /></Field>
+            <Field label="请求方法"><Select value={balanceMethod} onValueChange={(value) => setBalanceMethod(value as "GET" | "POST")}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="GET">GET</SelectItem><SelectItem value="POST">POST</SelectItem></SelectContent></Select></Field>
+          </div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <CodeEditor label="Headers" language="json" value={balanceHeaders} onChange={setBalanceHeaders} height="176px" invalid={!isValidJson(balanceHeaders)} onFormat={() => setBalanceHeaders(formatJson(balanceHeaders))} />
+            <CodeEditor label="Body" description="可选；GET 请求通常留空。" language="json" value={balanceBody} onChange={setBalanceBody} height="176px" placeholder={'{"scope":"billing"}'} invalid={Boolean(balanceBody.trim()) && !isValidJson(balanceBody)} onFormat={balanceBody.trim() ? () => setBalanceBody(formatJson(balanceBody)) : undefined} />
+          </div>
+        </EditorSection>
+        <EditorSection title="响应解析" description="函数接收上游响应 JSON，并返回标准余额结构。">
+          <CodeEditor label="Extractor 函数" language="javascript" value={extractor} onChange={setExtractor} height="280px" />
+        </EditorSection>
       </> : null}
+      {error ? <p className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{error}</p> : null}
     </div>
-    {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
-    <DialogFooter><Button variant="outline" onClick={onClose} disabled={saving}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? <LoaderCircle className="animate-spin" /> : null}保存</Button></DialogFooter>
+    <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-background px-5 py-4 sm:px-6"><Button variant="outline" onClick={onClose} disabled={saving}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? <LoaderCircle className="animate-spin" /> : null}保存 Provider</Button></DialogFooter>
   </DialogContent></Dialog>;
+}
+
+function EditorSection({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+  return <section className="overflow-hidden rounded-xl border bg-background shadow-xs">
+    <div className="border-b bg-muted/30 px-4 py-3 sm:px-5"><h3 className="text-sm font-medium">{title}</h3><p className="mt-0.5 text-xs text-muted-foreground">{description}</p></div>
+    <div className="p-4 sm:p-5">{children}</div>
+  </section>;
+}
+
+function OptionCard({ checked, onChange, title, description }: { checked: boolean; onChange: (value: boolean) => void; title: string; description: string }) {
+  return <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 transition-colors ${checked ? "border-foreground/20 bg-foreground/[0.03]" : "bg-background hover:bg-muted/30"}`}>
+    <input className="mt-0.5 size-4 accent-foreground" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <span><span className="block text-sm font-medium">{title}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{description}</span></span>
+  </label>;
+}
+
+function CodeEditor({ label, description, language, value, onChange, height, placeholder, invalid = false, onFormat }: { label: string; description?: string; language: "json" | "javascript" | "text"; value: string; onChange: (value: string) => void; height: string; placeholder?: string; invalid?: boolean; onFormat?: () => void }) {
+  const extensions = language === "json" ? JSON_EDITOR_EXTENSIONS : language === "javascript" ? JAVASCRIPT_EDITOR_EXTENSIONS : [];
+  const languageLabel = language === "javascript" ? "JavaScript" : language === "json" ? "JSON" : "TEXT";
+  return <div>
+    <div className="mb-1.5 flex min-h-5 items-center gap-2">
+      <Label>{label}</Label>
+      {description ? <span className="text-[11px] text-muted-foreground">{description}</span> : null}
+      <span className={`ml-auto rounded px-1.5 py-0.5 font-mono text-[9px] tracking-wide ${invalid ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"}`}>{invalid ? "INVALID JSON" : languageLabel}</span>
+      {onFormat ? <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={onFormat}>格式化</Button> : null}
+    </div>
+    <div className={`overflow-hidden rounded-lg border bg-[#fbfbfa] transition-shadow focus-within:ring-2 focus-within:ring-ring/30 ${invalid ? "border-destructive/50" : "border-input"}`}>
+      <CodeMirror
+        aria-label={label}
+        value={value}
+        height={height}
+        extensions={extensions}
+        onChange={onChange}
+        placeholder={placeholder}
+        theme="light"
+        basicSetup={{ lineNumbers: true, foldGutter: language !== "text", highlightActiveLine: true, highlightActiveLineGutter: true, bracketMatching: true, closeBrackets: true, autocompletion: true }}
+        className="text-[13px] [&_.cm-activeLine]:bg-black/[0.025] [&_.cm-activeLineGutter]:bg-black/[0.04] [&_.cm-content]:py-2 [&_.cm-editor]:bg-transparent [&_.cm-editor.cm-focused]:outline-none [&_.cm-gutters]:border-r [&_.cm-gutters]:border-border/70 [&_.cm-gutters]:bg-muted/30 [&_.cm-line]:px-2 [&_.cm-scroller]:font-mono"
+      />
+    </div>
+  </div>;
+}
+
+function isValidJson(value: string): boolean {
+  try { JSON.parse(value); return true; } catch { return false; }
+}
+
+function formatJson(value: string): string {
+  try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
 }
 
 function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvider; onClose: () => void; adminFetch: (path: string, init?: RequestInit) => Promise<Response> }) {
