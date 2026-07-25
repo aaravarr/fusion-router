@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { applyMirrorTarget, selectDomainMirror } from "./api-fetch"
-import type { DomainMirrorConfig } from "./settings"
+import { applyMirrorTarget, selectDomainMirror, selectDomainMirrorGroup, selectMirrorGroupTarget } from "./api-fetch"
+import type { DomainMirrorConfig, DomainMirrorGroup } from "./settings"
 
 const config: DomainMirrorConfig = {
   mirrors: [
@@ -31,6 +31,25 @@ describe("domain mirror selection", () => {
     expect(second?.id).toBe(first?.id)
     expect(first?.id).not.toBe("off")
     expect(selectDomainMirror(config, { account: { id: "disabled" } })?.id).not.toBe("off")
+  })
+
+  it("applies group rules across multiple mirrors before hash sharding", () => {
+    const group: DomainMirrorGroup = {
+      id: "group-a", name: "Group A", enabled: true,
+      domains: ["api.example.com"], accountIds: ["prod-account"],
+      mirrors: config.mirrors, rules: config.rules,
+    }
+    expect(selectMirrorGroupTarget(group, { account: { id: "prod-account" } })?.id).toBe("b")
+    const first = selectMirrorGroupTarget(group, { account: { id: "other" } })
+    expect(selectMirrorGroupTarget(group, { account: { id: "other" } })?.id).toBe(first?.id)
+  })
+
+  it("selects an account-specific group before a domain-wide fallback", () => {
+    const fallback: DomainMirrorGroup = { id: "fallback", name: "Fallback", enabled: true, domains: ["api.example.com"], accountIds: [], mirrors: config.mirrors, rules: [] }
+    const selected: DomainMirrorGroup = { ...fallback, id: "selected", name: "Selected", accountIds: ["account-a"] }
+    expect(selectDomainMirrorGroup([fallback, selected], "api.example.com", "account-a")?.id).toBe("selected")
+    expect(selectDomainMirrorGroup([fallback, selected], "api.example.com", "other")?.id).toBe("fallback")
+    expect(selectDomainMirrorGroup([selected], "api.example.com", "other")).toBeNull()
   })
 
   it("rewrites host and preserves the mirror path prefix, request path and query", () => {

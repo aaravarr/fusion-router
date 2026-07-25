@@ -74,6 +74,20 @@ describe("system settings", () => {
     expect(() => updateSystemSettings({ upstreamBaseUrl: "https://evil-opencode.ai/v1" }, null, db)).toThrow(/official HTTPS/)
   })
 
+  it("stores account-scoped mirror groups with multiple targets and rules", () => {
+    const group = {
+      id: "xai-group", name: "XAI", enabled: true,
+      domains: ["api.x.ai", "accounts.x.ai"], accountIds: ["account-a", "account-b"],
+      mirrors: [
+        { id: "primary", name: "Primary", url: "https://mirror.example.com/$host", enabled: true },
+        { id: "backup", name: "Backup", url: "https://backup.example.com/$host", enabled: true },
+      ],
+      rules: [{ id: "prod", pattern: "^account-a$", mirrorId: "primary", enabled: true }],
+    }
+    expect(updateSystemSettings({ domainMirrorGroups: [group] }, null, db).domainMirrorGroups).toEqual([group])
+    expect(() => updateSystemSettings({ domainMirrorGroups: [{ ...group, rules: [{ ...group.rules[0], mirrorId: "missing" }] }] }, null, db)).toThrow(/不存在的镜像/)
+  })
+
   it("stores random secrets encrypted and supports explicit rotation", () => {
     const row = db
       .prepare("SELECT value_json FROM system_settings WHERE key = ?")

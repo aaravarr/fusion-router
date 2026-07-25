@@ -4,6 +4,7 @@ import { SecretVault } from "./crypto";
 
 export const SYSTEM_SETTING_KEYS = {
   domainMirrorMap: "domain_mirror_map",
+  domainMirrorGroups: "domain_mirror_groups",
   upstreamBaseUrl: "opencode_upstream_base_url",
   upstreamRequestTimeoutMs: "upstream_request_timeout_ms",
   maintenanceIntervalMs: "maintenance_interval_ms",
@@ -55,8 +56,19 @@ export interface DomainMirrorConfig {
 
 export type DomainMirrorMap = Record<string, DomainMirrorConfig>;
 
+export interface DomainMirrorGroup {
+  id: string;
+  name: string;
+  enabled: boolean;
+  domains: string[];
+  accountIds: string[];
+  mirrors: DomainMirrorTarget[];
+  rules: DomainMirrorRule[];
+}
+
 export interface SystemSettings {
   domainMirrorMap: DomainMirrorMap;
+  domainMirrorGroups: DomainMirrorGroup[];
   upstreamBaseUrl: string;
   upstreamRequestTimeoutMs: number;
   maintenanceEnabled: boolean;
@@ -67,6 +79,7 @@ export interface SystemSettings {
 
 export interface UpdateSystemSettingsInput {
   domainMirrorMap?: DomainMirrorMap;
+  domainMirrorGroups?: DomainMirrorGroup[];
   upstreamBaseUrl?: string;
   upstreamRequestTimeoutMs?: number;
   maintenanceEnabled?: boolean;
@@ -90,6 +103,7 @@ export interface LogSettings {
 
 const defaults: SystemSettings & LogSettings = {
   domainMirrorMap: {},
+  domainMirrorGroups: [],
   upstreamBaseUrl: "https://opencode.ai/zen/go/v1",
   upstreamRequestTimeoutMs: 120_000,
   maintenanceEnabled: true,
@@ -113,9 +127,15 @@ export function initializeSystemSettings(db: AppDatabase): void {
   );
  const vault = new SecretVault();
  db.transaction(() => {
- insert.run(
+   insert.run(
      SYSTEM_SETTING_KEYS.domainMirrorMap,
      JSON.stringify(defaults.domainMirrorMap),
+     0,
+     now,
+   );
+   insert.run(
+     SYSTEM_SETTING_KEYS.domainMirrorGroups,
+     JSON.stringify(defaults.domainMirrorGroups),
      0,
      now,
    );
@@ -215,6 +235,7 @@ export function getSystemSettings(
 ): SystemSettings {
   return {
     domainMirrorMap: normalizeDomainMirrorMap(readPublic<unknown>(db, SYSTEM_SETTING_KEYS.domainMirrorMap, defaults.domainMirrorMap)),
+    domainMirrorGroups: normalizeDomainMirrorGroups(readPublic<unknown>(db, SYSTEM_SETTING_KEYS.domainMirrorGroups, defaults.domainMirrorGroups)),
     upstreamBaseUrl: readPublic(
       db,
       SYSTEM_SETTING_KEYS.upstreamBaseUrl,
@@ -286,6 +307,34 @@ export function updateSystemSettings(
       cleaned[d] = { mirrors, accountAssignments, rules }
     }
     entries.push([SYSTEM_SETTING_KEYS.domainMirrorMap, JSON.stringify(cleaned)])
+  }
+  if (input.domainMirrorGroups !== undefined) {
+    const groupIds = new Set<string>()
+    const cleaned = input.domainMirrorGroups.map((group) => {
+      const id = group.id.trim()
+      if (!id || groupIds.has(id)) throw new Error("镜像组 ID 为空或重复")
+      groupIds.add(id)
+      const mirrorIds = new Set<string>()
+      const mirrors = group.mirrors.map((mirror) => {
+        const mirrorId = mirror.id.trim()
+        const urlValue = mirror.url.trim().replace(/\/$/, "")
+        if (!mirrorId || mirrorIds.has(mirrorId)) throw new Error(`镜像组 ${group.name || id} 的节点 ID 为空或重复`)
+        mirrorIds.add(mirrorId)
+        validateMirrorUrl(urlValue, `镜像组 ${group.name || id}/${mirror.name || mirrorId}`)
+        return { id: mirrorId, name: mirror.name.trim() || mirrorId, url: urlValue, enabled: mirror.enabled !== false }
+      })
+      if (!mirrors.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个镜像地址`)
+      const domains = [...new Set(group.domains.map((domain) => domain.trim().toLowerCase()).filter(Boolean))]
+      if (!domains.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个原始域名`)
+      const rules = group.rules.map((rule) => {
+        if (!mirrorIds.has(rule.mirrorId)) throw new Error(`镜像组 ${group.name || id} 的规则引用了不存在的镜像`)
+        validateMirrorPattern(rule.pattern, `镜像组 ${group.name || id}`)
+        return { id: rule.id.trim(), pattern: rule.pattern, mirrorId: rule.mirrorId, enabled: rule.enabled !== false }
+      })
+      if (rules.some((rule) => !rule.id) || new Set(rules.map((rule) => rule.id)).size !== rules.length) throw new Error(`镜像组 ${group.name || id} 的规则 ID 为空或重复`)
+      return { id, name: group.name.trim() || id, enabled: group.enabled !== false, domains, accountIds: [...new Set(group.accountIds.filter(Boolean))], mirrors, rules }
+    })
+    entries.push([SYSTEM_SETTING_KEYS.domainMirrorGroups, JSON.stringify(cleaned)])
   }
   if (input.upstreamBaseUrl !== undefined)
     entries.push([
@@ -379,6 +428,21 @@ export function updateSystemSettings(
   return getSystemSettings(db);
 }
 
+function validateMirrorUrl(value: string, label: string): void {
+  try {
+    const url = new URL(value.replaceAll("$host", "origin.example.com"))
+    if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol")
+    if (url.username || url.password) throw new Error("credentials")
+  } catch {
+    throw new Error(`${label} 的目标地址不是有效 URL`)
+  }
+}
+
+function validateMirrorPattern(pattern: string, label: string): void {
+  try { new RegExp(pattern) } catch { throw new Error(`${label} 包含无效正则: ${pattern}`) }
+  if (pattern.length > 500 || /\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) throw new Error(`${label} 包含可能导致性能问题的正则: ${pattern}`)
+}
+
 export function normalizeDomainMirrorMap(value: unknown): DomainMirrorMap {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {}
   const result: DomainMirrorMap = {}
@@ -398,6 +462,26 @@ export function normalizeDomainMirrorMap(value: unknown): DomainMirrorMap {
     }
   }
   return result
+}
+
+export function normalizeDomainMirrorGroups(value: unknown): DomainMirrorGroup[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return []
+    const group = raw as Partial<DomainMirrorGroup>
+    if (typeof group.id !== "string" || !group.id || !Array.isArray(group.domains) || !Array.isArray(group.mirrors)) return []
+    const mirrors = group.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && typeof item.url === "string"))
+    if (!mirrors.length) return []
+    return [{
+      id: group.id,
+      name: typeof group.name === "string" ? group.name : group.id,
+      enabled: group.enabled !== false,
+      domains: group.domains.filter((domain): domain is string => typeof domain === "string").map((domain) => domain.toLowerCase()),
+      accountIds: Array.isArray(group.accountIds) ? group.accountIds.filter((id): id is string => typeof id === "string") : [],
+      mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: item.url, enabled: item.enabled !== false })),
+      rules: Array.isArray(group.rules) ? group.rules.filter((item): item is DomainMirrorRule => Boolean(item && typeof item.id === "string" && typeof item.pattern === "string" && typeof item.mirrorId === "string")) : [],
+    }]
+  })
 }
 
 export function getSystemSecret(db: AppDatabase, key: SystemSecretKey): string {

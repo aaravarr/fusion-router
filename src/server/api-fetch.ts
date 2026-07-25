@@ -11,11 +11,12 @@
 // routing through whatever proxy/mirror the operator has configured.
 
 import { getSystemSettings } from "./settings"
-import type { DomainMirrorConfig, DomainMirrorMap, DomainMirrorTarget } from "./settings"
+import type { DomainMirrorConfig, DomainMirrorGroup, DomainMirrorMap, DomainMirrorTarget } from "./settings"
 import { getDatabase } from "./db"
 import { createHash } from "node:crypto"
 
 let cachedMirrorMap: DomainMirrorMap | null = null
+let cachedMirrorGroups: DomainMirrorGroup[] = []
 let cacheExpiry = 0
 const CACHE_TTL_MS = 10_000
 const mirrorCacheGlobal = globalThis as typeof globalThis & { __invalidateDomainMirrorCache?: () => void }
@@ -26,8 +27,10 @@ function getMirrorMap(): DomainMirrorMap {
   try {
     const settings = getSystemSettings(getDatabase())
     cachedMirrorMap = settings.domainMirrorMap ?? {}
+    cachedMirrorGroups = settings.domainMirrorGroups ?? []
   } catch {
     cachedMirrorMap = {}
+    cachedMirrorGroups = []
   }
   cacheExpiry = now + CACHE_TTL_MS
   return cachedMirrorMap
@@ -36,6 +39,7 @@ function getMirrorMap(): DomainMirrorMap {
 // Invalidate the mirror map cache — call after settings are updated.
 export function invalidateMirrorCache(): void {
   cachedMirrorMap = null
+  cachedMirrorGroups = []
   cacheExpiry = 0
 }
 mirrorCacheGlobal.__invalidateDomainMirrorCache = invalidateMirrorCache
@@ -88,6 +92,17 @@ export function selectDomainMirror(config: DomainMirrorConfig, context: MirrorSe
   return enabled[value % enabled.length]
 }
 
+export function selectMirrorGroupTarget(group: DomainMirrorGroup, context: MirrorSelectionContext = {}): DomainMirrorTarget | null {
+  return selectDomainMirror({ mirrors: group.mirrors, rules: group.rules, accountAssignments: {} }, context)
+}
+
+export function selectDomainMirrorGroup(groups: DomainMirrorGroup[], hostname: string, accountId?: string): DomainMirrorGroup | null {
+  const eligible = groups.filter((group) => group.enabled !== false && group.domains.includes(hostname))
+  return (accountId ? eligible.find((group) => group.accountIds.includes(accountId)) : undefined)
+    ?? eligible.find((group) => group.accountIds.length === 0)
+    ?? null
+}
+
 export function applyMirrorTarget(originalUrl: string, target: DomainMirrorTarget): string {
   const parsed = new URL(originalUrl)
   const mirror = new URL(target.url.replaceAll("$host", parsed.host))
@@ -99,10 +114,16 @@ export function applyMirrorTarget(originalUrl: string, target: DomainMirrorTarge
 
 export function resolveMirrorUrlForContext(originalUrl: string, context: MirrorSelectionContext = {}): string {
   const mirrorMap = getMirrorMap()
-  if (!mirrorMap || Object.keys(mirrorMap).length === 0) return originalUrl
+  if ((!mirrorMap || Object.keys(mirrorMap).length === 0) && cachedMirrorGroups.length === 0) return originalUrl
   try {
     const parsed = new URL(originalUrl)
     const hostname = parsed.hostname.toLowerCase()
+    const accountId = context.account?.id
+    const group = selectDomainMirrorGroup(cachedMirrorGroups, hostname, accountId)
+    if (group) {
+      const selected = selectMirrorGroupTarget(group, { ...context, shardKey: context.shardKey || accountId || hostname })
+      if (selected) return applyMirrorTarget(parsed.toString(), selected)
+    }
     const config = mirrorMap[hostname]
     if (!config) return originalUrl
     const selected = selectDomainMirror(config, { ...context, shardKey: context.shardKey || context.account?.id || hostname })

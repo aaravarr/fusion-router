@@ -160,6 +160,14 @@ function safeXaiAuthUrl(raw: string): boolean {
         } catch { /* skip invalid mirror entry */ }
       }
     }
+    for (const group of getSystemSettings().domainMirrorGroups ?? []) {
+      for (const mirror of group.mirrors) {
+        try {
+          const target = new URL(mirror.url.replaceAll("$host", "origin.example.com"))
+          if (target.hostname.toLowerCase() === host) return true
+        } catch { /* skip invalid mirror entry */ }
+      }
+    }
   } catch { /* settings unavailable — strict mode */ }
   return false
 }
