@@ -422,22 +422,46 @@ function newId(prefix: string) {
 }
 
 function DomainMirrorsEditor({ value, accounts, onChange }: { value: DomainMirrorMap; accounts: MirrorAccount[]; onChange: (value: DomainMirrorMap) => void }) {
-  const [domain, setDomain] = useState("");
+  const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
+  const [customDomain, setCustomDomain] = useState("");
+  const [mirrorName, setMirrorName] = useState("");
+  const [mirrorUrl, setMirrorUrl] = useState("");
   const presetDomains = PROVIDER_DOMAIN_PRESETS.flatMap((group) => group.domains);
-  function addDomain() {
-    const normalized = domain.trim().toLowerCase();
-    if (!normalized || value[normalized]) return;
-    onChange({ ...value, [normalized]: { mirrors: [], accountAssignments: {}, rules: [] } });
-    setDomain("");
+  const knownDomains = [...new Set([...presetDomains.map((item) => item.domain), ...Object.keys(value)])];
+  function toggleDomain(domain: string) {
+    setSelectedDomains((current) => { const next = new Set(current); if (next.has(domain)) next.delete(domain); else next.add(domain); return next; });
+  }
+  function addCustomDomain() {
+    const normalized = customDomain.trim().toLowerCase();
+    if (!normalized) return;
+    setSelectedDomains((current) => new Set([...current, normalized]));
+    setCustomDomain("");
+  }
+  function addBatchMirror() {
+    if (!selectedDomains.size || !mirrorName.trim() || !mirrorUrl.trim()) return;
+    const id = newId("mirror");
+    const next = { ...value };
+    for (const domain of selectedDomains) {
+      const config = next[domain] ?? { mirrors: [], accountAssignments: {}, rules: [] };
+      const normalizedUrl = mirrorUrl.trim().replace(/\/$/, "");
+      next[domain] = config.mirrors.some((mirror) => mirror.url.replace(/\/$/, "") === normalizedUrl)
+        ? config
+        : { ...config, mirrors: [...config.mirrors, { id, name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }] };
+    }
+    onChange(next);
+    setSelectedDomains(new Set()); setMirrorName(""); setMirrorUrl("");
   }
   return <div className="space-y-3">
-    <p className="text-xs leading-5 text-muted-foreground">显式账号绑定优先级最高；未绑定时按规则顺序匹配账号 ID、名称、邮箱、workspace 和号池；仍未命中则对账号 ID 做稳定 Hash，在所有启用镜像间分片。</p>
-    {Object.entries(value).map(([hostname, config]) => <DomainMirrorCard key={hostname} domain={hostname} config={config} accounts={accounts} onChange={(next) => onChange({ ...value, [hostname]: next })} onDelete={() => { const next = { ...value }; delete next[hostname]; onChange(next); }} />)}
-    <div className="flex flex-wrap gap-2 rounded-md border border-dashed p-3">
-      <Input list="mirror-domains" className="min-w-56 flex-1 font-mono text-xs" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="选择或输入原始域名" />
-      <datalist id="mirror-domains">{presetDomains.map((item) => <option key={item.domain} value={item.domain}>{item.label}</option>)}</datalist>
-      <Button type="button" variant="outline" size="sm" onClick={addDomain} disabled={!domain.trim() || Boolean(value[domain.trim().toLowerCase()])}><Plus />添加域名</Button>
+    <p className="text-xs leading-5 text-muted-foreground">先多选需要代理的原始域名，再添加一组镜像。镜像地址中的 <code className="text-foreground">$host</code> 会替换为当前请求的原始 host，例如 <code className="text-foreground">https://mirror.ahao1.tech/$host</code>。显式账号绑定优先于正则规则，最后按账号 ID 做稳定 Hash 分片。</p>
+    <div className="space-y-3 rounded-md border bg-[#fafafa] p-3">
+      <div className="flex flex-wrap items-center gap-2"><p className="mr-auto text-xs font-medium">批量选择原始域名</p><span className="text-[11px] text-muted-foreground">已选 {selectedDomains.size} 个</span><Button type="button" variant="ghost" size="sm" onClick={() => setSelectedDomains(new Set(knownDomains))}>全选</Button><Button type="button" variant="ghost" size="sm" onClick={() => setSelectedDomains(new Set())}>清空</Button></div>
+      <div className="grid max-h-48 gap-1 overflow-y-auto rounded-md border bg-white p-2 sm:grid-cols-2 xl:grid-cols-3">
+        {knownDomains.map((hostname) => { const preset = presetDomains.find((item) => item.domain === hostname); return <label key={hostname} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[#fafafa]"><input type="checkbox" checked={selectedDomains.has(hostname)} onChange={() => toggleDomain(hostname)} /><span className="min-w-0 truncate font-mono">{hostname}</span>{preset ? <span className="ml-auto truncate text-[10px] text-muted-foreground">{preset.label}</span> : null}</label>; })}
+      </div>
+      <div className="flex gap-2"><Input className="h-8 flex-1 font-mono text-xs" value={customDomain} onChange={(event) => setCustomDomain(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addCustomDomain(); } }} placeholder="其他域名，例如 custom.example.com" /><Button type="button" variant="outline" size="sm" disabled={!customDomain.trim()} onClick={addCustomDomain}>加入选择</Button></div>
+      <div className="grid gap-2 border-t border-dashed pt-3 sm:grid-cols-[140px_1fr_auto]"><Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="镜像名称" /><Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.ahao1.tech/$host" /><Button type="button" size="sm" disabled={!selectedDomains.size || !mirrorName.trim() || !mirrorUrl.trim()} onClick={addBatchMirror}><Plus />批量添加</Button></div>
     </div>
+    {Object.entries(value).map(([hostname, config]) => <DomainMirrorCard key={hostname} domain={hostname} config={config} accounts={accounts} onChange={(next) => onChange({ ...value, [hostname]: next })} onDelete={() => { const next = { ...value }; delete next[hostname]; onChange(next); }} />)}
   </div>;
 }
 
@@ -458,7 +482,7 @@ function DomainMirrorCard({ domain, config, accounts, onChange, onDelete }: { do
           <Input className="h-8 font-mono text-xs" value={mirror.url} onChange={(event) => patchMirror(mirror.id, { url: event.target.value })} />
           <Button type="button" variant="ghost" size="icon-sm" onClick={() => removeMirror(mirror.id)}><Trash2 /></Button>
         </div>)}
-        <div className="grid gap-2 sm:grid-cols-[130px_1fr_auto]"><Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="节点名称" /><Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.example.com" /><Button type="button" variant="outline" size="sm" disabled={!mirrorName.trim() || !mirrorUrl.trim()} onClick={() => { onChange({ ...config, mirrors: [...config.mirrors, { id: newId("mirror"), name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }] }); setMirrorName(""); setMirrorUrl(""); }}><Plus />节点</Button></div>
+        <div className="grid gap-2 sm:grid-cols-[130px_1fr_auto]"><Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="节点名称" /><Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.ahao1.tech/$host" /><Button type="button" variant="outline" size="sm" disabled={!mirrorName.trim() || !mirrorUrl.trim()} onClick={() => { onChange({ ...config, mirrors: [...config.mirrors, { id: newId("mirror"), name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }] }); setMirrorName(""); setMirrorUrl(""); }}><Plus />节点</Button></div>
       </div>
       {config.mirrors.length ? <>
         <div className="space-y-2"><p className="text-xs font-medium">正则规则 <span className="font-normal text-muted-foreground">（按列表顺序，优先级低于账号绑定）</span></p>

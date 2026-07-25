@@ -37,4 +37,9 @@ describe("domain mirror selection", () => {
     expect(applyMirrorTarget("https://api.example.com/v1/models?limit=10", { id: "m", name: "M", url: "https://mirror.example.com/proxy", enabled: true }))
       .toBe("https://mirror.example.com/proxy/v1/models?limit=10")
   })
+
+  it("expands $host to the original host before appending the request path", () => {
+    expect(applyMirrorTarget("https://api.x.ai/v1/models?limit=10", { id: "m", name: "M", url: "https://mirror.ahao1.tech/$host", enabled: true }))
+      .toBe("https://mirror.ahao1.tech/api.x.ai/v1/models?limit=10")
+  })
 })

@@ -266,7 +266,7 @@ export function updateSystemSettings(
         if (!id || ids.has(id)) throw new Error(`域名 ${d} 的镜像 ID 为空或重复`)
         ids.add(id)
         try {
-          const url = new URL(urlValue)
+          const url = new URL(urlValue.replaceAll("$host", "origin.example.com"))
           if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol")
           if (url.username || url.password) throw new Error("credentials")
         } catch { throw new Error(`域名镜像 ${d}/${mirror.name || id} 的目标地址不是有效 URL`) }

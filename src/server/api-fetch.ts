@@ -90,7 +90,7 @@ export function selectDomainMirror(config: DomainMirrorConfig, context: MirrorSe
 
 export function applyMirrorTarget(originalUrl: string, target: DomainMirrorTarget): string {
   const parsed = new URL(originalUrl)
-  const mirror = new URL(target.url)
+  const mirror = new URL(target.url.replaceAll("$host", parsed.host))
   parsed.protocol = mirror.protocol
   parsed.host = mirror.host
   if (mirror.pathname && mirror.pathname !== "/") parsed.pathname = mirror.pathname.replace(/\/$/, "") + parsed.pathname
