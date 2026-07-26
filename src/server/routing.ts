@@ -171,7 +171,7 @@ export class RoutingService {
       }
       const eligible = capabilityPool.filter((account) => !blocked.has(account.id)
         && !triedAccountIds.has(account.id)
-        && (inFlight.get(account.id) ?? 0) < account.maxConcurrency)
+        && (account.maxConcurrency <= 0 || (inFlight.get(account.id) ?? 0) < account.maxConcurrency))
 
       if (!eligible.length) {
         if (capabilityPool.length > 0 && capabilityPool.every((account) => blocked.has(account.id))) {

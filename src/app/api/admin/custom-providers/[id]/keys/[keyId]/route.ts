@@ -8,7 +8,7 @@ import { syncProviderModelsForAccount } from "@/server/provider-models"
 
 export const runtime = "nodejs"
 const patchSchema = z.object({
-  name: z.string().trim().min(1).max(100).optional(), enabled: z.boolean().optional(), maxConcurrency: z.number().int().min(1).max(64).optional(),
+  name: z.string().trim().min(1).max(100).optional(), enabled: z.boolean().optional(), maxConcurrency: z.number().int().positive().max(1_000_000).nullable().optional(),
   apiKey: z.string().trim().min(1).max(20_000).optional(), extraHeaders: z.record(z.string(), z.string()).optional(),
 })
 
@@ -33,7 +33,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     } })
     repo.updateState(keyId, { authState: "VALID", lastError: null })
   }
-  const account = repo.updateState(keyId, { name: parsed.data.name, adminState: parsed.data.enabled === undefined ? undefined : parsed.data.enabled ? "ENABLED" : "DISABLED", maxConcurrency: parsed.data.maxConcurrency })
+  const account = repo.updateState(keyId, { name: parsed.data.name, adminState: parsed.data.enabled === undefined ? undefined : parsed.data.enabled ? "ENABLED" : "DISABLED", maxConcurrency: parsed.data.maxConcurrency === null ? 0 : parsed.data.maxConcurrency })
   const warnings: string[] = []
   if (parsed.data.apiKey) {
     const checks = await Promise.allSettled([syncProviderModelsForAccount(user.id, keyId, db), ...(provider.balanceConfig ? [syncProviderAccount(user.id, keyId, db)] : [])])

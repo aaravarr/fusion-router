@@ -25,8 +25,8 @@ export const createCustomProviderSchema = z.object({
 export const updateCustomProviderSchema = createCustomProviderSchema.partial()
 
 export const createCustomProviderKeySchema = z.object({
-  name: z.string().trim().min(1).max(100),
+  name: z.string().trim().max(100).optional(),
   apiKey: z.string().trim().min(1).max(20_000),
   extraHeaders: z.record(z.string(), z.string()).optional(),
-  maxConcurrency: z.number().int().min(1).max(64).optional(),
+  maxConcurrency: z.number().int().positive().max(1_000_000).nullable().optional(),
 })

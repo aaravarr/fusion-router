@@ -75,6 +75,15 @@ describe("routing", () => {
     expect(otherRepo.get(other.id)?.ownerUserId).toBe("user-2")
   })
 
+  it("并发上限为零时表示不限制", () => {
+    const { routing, add, accounts } = make()
+    const accountId = add("unlimited")
+    accounts.updateState(accountId, { maxConcurrency: 0 })
+    expect(routing.select("unlimited-1", "responses", new Set()).account.id).toBe(accountId)
+    expect(routing.select("unlimited-2", "responses", new Set()).account.id).toBe(accountId)
+    expect(routing.select("unlimited-3", "responses", new Set()).account.id).toBe(accountId)
+  })
+
   it("请求级号池约束只在指定号池内调度", () => {
     const { accounts, routing, add } = make()
     add("go-seat")

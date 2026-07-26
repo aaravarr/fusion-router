@@ -247,19 +247,20 @@ function formatJson(value: string): string {
 function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvider; onClose: () => void; adminFetch: (path: string, init?: RequestInit) => Promise<Response> }) {
   const confirm = useConfirm();
   const resource = useAdminResource<{ keys: ProviderKey[] }>(`/api/admin/custom-providers/${provider.id}/keys`);
-  const [name, setName] = useState(""); const [apiKey, setApiKey] = useState(""); const [maxConcurrency, setMaxConcurrency] = useState(4);
+  const [name, setName] = useState(""); const [apiKey, setApiKey] = useState(""); const [maxConcurrency, setMaxConcurrency] = useState("");
   const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [rotating, setRotating] = useState<ProviderKey | null>(null); const [replacementKey, setReplacementKey] = useState("");
+  const [editing, setEditing] = useState<ProviderKey | null>(null); const [editName, setEditName] = useState(""); const [editConcurrency, setEditConcurrency] = useState("");
   const keys = resource.data?.keys ?? [];
   async function create() {
     setSaving(true); setError(null);
     try {
-      const response = await adminFetch(`/api/admin/custom-providers/${provider.id}/keys`, { method: "POST", body: JSON.stringify({ name, apiKey, maxConcurrency }) });
+      const response = await adminFetch(`/api/admin/custom-providers/${provider.id}/keys`, { method: "POST", body: JSON.stringify({ name: name.trim() || undefined, apiKey, maxConcurrency: maxConcurrency ? Number(maxConcurrency) : undefined }) });
       const payload = await response.json().catch(() => null); if (!response.ok) throw new Error(errorMessage(payload, "添加失败"));
       const warnings = payload && typeof payload === "object" && Array.isArray((payload as { warnings?: unknown }).warnings) ? (payload as { warnings: string[] }).warnings : [];
       setNotice(warnings.length ? `Key 已保存；上游探测提示：${warnings.join("；")}` : "API Key 已添加并完成上游探测");
-      setName(""); setApiKey(""); await resource.refresh();
+      setName(""); setApiKey(""); setMaxConcurrency(""); await resource.refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "添加失败"); } finally { setSaving(false); }
   }
   async function patch(key: ProviderKey, input: object) {
@@ -283,24 +284,37 @@ function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvide
     catch (cause) { setError(cause instanceof Error ? cause.message : "更换失败"); }
     finally { setSaving(false); }
   }
+  function openEdit(key: ProviderKey) {
+    setEditing(key); setEditName(key.name); setEditConcurrency(key.maxConcurrency > 0 ? String(key.maxConcurrency) : ""); setError(null);
+  }
+  async function saveSettings() {
+    if (!editing || !editName.trim()) return;
+    setSaving(true); setError(null);
+    try {
+      await patch(editing, { name: editName.trim(), maxConcurrency: editConcurrency ? Number(editConcurrency) : null });
+      setEditing(null); setEditName(""); setEditConcurrency("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
+    finally { setSaving(false); }
+  }
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-2xl">
-    <DialogHeader><DialogTitle>{provider.name} · API Keys</DialogTitle><DialogDescription>每个 Key 是独立调度账号，可单独停用并配置并发上限。密钥写入后不再回显。</DialogDescription></DialogHeader>
+    <DialogHeader><DialogTitle>{provider.name} · API Keys</DialogTitle><DialogDescription>名称留空时自动编号，并发留空表示不限制。密钥写入后不再回显。</DialogDescription></DialogHeader>
     <div className="grid gap-3 rounded-md border bg-[#fafafa] p-3 sm:grid-cols-[1fr_1.4fr_100px_auto]">
-      <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Key 名称" />
-      <Input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-..." />
-      <Input type="number" min={1} max={64} value={maxConcurrency} onChange={(event) => setMaxConcurrency(Number(event.target.value))} />
-      <Button onClick={() => void create()} disabled={saving || !name.trim() || !apiKey.trim()}>{saving ? <LoaderCircle className="animate-spin" /> : <Plus />}添加</Button>
+      <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="名称（自动编号）" aria-label="Key 名称，可选" />
+      <Input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="API Key" aria-label="API Key" />
+      <Input type="number" min={1} step={1} value={maxConcurrency} onChange={(event) => setMaxConcurrency(event.target.value)} placeholder="不限并发" aria-label="并发上限，可选" />
+      <Button onClick={() => void create()} disabled={saving || !apiKey.trim()}>{saving ? <LoaderCircle className="animate-spin" /> : <Plus />}添加</Button>
     </div>
     {error ? <p className="text-xs text-destructive">{error}</p> : null}
     {notice ? <p className="text-xs text-muted-foreground" role="status">{notice}</p> : null}
     {resource.loading ? <LoadingTable rows={3} columns={4} /> : keys.length ? <div className="divide-y rounded-md border">
       {keys.map((key) => <div key={key.id} className="grid gap-2 px-3 py-3 sm:grid-cols-[1fr_auto_auto] sm:items-center">
-        <div><p className="text-sm font-medium">{key.name}</p><p className="mt-1 text-[11px] text-muted-foreground">并发 {key.maxConcurrency} · 最近成功 {formatDate(key.lastSuccessAt)} · {key.authState}</p></div>
-        <div className="flex gap-1"><Button variant="outline" size="sm" onClick={() => void patch(key, { enabled: key.adminState !== "ENABLED" })}>{key.adminState === "ENABLED" ? "停用" : "启用"}</Button><Button variant="outline" size="sm" onClick={() => { setRotating(key); setReplacementKey(""); }}><RefreshCw />更换</Button></div>
+        <div><p className="text-sm font-medium">{key.name}</p><p className="mt-1 text-[11px] text-muted-foreground">{key.maxConcurrency > 0 ? `并发 ${key.maxConcurrency}` : "并发不限制"} · 最近成功 {formatDate(key.lastSuccessAt)} · {key.authState}</p></div>
+        <div className="flex gap-1"><Button variant="outline" size="sm" onClick={() => void patch(key, { enabled: key.adminState !== "ENABLED" })}>{key.adminState === "ENABLED" ? "停用" : "启用"}</Button><Button variant="outline" size="sm" onClick={() => openEdit(key)}><Pencil />编辑</Button><Button variant="outline" size="sm" onClick={() => { setRotating(key); setReplacementKey(""); }}><RefreshCw />更换</Button></div>
         <Button variant="outline" size="icon-sm" className="text-destructive" onClick={() => void remove(key)}><Trash2 /></Button>
       </div>)}
     </div> : <p className="py-8 text-center text-sm text-muted-foreground">尚未添加 API Key</p>}
     {rotating ? <div className="flex flex-wrap items-center gap-2 rounded-md border bg-[#fafafa] p-3"><span className="text-xs">更换 {rotating.name}</span><Input type="password" className="min-w-56 flex-1" value={replacementKey} onChange={(event) => setReplacementKey(event.target.value)} placeholder="新的 API Key" /><Button variant="outline" size="sm" onClick={() => setRotating(null)}>取消</Button><Button size="sm" disabled={saving || !replacementKey.trim()} onClick={() => void replaceKey()}>保存新密钥</Button></div> : null}
+    {editing ? <div className="grid gap-2 rounded-md border bg-[#fafafa] p-3 sm:grid-cols-[1fr_150px_auto_auto]"><Input value={editName} onChange={(event) => setEditName(event.target.value)} placeholder="名称" aria-label="Key 名称" /><Input type="number" min={1} step={1} value={editConcurrency} onChange={(event) => setEditConcurrency(event.target.value)} placeholder="不限并发" aria-label="并发上限，可选" /><Button variant="outline" size="sm" onClick={() => setEditing(null)} disabled={saving}>取消</Button><Button size="sm" disabled={saving || !editName.trim()} onClick={() => void saveSettings()}>{saving ? <LoaderCircle className="animate-spin" /> : null}保存</Button></div> : null}
   </DialogContent></Dialog>;
 }
 

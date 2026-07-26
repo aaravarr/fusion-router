@@ -1,10 +1,11 @@
-import { AccountRepository, ProviderCredentialRepository } from "@/server/repository"
+import { AccountRepository } from "@/server/repository"
 import { CustomProviderRepository } from "@/server/custom-providers"
 import { getDatabase } from "@/server/db"
 import { requireSession } from "../../../_auth"
 import { createCustomProviderKeySchema } from "../../_schema"
 import { syncProviderModelsForAccount } from "@/server/provider-models"
 import { syncProviderAccount } from "@/server/provider-sync"
+import { createCustomProviderKeyAccount } from "@/server/custom-provider-keys"
 
 export const runtime = "nodejs"
 
@@ -28,12 +29,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const provider = new CustomProviderRepository(user.id, db).get(id)
   if (!provider) return Response.json({ error: { type: "not_found" } }, { status: 404 })
   const accountRepo = new AccountRepository(user.id, db)
-  const account = accountRepo.createProviderAccount({ name: parsed.data.name, poolType: provider.poolType })
-  new ProviderCredentialRepository(user.id, db).upsert({
-    accountId: account.id, poolType: provider.poolType,
-    credentialData: { token: parsed.data.apiKey, ...(parsed.data.extraHeaders ? { extraHeaders: JSON.stringify(parsed.data.extraHeaders) } : {}) },
-  })
-  if (parsed.data.maxConcurrency) accountRepo.updateState(account.id, { maxConcurrency: parsed.data.maxConcurrency })
+  const account = createCustomProviderKeyAccount({
+    ownerUserId: user.id,
+    poolType: provider.poolType,
+    apiKey: parsed.data.apiKey,
+    name: parsed.data.name,
+    maxConcurrency: parsed.data.maxConcurrency,
+    extraHeaders: parsed.data.extraHeaders,
+  }, db)
   const checks = await Promise.allSettled([
     syncProviderModelsForAccount(user.id, account.id, db),
     ...(provider.balanceConfig ? [syncProviderAccount(user.id, account.id, db)] : []),
