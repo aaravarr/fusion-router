@@ -36,8 +36,9 @@ export function chatRequestToResponses(body: unknown): Obj {
   return result
 }
 
-function responseOutput(payload: Obj): { content: string | null; toolCalls: Obj[] } {
+function responseOutput(payload: Obj): { content: string | null; reasoning: string | null; toolCalls: Obj[] } {
   let content = ""
+  let reasoning = ""
   const toolCalls: Obj[] = []
   for (const item of Array.isArray(payload.output) ? payload.output : []) {
     if (!isObj(item)) continue
@@ -45,11 +46,15 @@ function responseOutput(payload: Obj): { content: string | null; toolCalls: Obj[
       for (const part of Array.isArray(item.content) ? item.content : []) {
         if (isObj(part) && (part.type === "output_text" || part.type === "text") && typeof part.text === "string") content += part.text
       }
+    } else if (item.type === "reasoning") {
+      for (const part of [...(Array.isArray(item.summary) ? item.summary : []), ...(Array.isArray(item.content) ? item.content : [])]) {
+        if (isObj(part) && typeof part.text === "string") reasoning += part.text
+      }
     } else if (item.type === "function_call") {
       toolCalls.push({ id: item.call_id ?? item.id, type: "function", function: { name: item.name, arguments: item.arguments ?? "{}" } })
     }
   }
-  return { content: content || null, toolCalls }
+  return { content: content || null, reasoning: reasoning || null, toolCalls }
 }
 
 export function responsesJsonToChatCompletion(payload: unknown): Obj {
@@ -62,7 +67,7 @@ export function responsesJsonToChatCompletion(payload: unknown): Obj {
   } : undefined
   return {
     id: payload.id ?? "", object: "chat.completion", created: payload.created_at ?? Math.floor(Date.now() / 1000), model: payload.model,
-    choices: [{ index: 0, message: { role: "assistant", content: output.content, ...(output.toolCalls.length ? { tool_calls: output.toolCalls } : {}) }, finish_reason: output.toolCalls.length ? "tool_calls" : "stop" }],
+    choices: [{ index: 0, message: { role: "assistant", content: output.content, ...(output.reasoning ? { reasoning_content: output.reasoning } : {}), ...(output.toolCalls.length ? { tool_calls: output.toolCalls } : {}) }, finish_reason: output.toolCalls.length ? "tool_calls" : "stop" }],
     ...(usage ? { usage } : {}),
   }
 }
@@ -75,6 +80,7 @@ function chatChunk(data: Obj, state: { id: string; model?: unknown; created: num
     return { ...base, id: state.id, model: state.model, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }
   }
   if (type === "response.output_text.delta" && typeof data.delta === "string") return { ...base, choices: [{ index: 0, delta: { content: data.delta }, finish_reason: null }] }
+  if (type.includes("reasoning") && type.endsWith(".delta") && typeof data.delta === "string") return { ...base, choices: [{ index: 0, delta: { reasoning_content: data.delta }, finish_reason: null }] }
   if (type === "response.output_item.added" && isObj(data.item) && data.item.type === "function_call") return { ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: Number(data.output_index ?? 0), id: data.item.call_id ?? data.item.id, type: "function", function: { name: data.item.name, arguments: "" } }] }, finish_reason: null }] }
   if (type === "response.function_call_arguments.delta" && typeof data.delta === "string") return { ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: Number(data.output_index ?? 0), function: { arguments: data.delta } }] }, finish_reason: null }] }
   if (type === "response.completed") {

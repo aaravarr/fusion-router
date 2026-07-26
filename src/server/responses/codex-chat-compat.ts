@@ -727,11 +727,22 @@ export function chatCompletionToResponse(
   const choice0 = Array.isArray(c.choices) ? (c.choices[0] as Obj | undefined) : undefined;
   const msg = isObj(choice0?.message) ? (choice0!.message as Obj) : {};
   const content = typeof msg.content === 'string' ? msg.content : textFromContent(msg.content);
+  const reasoningContent = [msg.reasoning_content, msg.reasoning, msg.thinking]
+    .find((value) => typeof value === 'string') as string | undefined;
   const id = typeof c.id === 'string' ? c.id : 'resp_fallback_' + Date.now().toString(16);
   const model = typeof c.model === 'string' ? c.model : opts?.modelHint || 'grok-4.5';
   const created = typeof c.created === 'number' ? c.created : Math.floor(Date.now() / 1000);
   const ctx = opts?.toolContext;
   const output: Obj[] = [];
+
+  if (reasoningContent) {
+    output.push({
+      id: 'reasoning_' + id,
+      type: 'reasoning',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: reasoningContent }],
+    });
+  }
 
   if (Array.isArray(msg.tool_calls)) {
     for (let index = 0; index < msg.tool_calls.length; index++) {
@@ -806,6 +817,10 @@ export function transformChatSseToResponsesSse(
   let messageIndex = 0;
   let messageId = 'msg_' + responseId;
   let text = '';
+  let reasoningAdded = false;
+  let reasoningIndex = 0;
+  let reasoningId = 'reasoning_' + responseId;
+  let reasoningText = '';
   let usageRaw: unknown;
   const tools = new Map<number, ToolAccum>();
   let nextToolIndexToAdd = 0;
@@ -848,6 +863,25 @@ export function transformChatSseToResponsesSse(
       output_index: messageIndex,
       content_index: 0,
       part: { type: 'output_text', text: '' },
+    });
+  };
+
+  const ensureReasoning = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    if (reasoningAdded) return;
+    reasoningAdded = true;
+    reasoningIndex = alloc();
+    reasoningId = 'reasoning_' + responseId;
+    emit(controller, {
+      type: 'response.output_item.added',
+      output_index: reasoningIndex,
+      item: { id: reasoningId, type: 'reasoning', status: 'in_progress', summary: [] },
+    });
+    emit(controller, {
+      type: 'response.reasoning_summary_part.added',
+      item_id: reasoningId,
+      output_index: reasoningIndex,
+      summary_index: 0,
+      part: { type: 'summary_text', text: '' },
     });
   };
 
@@ -1007,11 +1041,38 @@ export function transformChatSseToResponsesSse(
     completedItems.push({ index: messageIndex, item });
   };
 
+  const finalizeReasoning = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    if (!reasoningAdded) return;
+    emit(controller, {
+      type: 'response.reasoning_summary_text.done',
+      item_id: reasoningId,
+      output_index: reasoningIndex,
+      summary_index: 0,
+      text: reasoningText,
+    });
+    emit(controller, {
+      type: 'response.reasoning_summary_part.done',
+      item_id: reasoningId,
+      output_index: reasoningIndex,
+      summary_index: 0,
+      part: { type: 'summary_text', text: reasoningText },
+    });
+    const item = {
+      id: reasoningId,
+      type: 'reasoning',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: reasoningText }],
+    };
+    emit(controller, { type: 'response.output_item.done', output_index: reasoningIndex, item });
+    completedItems.push({ index: reasoningIndex, item });
+  };
+
   const finish = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     if (finished) return;
     finished = true;
     ensureStarted(controller);
     if (!messageAdded && tools.size === 0) ensureMessage(controller);
+    finalizeReasoning(controller);
     finalizeMessage(controller);
     finalizeTools(controller);
     const usage = toResponsesUsage(usageRaw);
@@ -1059,6 +1120,19 @@ export function transformChatSseToResponsesSse(
               ensureStarted(controller);
 
               const piece = typeof delta?.content === 'string' ? delta.content : '';
+              const reasoningPiece = [delta?.reasoning_content, delta?.reasoning, delta?.thinking]
+                .find((value) => typeof value === 'string') || '';
+              if (reasoningPiece) {
+                ensureReasoning(controller);
+                reasoningText += reasoningPiece;
+                emit(controller, {
+                  type: 'response.reasoning_summary_text.delta',
+                  item_id: reasoningId,
+                  output_index: reasoningIndex,
+                  summary_index: 0,
+                  delta: reasoningPiece,
+                });
+              }
               if (piece) {
                 ensureMessage(controller);
                 text += piece;

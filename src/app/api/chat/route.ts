@@ -19,6 +19,7 @@ const chatSchema = z.object({
     role: z.enum(["user", "assistant"]),
     content: z.string().min(1).max(200_000),
   })).min(1).max(100),
+  interfaceType: z.enum(["chat", "responses"]).default("chat"),
   reasoningEffort: z.enum(["auto", "none", "minimal", "low", "medium", "high", "xhigh"]).default("auto"),
   routing: z.discriminatedUnion("mode", [
     z.object({ mode: z.literal("auto") }),
@@ -69,12 +70,21 @@ export async function POST(request: Request) {
     return Response.json({ error: { type: "validation_error", message: "聊天参数无效", details: parsed.error.flatten() } }, { status: 400 })
   }
 
-  const { model, messages, reasoningEffort, routing } = parsed.data
-  const body = {
+  const { model, messages, interfaceType, reasoningEffort, routing } = parsed.data
+  const body = interfaceType === "chat" ? {
+    model,
+    messages,
+    stream: true,
+    ...(reasoningEffort === "auto" ? {} : { reasoning_effort: reasoningEffort }),
+  } : {
     model,
     input: messages.map((message) => ({ role: message.role, content: message.content })),
     stream: true,
-    ...(reasoningEffort === "auto" ? {} : { reasoning: { effort: reasoningEffort } }),
+    ...(reasoningEffort === "none"
+      ? { reasoning: { effort: "none" } }
+      : reasoningEffort === "auto"
+        ? { reasoning: { summary: "auto" } }
+        : { reasoning: { effort: reasoningEffort, summary: "auto" } }),
   }
   const gatewayRequest = new Request(request.url, {
     method: "POST",
@@ -88,7 +98,7 @@ export async function POST(request: Request) {
     signal: request.signal,
   })
 
-  return new GatewayService(credentials).handle(gatewayRequest, "responses", {
+  return new GatewayService(credentials).handle(gatewayRequest, interfaceType === "chat" ? "chat/completions" : "responses", {
     principal: { ownerUserId: user.id, label: "chat" },
     routing: routing.mode === "pool"
       ? { poolType: routing.poolType as PoolType }

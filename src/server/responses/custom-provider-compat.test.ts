@@ -40,4 +40,25 @@ describe("custom provider protocol compatibility", () => {
     expect(output).toContain('"finish_reason":"stop"')
     expect(output).toContain("data: [DONE]")
   })
+
+  it("preserves reasoning while converting Responses output to Chat", async () => {
+    expect(responsesJsonToChatCompletion({
+      id: "resp_reasoning",
+      output: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "checked the inputs" }] },
+        { type: "message", content: [{ type: "output_text", text: "done" }] },
+      ],
+    })).toMatchObject({ choices: [{ message: { content: "done", reasoning_content: "checked the inputs" } }] })
+
+    const source = [
+      'data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test"}}\n\n',
+      'data: {"type":"response.reasoning_summary_text.delta","delta":"thinking"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"answer"}\n\n',
+      'data: {"type":"response.completed","response":{}}\n\n',
+    ]
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { for (const value of source) controller.enqueue(new TextEncoder().encode(value)); controller.close() } })
+    const output = await new Response(responsesSseToChatStream(stream)).text()
+    expect(output).toContain('"reasoning_content":"thinking"')
+    expect(output).toContain('"content":"answer"')
+  })
 })

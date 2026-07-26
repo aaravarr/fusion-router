@@ -57,6 +57,8 @@ interface ChatOptions {
   capabilities: { webSearch: boolean; mcp: boolean }
 }
 
+type ChatInterface = "chat" | "responses"
+
 type MessageStatus = "complete" | "streaming" | "error"
 interface ChatMessage {
   id: string
@@ -68,6 +70,7 @@ interface ChatMessage {
   model?: string
   routeLabel?: string
   reasoningLabel?: string
+  interfaceLabel?: string
 }
 
 const reasoningOptions = [
@@ -135,6 +138,7 @@ export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [model, setModel] = useState("")
   const [reasoning, setReasoning] = useState<(typeof reasoningOptions)[number]["value"]>("auto")
+  const [interfaceType, setInterfaceType] = useState<ChatInterface>("chat")
   const [route, setRoute] = useState("auto")
   const [status, setStatus] = useState<"ready" | "submitted" | "streaming" | "error">("ready")
   const abortRef = useRef<AbortController | null>(null)
@@ -145,10 +149,11 @@ export function ChatPage() {
       try {
         const saved = window.localStorage.getItem(storageKey)
         if (saved) {
-          const parsed = JSON.parse(saved) as { messages?: ChatMessage[]; model?: string; reasoning?: typeof reasoning; route?: string }
+          const parsed = JSON.parse(saved) as { messages?: ChatMessage[]; model?: string; reasoning?: typeof reasoning; interfaceType?: ChatInterface; route?: string }
           if (Array.isArray(parsed.messages)) setMessages(parsed.messages.map((message) => message.status === "streaming" ? { ...message, status: "error", error: "上次生成已中断" } : message))
           if (typeof parsed.model === "string") setModel(parsed.model)
           if (reasoningOptions.some((item) => item.value === parsed.reasoning)) setReasoning(parsed.reasoning!)
+          if (parsed.interfaceType === "chat" || parsed.interfaceType === "responses") setInterfaceType(parsed.interfaceType)
           if (typeof parsed.route === "string") setRoute(parsed.route)
         }
       } catch { /* Ignore malformed local drafts. */ }
@@ -159,8 +164,8 @@ export function ChatPage() {
 
   useEffect(() => {
     if (!hydratedRef.current) return
-    window.localStorage.setItem(storageKey, JSON.stringify({ messages, model, reasoning, route }))
-  }, [messages, model, reasoning, route])
+    window.localStorage.setItem(storageKey, JSON.stringify({ messages, model, reasoning, interfaceType, route }))
+  }, [messages, model, reasoning, interfaceType, route])
 
   const loadOptions = useCallback(async () => {
     setOptionsError(null)
@@ -216,6 +221,7 @@ export function ChatPage() {
         signal: controller.signal,
         body: JSON.stringify({
           model,
+          interfaceType,
           reasoningEffort: reasoning,
           routing,
           messages: contextMessages.map(({ role, content: messageContent }) => ({ role, content: messageContent })),
@@ -242,7 +248,20 @@ export function ChatPage() {
           const data = event.split("\n").filter((line) => line.startsWith("data:"))
             .map((line) => line.slice(5).trimStart()).join("\n")
           if (!data || data === "[DONE]") continue
-          const payload = JSON.parse(data) as { type?: string; delta?: string; error?: unknown; response?: { error?: unknown } }
+          const payload = JSON.parse(data) as {
+            type?: string
+            delta?: string
+            error?: unknown
+            response?: { error?: unknown }
+            choices?: Array<{
+              delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; thinking?: unknown }
+              message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; thinking?: unknown }
+            }>
+          }
+          const chatPart = payload.choices?.[0]?.delta ?? payload.choices?.[0]?.message
+          const chatContent = typeof chatPart?.content === "string" ? chatPart.content : ""
+          const chatReasoning = [chatPart?.reasoning_content, chatPart?.reasoning, chatPart?.thinking]
+            .find((value): value is string => typeof value === "string") ?? ""
           if (payload.type === "response.output_text.delta" && typeof payload.delta === "string") {
             answer += payload.delta
             setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: answer } : message))
@@ -254,6 +273,14 @@ export function ChatPage() {
             if (reasoningText) {
               setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, reasoning: reasoningText } : message))
             }
+          } else if (chatContent || chatReasoning) {
+            answer += chatContent
+            reasoningText += chatReasoning
+            setMessages((current) => current.map((message) => message.id === assistantId ? {
+              ...message,
+              content: answer,
+              reasoning: reasoningText || undefined,
+            } : message))
           } else if (payload.type === "error" || payload.type === "response.failed") {
             throw new Error(errorMessage(payload, errorMessage(payload.response, "模型返回失败")))
           }
@@ -271,7 +298,7 @@ export function ChatPage() {
     } finally {
       if (abortRef.current === controller) abortRef.current = null
     }
-  }, [effectiveRoute, model, reasoning, sessionFetch])
+  }, [effectiveRoute, interfaceType, model, reasoning, sessionFetch])
 
   const submit = useCallback(async ({ text }: { text: string }) => {
     const content = text.trim()
@@ -286,11 +313,12 @@ export function ChatPage() {
       model,
       routeLabel,
       reasoningLabel: selectedReasoning.label,
+      interfaceLabel: interfaceType === "chat" ? "Chat" : "Responses",
     }
     const contextMessages = [...messages.filter((message) => message.status !== "error"), userMessage]
     setMessages((current) => [...current, userMessage, assistantMessage])
     await runGeneration(contextMessages, assistantId)
-  }, [messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
+  }, [interfaceType, messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
 
   const lastAssistantId = useMemo(() => [...messages].reverse().find((message) => message.role === "assistant")?.id, [messages])
 
@@ -309,9 +337,10 @@ export function ChatPage() {
       model,
       routeLabel,
       reasoningLabel: selectedReasoning.label,
+      interfaceLabel: interfaceType === "chat" ? "Chat" : "Responses",
     } : message))
     await runGeneration(contextMessages, assistantId)
-  }, [messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
+  }, [interfaceType, messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
 
   const newChat = useCallback(() => {
     stop()
@@ -326,7 +355,7 @@ export function ChatPage() {
           <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#ecfdf7] text-[#0d8a6a]"><Bot className="size-4" /></span>
           <span className="truncate text-sm font-semibold tracking-[-0.02em] text-[#222]">{model || (!options && !optionsError ? "正在加载模型…" : "聊天")}</span>
           <span className="hidden h-4 w-px bg-[#e5e5e5] sm:block" />
-          <span className="hidden truncate text-xs text-[#8b8b8b] sm:block">{routeLabel} · {selectedReasoning.label}</span>
+          <span className="hidden truncate text-xs text-[#8b8b8b] sm:block">{interfaceType === "chat" ? "Chat" : "Responses"} · {routeLabel} · {selectedReasoning.label}</span>
         </div>
         <Button variant="ghost" size="sm" onClick={newChat} className="rounded-full text-[#555]">
           <MessageSquarePlus />新对话
@@ -388,7 +417,7 @@ export function ChatPage() {
               </MessageContent>
               {message.role === "assistant" ? (
                 <div className="flex items-center justify-between gap-3">
-                  <p className="truncate text-[11px] text-[#999]">{message.model} · {message.routeLabel} · {message.reasoningLabel}</p>
+                  <p className="truncate text-[11px] text-[#999]">{message.model} · {message.interfaceLabel ?? "Responses"} · {message.routeLabel} · {message.reasoningLabel}</p>
                   <MessageActions className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
                     {message.id === lastAssistantId ? (
                       <MessageAction tooltip="重新生成" onClick={() => void regenerate(message.id)} disabled={status === "submitted" || status === "streaming"}>
@@ -421,6 +450,8 @@ export function ChatPage() {
                   models={options?.models ?? []}
                   model={model}
                   onModelChange={setModel}
+                  interfaceType={interfaceType}
+                  onInterfaceTypeChange={setInterfaceType}
                   reasoning={reasoning}
                   onReasoningChange={setReasoning}
                   route={effectiveRoute}
@@ -443,10 +474,12 @@ export function ChatPage() {
   )
 }
 
-function ComposerSettingsMenu({ models, model, onModelChange, reasoning, onReasoningChange, route, onRouteChange, pools, accounts, routeLabel }: {
+function ComposerSettingsMenu({ models, model, onModelChange, interfaceType, onInterfaceTypeChange, reasoning, onReasoningChange, route, onRouteChange, pools, accounts, routeLabel }: {
   models: string[]
   model: string
   onModelChange: (value: string) => void
+  interfaceType: ChatInterface
+  onInterfaceTypeChange: (value: ChatInterface) => void
   reasoning: string
   onReasoningChange: (value: (typeof reasoningOptions)[number]["value"]) => void
   route: string
@@ -465,6 +498,13 @@ function ComposerSettingsMenu({ models, model, onModelChange, reasoning, onReaso
       </PromptInputButton>
     </DropdownMenuTrigger>
     <DropdownMenuContent align="end" sideOffset={8} className="w-[min(280px,calc(100vw-1.5rem))] rounded-[14px] p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.12)]">
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="h-10 rounded-[10px] px-2.5 text-sm font-medium"><span>接口类型</span><span className="ml-auto text-sm font-normal text-muted-foreground">{interfaceType === "chat" ? "Chat" : "Responses"}</span></DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="w-64 rounded-xl p-1">
+          <DropdownMenuItem onSelect={() => onInterfaceTypeChange("chat")} className="min-h-10 justify-between rounded-lg"><span><span className="block text-sm">Chat</span><span className="text-xs text-muted-foreground">兼容性更好，默认使用</span></span>{interfaceType === "chat" ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onInterfaceTypeChange("responses")} className="min-h-10 justify-between rounded-lg"><span><span className="block text-sm">Responses</span><span className="text-xs text-muted-foreground">使用 Responses 原生能力</span></span>{interfaceType === "responses" ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="h-10 rounded-[10px] px-2.5 text-sm font-medium"><span>模型</span><span className="ml-auto max-w-32 truncate font-normal text-muted-foreground">{model || "未选择"}</span></DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="max-h-[340px] w-[min(280px,calc(100vw-1.5rem))] overflow-y-auto rounded-xl p-1">
