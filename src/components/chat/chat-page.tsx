@@ -2,30 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  Blocks,
+  ArrowUp,
   Bot,
-  BrainCircuit,
   Check,
   ChevronDown,
   CircleAlert,
   Copy,
-  Globe2,
   MessageSquarePlus,
-  Network,
   Sparkles,
 } from "lucide-react"
 import { useSession } from "@/components/dashboard/admin-context"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   Conversation,
   ConversationContent,
@@ -271,7 +269,8 @@ export function ChatPage() {
     <div className="relative flex h-full min-h-0 flex-col bg-white">
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-[#ececec] px-3 sm:px-5">
         <div className="flex min-w-0 items-center gap-2">
-          <ModelMenu models={options?.models ?? []} value={model} onChange={setModel} loading={!options && !optionsError} />
+          <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#ecfdf7] text-[#0d8a6a]"><Bot className="size-4" /></span>
+          <span className="truncate text-sm font-semibold tracking-[-0.02em] text-[#222]">{model || (!options && !optionsError ? "正在加载模型…" : "聊天")}</span>
           <span className="hidden h-4 w-px bg-[#e5e5e5] sm:block" />
           <span className="hidden truncate text-xs text-[#8b8b8b] sm:block">{routeLabel} · {selectedReasoning.label}</span>
         </div>
@@ -288,7 +287,7 @@ export function ChatPage() {
       ) : null}
 
       <Conversation className="min-h-0 bg-white">
-        <ConversationContent className="mx-auto w-full max-w-3xl gap-7 px-4 pb-48 pt-8 sm:px-8 sm:pt-12">
+        <ConversationContent className="mx-auto w-full max-w-3xl gap-7 px-4 pb-56 pt-8 sm:px-8 sm:pt-12">
           {!messages.length ? (
             <ConversationEmptyState className="min-h-[52vh] p-2" title="" description="">
               <div className="flex max-w-xl flex-col items-center text-center">
@@ -335,25 +334,38 @@ export function ChatPage() {
             </Message>
           ))}
         </ConversationContent>
-        <ConversationScrollButton className="bottom-32" />
+        <ConversationScrollButton className="bottom-44" />
       </Conversation>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 border-t border-[#f2f2f2] bg-white/95 px-3 pb-3 pt-3 backdrop-blur-sm sm:px-6 sm:pb-5 sm:pt-4">
-        <div className="pointer-events-auto mx-auto w-full max-w-3xl">
-          <PromptInput onSubmit={submit} className="rounded-2xl border-[#dedede] bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08)]">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-white via-white/95 to-transparent px-3 pb-3 pt-10 sm:px-6 sm:pb-5 sm:pt-12">
+        <div className="pointer-events-auto mx-auto w-full max-w-4xl">
+          <PromptInput onSubmit={submit} className="rounded-[28px] border-black/10 bg-white shadow-[0_12px_42px_rgba(0,0,0,0.10),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] focus-within:border-black/20 focus-within:shadow-[0_16px_52px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)]">
             <PromptInputBody>
               <PromptInputTextarea placeholder={model ? `询问 ${model}` : "正在加载模型…"} disabled={!model || status === "submitted" || status === "streaming"}
-                className="min-h-[62px] resize-none px-4 pt-3 text-base leading-6 sm:text-[15px]" />
+                className="min-h-[94px] max-h-[240px] resize-none px-6 pt-5 pb-2 text-base leading-7 placeholder:text-[#9a9a9a]" />
             </PromptInputBody>
-            <PromptInputFooter className="px-2.5 pb-2.5">
-              <PromptInputTools className="min-w-0 gap-1">
-                <ReasoningMenu value={reasoning} onChange={setReasoning} />
-                <RoutingMenu route={effectiveRoute} onChange={setRoute} pools={compatiblePools} accounts={compatibleAccounts} />
-                <FutureTool icon={Globe2} label="联网搜索" />
-                <FutureTool icon={Blocks} label="MCP" />
+            <PromptInputFooter className="px-4 pb-3.5 pt-1">
+              <PromptInputTools className="min-w-0">
+                <span className="truncate px-1 text-xs text-[#8a8a8a]">{routeLabel}</span>
               </PromptInputTools>
-              <PromptInputSubmit status={status === "ready" ? undefined : status} onStop={stop} disabled={!model || (!messages.length && !options)}
-                className="rounded-full bg-[#171717] text-white hover:bg-[#333]" />
+              <div className="flex min-w-0 items-center gap-2">
+                <ComposerSettingsMenu
+                  models={options?.models ?? []}
+                  model={model}
+                  onModelChange={setModel}
+                  reasoning={reasoning}
+                  onReasoningChange={setReasoning}
+                  route={effectiveRoute}
+                  onRouteChange={setRoute}
+                  pools={compatiblePools}
+                  accounts={compatibleAccounts}
+                  routeLabel={routeLabel}
+                />
+                <PromptInputSubmit status={status === "ready" ? undefined : status} onStop={stop} disabled={!model || (!messages.length && !options)}
+                  className="size-10 rounded-full bg-[#171b1f] text-white shadow-sm hover:bg-[#2b3035]">
+                  {status === "ready" ? <ArrowUp className="size-5" /> : undefined}
+                </PromptInputSubmit>
+              </div>
             </PromptInputFooter>
           </PromptInput>
           <p className="mt-2 text-center text-[11px] text-[#999]">AI 可能会犯错，请核对重要信息</p>
@@ -363,72 +375,50 @@ export function ChatPage() {
   )
 }
 
-function ModelMenu({ models, value, onChange, loading }: { models: string[]; value: string; onChange: (value: string) => void; loading: boolean }) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="min-w-0 max-w-[250px] rounded-full px-2.5 text-sm font-semibold tracking-[-0.02em]">
-          <Bot className="size-4 text-[#10a37f]" />
-          <span className="truncate">{value || (loading ? "加载模型…" : "暂无模型")}</span><ChevronDown className="size-3.5 text-[#888]" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-[360px] w-[280px] overflow-y-auto">
-        <DropdownMenuLabel>选择模型</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        {models.map((item) => <DropdownMenuItem key={item} onSelect={() => onChange(item)} className="justify-between font-mono text-xs">
-          <span className="truncate">{item}</span>{item === value ? <Check className="size-4 text-[#10a37f]" /> : null}
-        </DropdownMenuItem>)}
-        {!models.length ? <p className="px-2 py-6 text-center text-xs text-muted-foreground">没有可用模型</p> : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
-function ReasoningMenu({ value, onChange }: { value: string; onChange: (value: (typeof reasoningOptions)[number]["value"]) => void }) {
-  const selected = reasoningOptions.find((item) => item.value === value) ?? reasoningOptions[0]
-  return <DropdownMenu>
-    <DropdownMenuTrigger asChild><PromptInputButton tooltip="设置思考等级" className="rounded-full px-2.5 text-xs"><BrainCircuit /> <span className="hidden sm:inline">{selected.label}</span></PromptInputButton></DropdownMenuTrigger>
-    <DropdownMenuContent align="start" className="w-56">
-      <DropdownMenuLabel>思考等级</DropdownMenuLabel><DropdownMenuSeparator />
-      {reasoningOptions.map((item) => <DropdownMenuItem key={item.value} onSelect={() => onChange(item.value)} className="justify-between">
-        <span><span className="block text-sm">{item.label}</span><span className="text-xs text-muted-foreground">{item.detail}</span></span>
-        {item.value === value ? <Check className="text-[#10a37f]" /> : null}
-      </DropdownMenuItem>)}
-    </DropdownMenuContent>
-  </DropdownMenu>
-}
-
-function RoutingMenu({ route, onChange, pools, accounts }: {
+function ComposerSettingsMenu({ models, model, onModelChange, reasoning, onReasoningChange, route, onRouteChange, pools, accounts, routeLabel }: {
+  models: string[]
+  model: string
+  onModelChange: (value: string) => void
+  reasoning: string
+  onReasoningChange: (value: (typeof reasoningOptions)[number]["value"]) => void
   route: string
-  onChange: (value: string) => void
+  onRouteChange: (value: string) => void
   pools: ChatOptions["pools"]
   accounts: ChatOptions["accounts"]
+  routeLabel: string
 }) {
-  const label = route.startsWith("pool:") ? pools.find((pool) => `pool:${pool.type}` === route)?.label
-    : route.startsWith("account:") ? accounts.find((account) => `account:${account.id}` === route)?.name : "自动调度"
+  const selectedReasoning = reasoningOptions.find((item) => item.value === reasoning) ?? reasoningOptions[0]
   return <DropdownMenu>
-    <DropdownMenuTrigger asChild><PromptInputButton tooltip="选择调用路由" className="max-w-32 rounded-full px-2.5 text-xs"><Network /><span className="hidden max-w-20 truncate sm:inline">{label ?? "自动调度"}</span></PromptInputButton></DropdownMenuTrigger>
-    <DropdownMenuContent align="start" className="max-h-[380px] w-72 overflow-y-auto">
-      <DropdownMenuLabel>本次调用路由</DropdownMenuLabel>
-      <DropdownMenuItem onSelect={() => onChange("auto")} className="justify-between">
-        <span><span className="block">自动调度</span><span className="text-xs text-muted-foreground">在所有兼容账号中智能切换</span></span>{route === "auto" ? <Check className="text-[#10a37f]" /> : null}
-      </DropdownMenuItem>
-      <DropdownMenuSeparator /><DropdownMenuLabel>指定号池</DropdownMenuLabel>
-      {pools.map((pool) => <DropdownMenuItem key={pool.type} onSelect={() => onChange(`pool:${pool.type}`)} className="justify-between">
-        <span><span className="block">{pool.label}</span><span className="text-xs text-muted-foreground">{pool.readyAccounts} 个可用账号</span></span>{route === `pool:${pool.type}` ? <Check className="text-[#10a37f]" /> : null}
-      </DropdownMenuItem>)}
-      <DropdownMenuSeparator /><DropdownMenuLabel>指定账号</DropdownMenuLabel>
-      {accounts.map((account) => <DropdownMenuItem key={account.id} onSelect={() => onChange(`account:${account.id}`)} className="justify-between">
-        <span className="min-w-0"><span className="block truncate">{account.name}</span><span className="block truncate text-xs text-muted-foreground">{account.poolLabel}{account.email ? ` · ${account.email}` : ""}</span></span>{route === `account:${account.id}` ? <Check className="text-[#10a37f]" /> : null}
-      </DropdownMenuItem>)}
-      {!pools.length ? <p className="px-2 py-3 text-xs text-muted-foreground">当前模型没有兼容的可用号池</p> : null}
+    <DropdownMenuTrigger asChild>
+      <PromptInputButton tooltip="模型与调用设置" className="h-10 max-w-[min(58vw,360px)] rounded-full bg-[#f3f3f3] px-4 text-sm font-normal text-[#292929] hover:bg-[#ebebeb]">
+        <span className="truncate">{model || "选择模型"}</span>
+        <span className="shrink-0 text-[#8a8a8a]">{selectedReasoning.label.replace("思考", "")}</span>
+        <ChevronDown className="size-4 shrink-0 text-[#8a8a8a]" />
+      </PromptInputButton>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="end" sideOffset={10} className="w-[min(320px,calc(100vw-2rem))] rounded-2xl p-2 shadow-[0_16px_48px_rgba(0,0,0,0.14)]">
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="h-12 rounded-xl px-3 text-[15px] font-medium"><span>模型</span><span className="ml-auto max-w-36 truncate font-normal text-muted-foreground">{model || "未选择"}</span></DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="max-h-[360px] w-[min(300px,calc(100vw-2rem))] overflow-y-auto rounded-xl p-1.5">
+          {models.map((item) => <DropdownMenuItem key={item} onSelect={() => onModelChange(item)} className="min-h-9 justify-between rounded-lg font-mono text-xs"><span className="truncate">{item}</span>{item === model ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}
+          {!models.length ? <p className="px-3 py-5 text-center text-xs text-muted-foreground">没有可用模型</p> : null}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="h-12 rounded-xl px-3 text-[15px] font-medium"><span>推理强度</span><span className="ml-auto text-sm font-normal text-muted-foreground">{selectedReasoning.label}</span></DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="w-64 rounded-xl p-1.5">
+          {reasoningOptions.map((item) => <DropdownMenuItem key={item.value} onSelect={() => onReasoningChange(item.value)} className="min-h-11 justify-between rounded-lg"><span><span className="block text-sm">{item.label}</span><span className="text-xs text-muted-foreground">{item.detail}</span></span>{item.value === reasoning ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="h-12 rounded-xl px-3 text-[15px] font-medium"><span>调用账号</span><span className="ml-auto max-w-32 truncate text-sm font-normal text-muted-foreground">{routeLabel}</span></DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="max-h-[380px] w-72 overflow-y-auto rounded-xl p-1.5">
+          <DropdownMenuItem onSelect={() => onRouteChange("auto")} className="min-h-11 justify-between rounded-lg"><span><span className="block">自动调度</span><span className="text-xs text-muted-foreground">在所有兼容账号中智能切换</span></span>{route === "auto" ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>
+          {pools.length ? <><DropdownMenuSeparator /><DropdownMenuLabel>指定号池</DropdownMenuLabel>{pools.map((pool) => <DropdownMenuItem key={pool.type} onSelect={() => onRouteChange(`pool:${pool.type}`)} className="min-h-10 justify-between rounded-lg"><span><span className="block">{pool.label}</span><span className="text-xs text-muted-foreground">{pool.readyAccounts} 个可用账号</span></span>{route === `pool:${pool.type}` ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}</> : null}
+          {accounts.length ? <><DropdownMenuSeparator /><DropdownMenuLabel>指定账号</DropdownMenuLabel>{accounts.map((account) => <DropdownMenuItem key={account.id} onSelect={() => onRouteChange(`account:${account.id}`)} className="min-h-10 justify-between rounded-lg"><span className="min-w-0"><span className="block truncate">{account.name}</span><span className="block truncate text-xs text-muted-foreground">{account.poolLabel}{account.email ? ` · ${account.email}` : ""}</span></span>{route === `account:${account.id}` ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}</> : null}
+          {!pools.length ? <p className="px-2 py-3 text-xs text-muted-foreground">当前模型没有兼容的可用号池</p> : null}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
     </DropdownMenuContent>
   </DropdownMenu>
-}
-
-function FutureTool({ icon: Icon, label }: { icon: typeof Globe2; label: string }) {
-  return <Tooltip>
-    <TooltipTrigger asChild><span><PromptInputButton disabled tooltip={`${label}即将支持`} className="rounded-full px-2.5 text-xs"><Icon /><span className="hidden lg:inline">{label}</span><Badge variant="secondary" className="h-4 px-1 text-[9px]">Soon</Badge></PromptInputButton></span></TooltipTrigger>
-    <TooltipContent>{label}扩展位已预留，后续接入</TooltipContent>
-  </Tooltip>
 }
