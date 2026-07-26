@@ -9,6 +9,7 @@ import {
   CircleAlert,
   Copy,
   MessageSquarePlus,
+  RotateCcw,
   Sparkles,
 } from "lucide-react"
 import { useSession } from "@/components/dashboard/admin-context"
@@ -61,6 +62,7 @@ interface ChatMessage {
   id: string
   role: "user" | "assistant"
   content: string
+  reasoning?: string
   status: MessageStatus
   error?: string
   model?: string
@@ -106,6 +108,24 @@ function errorMessage(payload: unknown, fallback: string): string {
     return (error as { message: string }).message
   }
   return fallback
+}
+
+function completedReasoning(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return ""
+  const response = (payload as { response?: unknown }).response
+  if (!response || typeof response !== "object") return ""
+  const output = (response as { output?: unknown }).output
+  if (!Array.isArray(output)) return ""
+  return output.flatMap((item) => {
+    if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "reasoning") return []
+    const parts = [
+      (item as { summary?: unknown }).summary,
+      (item as { content?: unknown }).content,
+    ].flatMap((value) => Array.isArray(value) ? value : [])
+    return parts.flatMap((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+      ? [(part as { text: string }).text]
+      : [])
+  }).join("\n\n")
 }
 
 export function ChatPage() {
@@ -182,22 +202,7 @@ export function ChatPage() {
       : message))
   }, [])
 
-  const submit = useCallback(async ({ text }: { text: string }) => {
-    const content = text.trim()
-    if (!content || !model || status === "submitted" || status === "streaming") return
-    const userMessage: ChatMessage = { id: newId(), role: "user", content, status: "complete" }
-    const assistantId = newId()
-    const assistantMessage: ChatMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      status: "streaming",
-      model,
-      routeLabel,
-      reasoningLabel: selectedReasoning.label,
-    }
-    const contextMessages = [...messages.filter((message) => message.status !== "error"), userMessage]
-    setMessages((current) => [...current, userMessage, assistantMessage])
+  const runGeneration = useCallback(async (contextMessages: ChatMessage[], assistantId: string) => {
     setStatus("submitted")
     const controller = new AbortController()
     abortRef.current = controller
@@ -226,6 +231,7 @@ export function ChatPage() {
       const decoder = new TextDecoder()
       let buffer = ""
       let answer = ""
+      let reasoningText = ""
       for (;;) {
         const chunk = await reader.read()
         if (chunk.done) break
@@ -240,13 +246,21 @@ export function ChatPage() {
           if (payload.type === "response.output_text.delta" && typeof payload.delta === "string") {
             answer += payload.delta
             setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: answer } : message))
+          } else if (payload.type?.includes("reasoning") && payload.type.endsWith(".delta") && typeof payload.delta === "string") {
+            reasoningText += payload.delta
+            setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, reasoning: reasoningText } : message))
+          } else if (payload.type === "response.completed" && !reasoningText) {
+            reasoningText = completedReasoning(payload)
+            if (reasoningText) {
+              setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, reasoning: reasoningText } : message))
+            }
           } else if (payload.type === "error" || payload.type === "response.failed") {
             throw new Error(errorMessage(payload, errorMessage(payload.response, "模型返回失败")))
           }
         }
       }
       setMessages((current) => current.map((message) => message.id === assistantId
-        ? answer ? { ...message, content: answer, status: "complete" } : { ...message, status: "error", error: "模型没有返回文本内容" }
+        ? answer ? { ...message, content: answer, reasoning: reasoningText || undefined, status: "complete" } : { ...message, reasoning: reasoningText || undefined, status: "error", error: "模型没有返回文本内容" }
         : message))
       setStatus(answer ? "ready" : "error")
     } catch (cause) {
@@ -257,7 +271,47 @@ export function ChatPage() {
     } finally {
       if (abortRef.current === controller) abortRef.current = null
     }
-  }, [effectiveRoute, messages, model, reasoning, routeLabel, selectedReasoning.label, sessionFetch, status])
+  }, [effectiveRoute, model, reasoning, sessionFetch])
+
+  const submit = useCallback(async ({ text }: { text: string }) => {
+    const content = text.trim()
+    if (!content || !model || status === "submitted" || status === "streaming") return
+    const userMessage: ChatMessage = { id: newId(), role: "user", content, status: "complete" }
+    const assistantId = newId()
+    const assistantMessage: ChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      model,
+      routeLabel,
+      reasoningLabel: selectedReasoning.label,
+    }
+    const contextMessages = [...messages.filter((message) => message.status !== "error"), userMessage]
+    setMessages((current) => [...current, userMessage, assistantMessage])
+    await runGeneration(contextMessages, assistantId)
+  }, [messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
+
+  const lastAssistantId = useMemo(() => [...messages].reverse().find((message) => message.role === "assistant")?.id, [messages])
+
+  const regenerate = useCallback(async (assistantId: string) => {
+    if (!model || status === "submitted" || status === "streaming") return
+    const assistantIndex = messages.findIndex((message) => message.id === assistantId && message.role === "assistant")
+    if (assistantIndex < 0) return
+    const contextMessages = messages.slice(0, assistantIndex).filter((message) => message.status !== "error")
+    if (!contextMessages.some((message) => message.role === "user")) return
+    setMessages((current) => current.map((message) => message.id === assistantId ? {
+      ...message,
+      content: "",
+      reasoning: undefined,
+      error: undefined,
+      status: "streaming",
+      model,
+      routeLabel,
+      reasoningLabel: selectedReasoning.label,
+    } : message))
+    await runGeneration(contextMessages, assistantId)
+  }, [messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
 
   const newChat = useCallback(() => {
     stop()
@@ -309,13 +363,22 @@ export function ChatPage() {
           ) : messages.map((message) => (
             <Message key={message.id} from={message.role} className="max-w-full">
               <MessageContent className={cn("text-[15px] leading-7", message.role === "assistant" && "w-full") }>
-                {message.role === "assistant" && message.status === "streaming" && !message.content ? (
-                  <Reasoning isStreaming defaultOpen>
-                    <ReasoningTrigger getThinkingMessage={() => <span>正在思考</span>} />
-                    <ReasoningContent>{`正在按「${message.reasoningLabel ?? "自动"}」处理，本页只展示最终回答。`}</ReasoningContent>
+                {message.role === "assistant" && (message.status === "streaming" || message.reasoning) ? (
+                  <Reasoning isStreaming={message.status === "streaming"} defaultOpen={message.status === "streaming"}>
+                    <ReasoningTrigger getThinkingMessage={(isStreaming, duration) => (
+                      <span>{isStreaming ? "正在思考" : duration ? `思考了 ${duration} 秒` : "思考过程"}</span>
+                    )} />
+                    <ReasoningContent>{message.reasoning || `正在按「${message.reasoningLabel ?? "自动思考"}」生成思考过程…`}</ReasoningContent>
                   </Reasoning>
                 ) : null}
-                {message.content ? <MessageResponse isAnimating={message.status === "streaming"}>{message.content}</MessageResponse> : null}
+                {message.content ? (
+                  <MessageResponse
+                    isAnimating={message.status === "streaming"}
+                    className="[&_[data-streamdown=code-block]]:relative [&_[data-streamdown=code-block]]:my-3 [&_[data-streamdown=code-block]]:gap-0 [&_[data-streamdown=code-block]]:rounded-[14px] [&_[data-streamdown=code-block]]:border-black/8 [&_[data-streamdown=code-block]]:bg-[#f7f7f8] [&_[data-streamdown=code-block]]:p-1.5 [&_[data-streamdown=code-block-header]]:h-8 [&_[data-streamdown=code-block-header]]:px-2 [&_[data-streamdown=code-block-actions]]:absolute [&_[data-streamdown=code-block-actions]]:right-2 [&_[data-streamdown=code-block-actions]]:top-2 [&_[data-streamdown=code-block-actions]]:mt-0 [&_[data-streamdown=code-block-actions]]:h-7 [&_[data-streamdown=code-block-actions]>div]:gap-0 [&_[data-streamdown=code-block-actions]>div]:border-0 [&_[data-streamdown=code-block-actions]>div]:bg-transparent [&_[data-streamdown=code-block-actions]>div]:p-0 [&_[data-streamdown=code-block-actions]>div]:backdrop-blur-none [&_[data-streamdown=code-block-copy-button]]:grid [&_[data-streamdown=code-block-copy-button]]:size-7 [&_[data-streamdown=code-block-copy-button]]:place-items-center [&_[data-streamdown=code-block-copy-button]]:rounded-lg [&_[data-streamdown=code-block-copy-button]]:p-0 [&_[data-streamdown=code-block-copy-button]]:transition-[background-color,color,transform] [&_[data-streamdown=code-block-copy-button]]:duration-150 [&_[data-streamdown=code-block-copy-button]]:ease-[cubic-bezier(0.23,1,0.32,1)] [&_[data-streamdown=code-block-copy-button]]:hover:bg-black/5 [&_[data-streamdown=code-block-copy-button]]:active:scale-[0.94] [&_[data-streamdown=code-block-download-button]]:grid [&_[data-streamdown=code-block-download-button]]:size-7 [&_[data-streamdown=code-block-download-button]]:place-items-center [&_[data-streamdown=code-block-download-button]]:rounded-lg [&_[data-streamdown=code-block-download-button]]:p-0 [&_[data-streamdown=code-block-download-button]]:transition-[background-color,color,transform] [&_[data-streamdown=code-block-download-button]]:duration-150 [&_[data-streamdown=code-block-download-button]]:ease-[cubic-bezier(0.23,1,0.32,1)] [&_[data-streamdown=code-block-download-button]]:hover:bg-black/5 [&_[data-streamdown=code-block-download-button]]:active:scale-[0.94] [&_[data-streamdown=code-block-body]]:rounded-[10px] [&_[data-streamdown=code-block-body]]:border-black/8 [&_[data-streamdown=code-block-body]]:bg-white [&_[data-streamdown=code-block-body]]:px-3.5 [&_[data-streamdown=code-block-body]]:py-3 [&_[data-streamdown=code-block-body]]:text-[13px] [&_[data-streamdown=code-block-body]]:leading-6"
+                  >
+                    {message.content}
+                  </MessageResponse>
+                ) : null}
                 {message.status === "error" ? (
                   <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm leading-5 text-red-700">
                     <CircleAlert className="mt-0.5 size-4 shrink-0" />
@@ -326,7 +389,12 @@ export function ChatPage() {
               {message.role === "assistant" ? (
                 <div className="flex items-center justify-between gap-3">
                   <p className="truncate text-[11px] text-[#999]">{message.model} · {message.routeLabel} · {message.reasoningLabel}</p>
-                  <MessageActions className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                  <MessageActions className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                    {message.id === lastAssistantId ? (
+                      <MessageAction tooltip="重新生成" onClick={() => void regenerate(message.id)} disabled={status === "submitted" || status === "streaming"}>
+                        <RotateCcw />
+                      </MessageAction>
+                    ) : null}
                     {message.content ? <MessageAction tooltip="复制回答" onClick={() => void copyToClipboard(message.content)}><Copy /></MessageAction> : null}
                   </MessageActions>
                 </div>
@@ -339,12 +407,12 @@ export function ChatPage() {
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-white via-white/95 to-transparent px-3 pb-3 pt-10 sm:px-6 sm:pb-5 sm:pt-12">
         <div className="pointer-events-auto mx-auto w-full max-w-4xl">
-          <PromptInput onSubmit={submit} className="rounded-[24px] border-black/10 bg-white shadow-[0_10px_36px_rgba(0,0,0,0.09),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] has-[[data-slot=input-group-control]:focus-visible]:ring-0 focus-within:border-black/20 focus-within:shadow-[0_14px_44px_rgba(0,0,0,0.11),0_1px_2px_rgba(0,0,0,0.05)]">
+          <PromptInput onSubmit={submit} className="rounded-[26px] border-black/10 bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] has-[[data-slot=input-group-control]:focus-visible]:ring-0 focus-within:border-black/20 focus-within:shadow-[0_12px_38px_rgba(0,0,0,0.10),0_1px_2px_rgba(0,0,0,0.05)]">
             <PromptInputBody>
               <PromptInputTextarea placeholder={model ? `询问 ${model}` : "正在加载模型…"} disabled={!model || status === "submitted" || status === "streaming"}
-                className="min-h-[94px] max-h-[240px] resize-none px-6 pt-5 pb-2 text-base leading-7 placeholder:text-[#9a9a9a]" />
+                className="min-h-[68px] max-h-[200px] resize-none px-5.5 pt-4 pb-1.5 text-base leading-7 placeholder:text-[#9a9a9a]" />
             </PromptInputBody>
-            <PromptInputFooter className="px-3.5 pb-3 pt-0.5">
+            <PromptInputFooter className="px-3 pb-2.5 pt-0">
               <PromptInputTools className="min-w-0">
                 <span className="truncate px-1 text-xs text-[#8a8a8a]">{routeLabel}</span>
               </PromptInputTools>
