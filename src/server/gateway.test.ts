@@ -48,6 +48,37 @@ describe("gateway", () => {
     expect(headers.get("x-org-id")).toBeNull(); expect(headers.get("x-api-key")).toBeNull()
   })
 
+  it("一次客户端请求的切号过程只写一条请求记录，并为每次尝试保留完整上游错误报文", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const errorBody = JSON.stringify({
+      error: { type: "GoUsageLimitError", message: "quota exhausted", detail: "错".repeat(70_000) },
+      metadata: { limitName: "5 hour" },
+    })
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(errorBody, { status: 429, headers: { "retry-after": "3600" } }))
+      .mockResolvedValueOnce(Response.json({ id: "ok" }))
+
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_requests").get()).toEqual({ value: 1 })
+    const gatewayRequest = db.prepare("SELECT id,attempt_count,status FROM gateway_requests").get() as { id: string; attempt_count: number; status: number }
+    expect(gatewayRequest.attempt_count).toBe(2)
+    expect(gatewayRequest.status).toBe(200)
+    const attempts = db.prepare("SELECT request_id,attempt_number,status,decision,response_body FROM gateway_attempts ORDER BY attempt_number").all() as Array<{
+      request_id: string
+      attempt_number: number
+      status: number
+      decision: string
+      response_body: string | null
+    }>
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({ request_id: gatewayRequest.id, attempt_number: 1, status: 429, decision: "RETRY_NEXT_ACCOUNT" })
+    expect(attempts[0].response_body).toBe(errorBody)
+    expect(attempts[1]).toMatchObject({ request_id: gatewayRequest.id, attempt_number: 2, status: 200, decision: "SUCCESS", response_body: null })
+  })
+
   it("控制台会话可使用内部身份调用并约束指定账号", async () => {
     const { db, credentials } = setup()
     const accounts = db.prepare("SELECT id FROM accounts WHERE owner_user_id=? ORDER BY ordinal").all(ownerUserId) as Array<{ id: string }>
@@ -89,13 +120,17 @@ describe("gateway", () => {
     expect(response.status).toBe(429); expect((await response.json()).error.type).toBe("all_provider_accounts_limited"); expect(fetcher).toHaveBeenCalledTimes(2)
   })
 
-  it("首个 SSE 额度事件即使跨 chunk 也会内部切号", async () => {
+  it("超过 64K 的首个 SSE 额度事件跨 chunk 时仍完整保存并内部切号", async () => {
     const { db, apiKey, credentials, hasher } = setup()
-    const encoder = new TextEncoder(); const parts = ['data: {"error":{"type":"GoUsage', 'LimitError"},"metadata":{"limitName":"weekly"}}\n\n']
+    const encoder = new TextEncoder()
+    const event = `data: ${JSON.stringify({ error: { type: "GoUsageLimitError", detail: "x".repeat(70_000) }, metadata: { limitName: "weekly" } })}\n\n`
+    const parts = [event.slice(0, 32_000), event.slice(32_000, 68_000), event.slice(68_000)]
     const stream = new ReadableStream<Uint8Array>({ start(controller) { for (const part of parts) controller.enqueue(encoder.encode(part)); controller.close() } })
     const fetcher = vi.fn().mockResolvedValueOnce(new Response(stream, { headers: { "content-type": "text/event-stream", "retry-after": "120" } })).mockResolvedValueOnce(Response.json({ id: "ok" }))
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
     expect(response.status).toBe(200); expect(fetcher).toHaveBeenCalledTimes(2)
+    const attempt = db.prepare("SELECT response_body FROM gateway_attempts WHERE attempt_number=1").get() as { response_body: string }
+    expect(attempt.response_body).toBe(parts.join(""))
   })
 
   it("xAI 正常 SSE 首事件不会被误判成 429", async () => {

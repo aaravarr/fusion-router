@@ -265,8 +265,10 @@ export class RoutingService {
             : null
         if (rollingPool) {
           selected = ordered.filter((account) => account.poolType === rollingPool).sort(usageAwareCompare)[0]
-          // Priority pool exhausted: fall through to the next ordered candidate.
-          if (!selected && poolTypePriority && poolTypePriority.length > 1) {
+          // Priority pool exhausted: fall through to any other compatible
+          // candidate. `eligible` has already applied explicit account/pool
+          // constraints, so this cannot escape a request-level constraint.
+          if (!selected) {
             selected = ordered.find((account) => account.poolType !== rollingPool) ?? ordered[0]
           }
         } else {

@@ -162,6 +162,31 @@ describe("routing", () => {
     expect(routing.select("mixed-pool-request", "responses", new Set()).account.id).toBe(lowUsage.id)
   })
 
+  it("单优先滚动号池耗尽时回退到其他兼容号池", () => {
+    const { db, accounts, routing, add } = make()
+    const fallback = add("go-grok-fallback")
+    const xai = accounts.createProviderAccount({ name: "xAI exhausted", poolType: "xai-grok", externalId: "xai-exhausted" })
+    new ModelRoutingRepository(ownerUserId, db).create("grok-*", ["xai-grok"])
+    routing.setModel("grok-4.5")
+    routing.markQuota(xai.id, "ROLLING_24H", 3_600)
+
+    const selected = routing.select("grok-fallback", "responses", new Set())
+
+    expect(selected.account.id).toBe(fallback)
+    expect(selected.account.poolType).toBe("opencode-go")
+  })
+
+  it("显式号池约束耗尽时不会回退到约束外账号", () => {
+    const { accounts, routing, add } = make()
+    add("go-outside-constraint")
+    const xai = accounts.createProviderAccount({ name: "xAI constrained exhausted", poolType: "xai-grok", externalId: "xai-constrained-exhausted" })
+    routing.setModel("grok-4.5")
+    routing.setRequestConstraint({ poolType: "xai-grok" })
+    routing.markQuota(xai.id, "ROLLING_24H", 3_600)
+
+    expect(() => routing.select("constrained-exhausted", "responses", new Set())).toThrowError(NoEligibleAccountError)
+  })
+
   it("自动修复旧版本把临时 xAI 429 覆盖成 100% token 用量的记录", () => {
     const { db, accounts, routing } = make()
     const account = accounts.createProviderAccount({ name: "xAI legacy", poolType: "xai-grok", externalId: "xai-legacy-limit" })

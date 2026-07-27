@@ -30,8 +30,6 @@ export interface GatewayRequestOptions {
 type GoLimit = { kind: QuotaKind; retryAfterSeconds: number | null }
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
 const MAX_ERROR_CHARS = 2_000
-// 上游错误响应体最大保留字符数（超过截断并标注）
-const MAX_ATTEMPT_BODY_CHARS = 65_536
 
 interface RequestFinalizeInput {
   status: number
@@ -97,11 +95,6 @@ function safeParse(body: string): unknown {
 function truncateError(value: string | null | undefined): string | null {
   if (!value) return null
   return value.length > MAX_ERROR_CHARS ? value.slice(0, MAX_ERROR_CHARS) : value
-}
-
-function truncateAttemptBody(value: string | null | undefined): string | null {
-  if (!value) return null
-  return value.length > MAX_ATTEMPT_BODY_CHARS ? value.slice(0, MAX_ATTEMPT_BODY_CHARS) + "\n...[truncated]" : value
 }
 
 /**
@@ -224,7 +217,7 @@ async function readFirstSseEvent(reader: ReadableStreamDefaultReader<Uint8Array>
   let total = 0
   let text = ""
   const decoder = new TextDecoder()
-  while (total < 64 * 1024 && !text.includes("\n\n") && !text.includes("\r\n\r\n")) {
+  while (!text.includes("\n\n") && !text.includes("\r\n\r\n")) {
     const next = await reader.read()
     if (next.done) break
     chunks.push(next.value)
@@ -560,12 +553,12 @@ export class GatewayService {
           if (sseLimit?.permanentlyDisableAccount) {
             await reader.cancel(); tried.add(selection.account.id); permanentlyDisabled.add(selection.account.id)
             routing.markPermanentlyDisabled(selection.account.id, sseLimit.errorType, extractBodyError(safeParse(sseData ?? "")) ?? sseLimit.errorType)
-            this.finishAttempt(attemptId, embeddedStatus ?? 403, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name, sseData)
+            this.finishAttempt(attemptId, embeddedStatus ?? 403, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name, first.text)
             continue
           }
           if (sseLimit?.shouldSwitchAccount) {
             await reader.cancel(); tried.add(selection.account.id); routing.markQuota(selection.account.id, sseLimit.quotaKind ?? "UNKNOWN_GO_LIMIT", sseLimit.retryAfterSeconds ?? null)
-            this.finishAttempt(attemptId, 429, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, sseLimit.errorType, selection.account.name, sseData)
+            this.finishAttempt(attemptId, 429, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, sseLimit.errorType, selection.account.name, first.text)
             continue
           }
           routing.markSuccess(selection.account.id)
@@ -743,7 +736,7 @@ export class GatewayService {
 
   private finishAttempt(id: string, status: number, decision: string, error: string | null, latencyMs?: number, errorMessage?: string | null, accountName?: string | null, responseBody?: string | null) {
     this.db.prepare("UPDATE gateway_attempts SET status=?,decision=?,error_type=?,completed_at=?,latency_ms=?,error_message=?,account_name=?,response_body=? WHERE id=?")
-      .run(status, decision, error, new Date().toISOString(), latencyMs ?? null, truncateError(errorMessage), accountName ?? null, truncateAttemptBody(responseBody), id)
+      .run(status, decision, error, new Date().toISOString(), latencyMs ?? null, truncateError(errorMessage), accountName ?? null, responseBody ?? null, id)
   }
 
   private finalizeRequest(id: string, input: RequestFinalizeInput): void {
