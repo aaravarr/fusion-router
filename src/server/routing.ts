@@ -283,6 +283,7 @@ export class RoutingService {
         }
       }
 
+      if (!selected) throw new NoEligibleAccountError("NO_ELIGIBLE")
       const leaseId = randomUUID()
       this.db.prepare(`INSERT INTO route_leases(id, owner_user_id, request_id, account_id, credential_version, expires_at, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
