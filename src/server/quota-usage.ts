@@ -51,44 +51,60 @@ export function upsertLocalRollingUsage(ownerUserId: string, accountId: string, 
 } {
   const snapshot = computeLocalRollingUsage(accountId, db, now)
   const timestamp = now.toISOString()
-  // Never let a zero-looking upstream header wipe higher local usage.
-  // Prefer the max of local usage and any previously stored non-zero usage.
-  const previous = db.prepare(`SELECT usage_percent, remaining_value, limit_value, reset_at FROM quota_windows
+  const previous = db.prepare(`SELECT usage_percent, remaining_value, limit_value, reset_at, source FROM quota_windows
     WHERE owner_user_id=? AND account_id=? AND kind='ROLLING_24H'`).get(ownerUserId, accountId) as {
     usage_percent: number | null
     remaining_value: number | null
     limit_value: number | null
     reset_at: string | null
+    source: string | null
   } | undefined
   const previousResetMs = previous?.reset_at ? Date.parse(previous.reset_at) : Number.NaN
   const previousExpired = Number.isFinite(previousResetMs) && previousResetMs <= now.getTime()
-  const previousUsage = previousExpired ? 0 : Number(previous?.usage_percent ?? 0)
-  const previousRemaining = previousExpired ? null : previous?.remaining_value
   const hardBlocked = snapshot.usedTokens >= XAI_HARD_BLOCK_TOKEN_THRESHOLD
-  const usagePercent = hardBlocked ? Math.max(100, previousUsage) : Math.max(snapshot.usagePercent, previousUsage)
   const limitValue = Math.max(snapshot.limitTokens, Number(previous?.limit_value ?? 0) || snapshot.limitTokens)
-  // Prefer the lower remaining (more used). remaining can go negative when over quota.
-  const remainingValue = previousRemaining == null
-    ? snapshot.remainingTokens
-    : Math.min(snapshot.remainingTokens, Number(previousRemaining))
-  const usedTokens = Math.max(0, limitValue - remainingValue)
-  const clampedUsage = roundPercent(Math.max(usagePercent, (usedTokens / limitValue) * 100))
-  const signedRemaining = hardBlocked ? Math.min(0, limitValue - Math.round((clampedUsage / 100) * limitValue)) : limitValue - Math.round((clampedUsage / 100) * limitValue)
-  const activePreviousReset = previousUsage >= 100 && Number.isFinite(previousResetMs) && previousResetMs > now.getTime() ? previous!.reset_at : null
-  const resetAt = hardBlocked ? activePreviousReset ?? new Date(now.getTime() + XAI_FIXED_BLOCK_SECONDS * 1000).toISOString() : previousExpired ? null : previous?.reset_at ?? null
+  const previousUsage = previousExpired ? 0 : Number(previous?.usage_percent ?? 0)
+  // LOCAL_USAGE is a rolling snapshot, so it must be allowed to fall as old
+  // requests leave the 24-hour window. Only a stronger upstream observation
+  // may hold a higher value than the local snapshot.
+  const preserveUpstream = previous?.source !== "LOCAL_USAGE" && previousUsage > snapshot.usagePercent
+  const clampedUsage = hardBlocked ? Math.max(100, snapshot.usagePercent) : preserveUpstream ? previousUsage : snapshot.usagePercent
+  const signedRemaining = hardBlocked
+    ? Math.min(0, limitValue - Math.round((clampedUsage / 100) * limitValue))
+    : preserveUpstream && previous?.remaining_value != null
+      ? Number(previous.remaining_value)
+      : limitValue - Math.round((clampedUsage / 100) * limitValue)
+  const activePreviousReset = Number.isFinite(previousResetMs) && previousResetMs > now.getTime() ? previous!.reset_at : null
+  const resetAt = hardBlocked
+    ? activePreviousReset ?? new Date(now.getTime() + XAI_FIXED_BLOCK_SECONDS * 1000).toISOString()
+    : preserveUpstream ? previous?.reset_at ?? null : null
+  const source = preserveUpstream ? previous?.source ?? "LOCAL_USAGE" : "LOCAL_USAGE"
 
   db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
-    VALUES(?,?,'ROLLING_24H',?,?,'LOCAL_USAGE',?,?,?)
+    VALUES(?,?,'ROLLING_24H',?,?,?,?,?,?)
     ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
       usage_percent=excluded.usage_percent,
       reset_at=excluded.reset_at,
-      source='LOCAL_USAGE',
+      source=excluded.source,
       last_observed_at=excluded.last_observed_at,
       limit_value=excluded.limit_value,
       remaining_value=excluded.remaining_value,
       observation_version=observation_version+1`)
-    .run(ownerUserId, accountId, clampedUsage, resetAt, timestamp, limitValue, signedRemaining)
+    .run(ownerUserId, accountId, clampedUsage, resetAt, source, timestamp, limitValue, signedRemaining)
   return { usagePercent: clampedUsage, limitValue, remainingValue: signedRemaining }
+}
+
+/** Refresh a bounded batch of legacy/stale local blocks before routing. */
+export function refreshStaleLocalRollingUsage(ownerUserId: string, db: AppDatabase = getDatabase(), now = new Date(), limit = 100): number {
+  const staleBefore = new Date(now.getTime() - ROLLING_WINDOW_MS).toISOString()
+  const rows = db.prepare(`SELECT q.account_id
+    FROM quota_windows q JOIN accounts a ON a.id=q.account_id AND a.owner_user_id=q.owner_user_id
+    WHERE q.owner_user_id=? AND a.pool_type='xai-grok'
+      AND q.kind='ROLLING_24H' AND q.source='LOCAL_USAGE' AND q.usage_percent>=100
+      AND (q.reset_at IS NULL OR q.last_observed_at<=?)
+    ORDER BY q.last_observed_at ASC LIMIT ?`).all(ownerUserId, staleBefore, Math.max(1, Math.min(500, Math.trunc(limit)))) as Array<{ account_id: string }>
+  for (const row of rows) upsertLocalRollingUsage(ownerUserId, row.account_id, db, now)
+  return rows.length
 }
 
 export function isLocallyOverQuota(accountId: string, db: AppDatabase = getDatabase(), now = new Date()): boolean {

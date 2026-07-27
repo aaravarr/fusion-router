@@ -162,18 +162,15 @@ describe("routing", () => {
     expect(routing.select("mixed-pool-request", "responses", new Set()).account.id).toBe(lowUsage.id)
   })
 
-  it("单优先滚动号池耗尽时回退到其他兼容号池", () => {
+  it("模型路由规则是严格允许池，单一 xAI 池耗尽时不会回退到兼容 Go 池", () => {
     const { db, accounts, routing, add } = make()
-    const fallback = add("go-grok-fallback")
+    add("go-grok-outside-rule")
     const xai = accounts.createProviderAccount({ name: "xAI exhausted", poolType: "xai-grok", externalId: "xai-exhausted" })
     new ModelRoutingRepository(ownerUserId, db).create("grok-*", ["xai-grok"])
     routing.setModel("grok-4.5")
     routing.markQuota(xai.id, "ROLLING_24H", 3_600)
 
-    const selected = routing.select("grok-fallback", "responses", new Set())
-
-    expect(selected.account.id).toBe(fallback)
-    expect(selected.account.poolType).toBe("opencode-go")
+    expect(() => routing.select("grok-strict-pool", "responses", new Set())).toThrowError(NoEligibleAccountError)
   })
 
   it("显式号池约束耗尽时不会回退到约束外账号", () => {
@@ -296,6 +293,35 @@ describe("routing", () => {
     expect(() => routing.select("blocked-at-900k", "chat/completions", new Set(), now)).toThrowError(NoEligibleAccountError)
     const recovered = routing.select("recovered-after-24h", "chat/completions", new Set(), new Date(now.getTime() + 24 * 60 * 60_000 + 2_000))
     expect(recovered.account.id).toBe(xai.id)
+  })
+
+  it("旧 LOCAL_USAGE 100% 且无 reset 的幽灵封锁会在选路前自愈", () => {
+    const { db, accounts, routing } = make()
+    const xai = accounts.createProviderAccount({ name: "xAI legacy local block", poolType: "xai-grok", externalId: "xai-legacy-local-block" })
+    const now = new Date()
+    db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
+      VALUES(?,?,'ROLLING_24H',100,NULL,'LOCAL_USAGE',?,1000000,0)`)
+      .run(ownerUserId, xai.id, new Date(now.getTime() - 25 * 60 * 60_000).toISOString())
+    routing.setModel("grok-4.5")
+
+    const selected = routing.select("legacy-local-recovers", "responses", new Set(), now)
+
+    expect(selected.account.id).toBe(xai.id)
+    expect(db.prepare("SELECT usage_percent,remaining_value,reset_at,source FROM quota_windows WHERE account_id=? AND kind='ROLLING_24H'").get(xai.id))
+      .toEqual({ usage_percent: 0, remaining_value: 1000000, reset_at: null, source: "LOCAL_USAGE" })
+  })
+
+  it("真实 provider cooldown 不会被本地用量自愈清除", () => {
+    const { db, accounts, routing } = make()
+    const xai = accounts.createProviderAccount({ name: "xAI provider cooldown", poolType: "xai-grok", externalId: "xai-provider-cooldown" })
+    const now = new Date()
+    db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at)
+      VALUES(?,?,'PROVIDER_RATE_LIMIT',100,?,'UPSTREAM_429',?)`)
+      .run(ownerUserId, xai.id, new Date(now.getTime() + 600_000).toISOString(), new Date(now.getTime() - 25 * 60 * 60_000).toISOString())
+    routing.setModel("grok-4.5")
+
+    expect(() => routing.select("provider-cooldown-stays-blocked", "responses", new Set(), now)).toThrowError(NoEligibleAccountError)
+    expect(db.prepare("SELECT COUNT(*) AS value FROM quota_windows WHERE account_id=? AND kind='PROVIDER_RATE_LIMIT'").get(xai.id)).toEqual({ value: 1 })
   })
 
   it("xAI 成功一次后连续失败计数重新开始", () => {

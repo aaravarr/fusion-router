@@ -46,6 +46,7 @@ const statusLabels: Record<string, string> = {
   active: "可用",
   available: "可用",
   blocked: "额度阻塞",
+  cooldown: "冷却中",
   exhausted: "额度阻塞",
   disabled: "已停用",
   subscription_inactive: "订阅无效",
@@ -98,7 +99,9 @@ export function AccountBadges({ account }: { account: Account }) {
         ? "subscription_inactive"
         : account.billingGuard !== "VERIFIED_GO_ONLY"
           ? "unverified"
-          : account.status || "available";
+          : account.routingBlocked
+            ? account.routingBlockedUntil ? "cooldown" : "blocked"
+            : account.status || "available";
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <StatusBadge status={account.enabled === false ? "disabled" : status} />

@@ -118,6 +118,26 @@ describe("gateway", () => {
     const fetcher = vi.fn().mockImplementation(async () => limited())
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
     expect(response.status).toBe(429); expect((await response.json()).error.type).toBe("all_provider_accounts_limited"); expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_requests").get()).toEqual({ value: 1 })
+    expect(db.prepare("SELECT attempt_count,status FROM gateway_requests").get()).toEqual({ attempt_count: 2, status: 429 })
+    expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_attempts").get()).toEqual({ value: 2 })
+  })
+
+  it("初次路由即失败的客户端重试不会写入零尝试请求日志", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const accountIds = (db.prepare("SELECT id FROM accounts WHERE owner_user_id=?").all(ownerUserId) as Array<{ id: string }>).map((row) => row.id)
+    const routing = new RoutingService(ownerUserId, db)
+    for (const accountId of accountIds) routing.markQuota(accountId, "WEEKLY", 600)
+    const fetcher = vi.fn()
+
+    const first = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    const retry = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+
+    expect(first.status).toBe(429)
+    expect(retry.status).toBe(429)
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_requests").get()).toEqual({ value: 0 })
+    expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_attempts").get()).toEqual({ value: 0 })
   })
 
   it("超过 64K 的首个 SSE 额度事件跨 chunk 时仍完整保存并内部切号", async () => {

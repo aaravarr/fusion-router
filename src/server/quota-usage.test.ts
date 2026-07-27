@@ -30,7 +30,7 @@ describe("quota-usage", () => {
       .toEqual({ usage_percent: 35, remaining_value: 650000, source: "LOCAL_USAGE" })
   })
 
-  it("不会被更低的本地值覆盖已有更高用量", () => {
+  it("LOCAL_USAGE 以当前滚动窗口为准并允许从历史高水位下降", () => {
     const db = createDatabase(":memory:")
     const now = new Date("2026-07-24T12:00:00.000Z")
     db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
@@ -41,9 +41,26 @@ describe("quota-usage", () => {
     db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
       VALUES('u1','a1','ROLLING_24H',80,NULL,'LOCAL_USAGE',?,1000000,200000)`).run(now.toISOString())
     const upserted = upsertLocalRollingUsage("u1", "a1", db, now)
-    expect(upserted.usagePercent).toBe(80)
-    expect(db.prepare("SELECT usage_percent, remaining_value FROM quota_windows WHERE account_id='a1'").get())
-      .toEqual({ usage_percent: 80, remaining_value: 200000 })
+    expect(upserted.usagePercent).toBe(0)
+    expect(db.prepare("SELECT usage_percent, remaining_value, reset_at FROM quota_windows WHERE account_id='a1'").get())
+      .toEqual({ usage_percent: 0, remaining_value: 1000000, reset_at: null })
+  })
+
+  it("本地快照不会清除仍有效的 upstream 硬封锁", () => {
+    const db = createDatabase(":memory:")
+    const now = new Date("2026-07-24T12:00:00.000Z")
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("u1", "u1", "u1", "U1", "USER", "hash", now.toISOString(), now.toISOString())
+    db.prepare(`INSERT INTO accounts(id,owner_user_id,name,pool_type,workspace_id,go_key_id,credential_source,last_synced_at,auth_cookie_ciphertext,go_api_key_ciphertext,subscription_state,billing_guard,next_usage_check_at,ordinal,created_at,updated_at)
+      VALUES('a1','u1','xai','xai-grok','ws-upstream-block','go','PROVIDER_IMPORT',?,?,?,'ACTIVE','VERIFIED_GO_ONLY',?,0,?,?)`)
+      .run(now.toISOString(), "cipher-cookie", "cipher-key", now.toISOString(), now.toISOString(), now.toISOString())
+    const resetAt = new Date(now.getTime() + 60 * 60_000).toISOString()
+    db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value)
+      VALUES('u1','a1','ROLLING_24H',100,?,'UPSTREAM_429',?,1000000,0)`).run(resetAt, now.toISOString())
+
+    expect(upsertLocalRollingUsage("u1", "a1", db, now)).toEqual({ usagePercent: 100, limitValue: 1000000, remainingValue: 0 })
+    expect(db.prepare("SELECT usage_percent,reset_at,source FROM quota_windows WHERE account_id='a1'").get())
+      .toEqual({ usage_percent: 100, reset_at: resetAt, source: "UPSTREAM_429" })
   })
 
   it("百分比保留两位小数", () => {

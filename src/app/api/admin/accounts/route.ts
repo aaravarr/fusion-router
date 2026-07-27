@@ -43,23 +43,42 @@ export async function GET(request: Request) {
     list.push(window)
     windowsByAccount.set(window.accountId, list)
   }
+  const now = Date.now()
 
   const accounts = listed.items.map((account) => {
     const provider = tryGetProvider(account.poolType)
+    const accountWindows = windowsByAccount.get(account.id) ?? []
+    const activeBlocks = accountWindows.filter((window) => {
+      if ((window.usagePercent ?? 0) < 100) return false
+      if (!window.resetAt) return true
+      const resetAt = Date.parse(window.resetAt)
+      return Number.isFinite(resetAt) && resetAt > now
+    })
+    const routingBlocked = activeBlocks.length > 0
+    const finiteBlockResets = activeBlocks
+      .map((window) => window.resetAt)
+      .filter((resetAt): resetAt is string => Boolean(resetAt))
+      .sort()
+    const routingBlockedUntil = activeBlocks.some((window) => !window.resetAt)
+      ? null
+      : finiteBlockResets[0] ?? null
+    const credentialReady = provider
+      ? provider.isAccountReady(account)
+      : account.adminState === "ENABLED"
+        && account.authState === "VALID"
+        && account.subscriptionState === "ACTIVE"
+        && account.billingGuard === "VERIFIED_GO_ONLY"
+        && account.useBalance === false
     return {
       ...account,
       poolLabel: provider?.displayName ?? account.poolType,
       enabled: account.adminState === "ENABLED",
       isCurrent: routing.currentAccountId === account.id,
       isPreferred: routing.preferredAccountId === account.id,
-      routingEligible: provider
-        ? provider.isAccountReady(account)
-        : account.adminState === "ENABLED"
-          && account.authState === "VALID"
-          && account.subscriptionState === "ACTIVE"
-          && account.billingGuard === "VERIFIED_GO_ONLY"
-          && account.useBalance === false,
-      quotaWindows: (windowsByAccount.get(account.id) ?? []).map((window) => ({
+      routingBlocked,
+      routingBlockedUntil,
+      routingEligible: credentialReady && !routingBlocked,
+      quotaWindows: accountWindows.map((window) => ({
         kind: window.kind,
         usagePercent: window.usagePercent,
         resetAt: window.resetAt,

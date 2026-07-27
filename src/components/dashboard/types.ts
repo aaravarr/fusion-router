@@ -25,6 +25,8 @@ export interface Account {
   isCurrent?: boolean;
   isPreferred?: boolean;
   routingEligible?: boolean;
+  routingBlocked?: boolean;
+  routingBlockedUntil?: string | null;
   billingGuard?: string | null;
   adminState?: string | null;
   authState?: string | null;

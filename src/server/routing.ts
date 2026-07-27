@@ -6,7 +6,7 @@ import { getSystemSettings, normalizeOfficialOpenCodeUpstreamUrl } from "./setti
 import type { AccountRecord, PoolType, QuotaKind, RouteSelection } from "./types"
 import { tryGetProvider } from "./providers"
 import { ModelRoutingRepository } from "./repository"
-import { resolveXaiBlockSeconds } from "./quota-usage"
+import { refreshStaleLocalRollingUsage, resolveXaiBlockSeconds } from "./quota-usage"
 
 type Row = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
@@ -123,6 +123,10 @@ export class RoutingService {
         usage_percent=MAX(0,MIN(100,((limit_value-remaining_value)*100.0)/limit_value)),reset_at=NULL,source='UPSTREAM_HEADER'
         WHERE owner_user_id=? AND kind='ROLLING_24H' AND source='UPSTREAM_429' AND limit_value>0 AND remaining_value>0`)
         .run(this.ownerUserId)
+      // Legacy LOCAL_USAGE rows with no reset (or observations older than the
+      // rolling window) can otherwise block accounts forever. Refresh only a
+      // bounded stale batch; upstream cooldown rows are deliberately excluded.
+      refreshStaleLocalRollingUsage(this.ownerUserId, this.db, now)
       const activeBlocks = this.db.prepare(`SELECT account_id, reset_at FROM quota_windows
         WHERE owner_user_id = ? AND usage_percent >= 100 AND (reset_at IS NULL OR reset_at > ?)`)
         .all(this.ownerUserId, timestamp) as { account_id: string; reset_at: string | null }[]
@@ -161,12 +165,23 @@ export class RoutingService {
         throw new NoEligibleAccountError("NO_ELIGIBLE")
       }
       const unconstrainedCapabilityPool = modelCapable.length > 0 ? modelCapable : otherwiseEligible
+      // A matching model-routing rule is an allow-list, not merely a sorting
+      // hint. Keep only providers named by the rule (and capable of serving
+      // the model) before applying request-level constraints and availability.
+      const rawModelPriority = this.currentModel ? this.modelRouting.resolveModelPriority(this.currentModel) : null
+      const modelPriority = rawModelPriority
+        ? rawModelPriority.filter((pt) => providerSupportsModel(pt as PoolType, this.currentModel, endpoint))
+        : null
+      const allowedModelPools = modelPriority ? new Set(modelPriority) : null
+      const routedCapabilityPool = allowedModelPools
+        ? unconstrainedCapabilityPool.filter((account) => allowedModelPools.has(account.poolType))
+        : unconstrainedCapabilityPool
       const capabilityPool = this.constrainedAccountId
-        ? unconstrainedCapabilityPool.filter((account) => account.id === this.constrainedAccountId)
+        ? routedCapabilityPool.filter((account) => account.id === this.constrainedAccountId)
         : this.constrainedPoolType
-          ? unconstrainedCapabilityPool.filter((account) => account.poolType === this.constrainedPoolType)
-          : unconstrainedCapabilityPool
-      if ((this.constrainedAccountId || this.constrainedPoolType) && capabilityPool.length === 0) {
+          ? routedCapabilityPool.filter((account) => account.poolType === this.constrainedPoolType)
+          : routedCapabilityPool
+      if ((rawModelPriority || this.constrainedAccountId || this.constrainedPoolType) && capabilityPool.length === 0) {
         throw new NoEligibleAccountError("NO_ELIGIBLE")
       }
       const eligible = capabilityPool.filter((account) => !blocked.has(account.id)
@@ -188,21 +203,15 @@ export class RoutingService {
         throw new NoEligibleAccountError("NO_ELIGIBLE")
       }
 
-      // Model routing: determine pool type priority from routing rules.
-      // Drop priority entries that cannot serve the model so "grok-* → xai first"
-      // never forces unsupported models onto xAI when the rule is unrelated.
+      // Within the allowed set, preserve the configured pool order. An
+      // explicit request constraint narrows that order to its selected pool.
       const constrainedPriority = this.constrainedAccountId
         ? capabilityPool[0]?.poolType
         : this.constrainedPoolType
       const rawPriority = constrainedPriority
         ? [constrainedPriority]
-        : this.currentModel ? this.modelRouting.resolveModelPriority(this.currentModel) : null
-      const poolTypePriority = rawPriority
-        ? (() => {
-          const filtered = rawPriority.filter((pt) => providerSupportsModel(pt as PoolType, this.currentModel, endpoint))
-          return filtered.length > 0 ? filtered : null
-        })()
-        : null
+        : modelPriority
+      const poolTypePriority = rawPriority && rawPriority.length > 0 ? rawPriority : null
       // For rolling-day pools (xAI free), pick the account with the most
       // remaining quota first to flatten the aggregated daily budget and avoid
       // burning each seat to 100% before moving on. Go/OpenAI pools keep the

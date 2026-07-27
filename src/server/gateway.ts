@@ -378,8 +378,6 @@ export class GatewayService {
       poolType: options?.routing?.poolType ?? null,
       accountId: options?.routing?.accountId ?? null,
     })
-    this.db.prepare("INSERT INTO gateway_requests(id,owner_user_id,api_key_id,endpoint,model,started_at,stream,api_key_prefix,client,user_agent,origin,request_size_bytes,inbound_endpoint,upstream_endpoint,process_mode,route_mode,route_reason,converted,transform_summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-      .run(requestId, apiKey.ownerUserId, apiKey.id, endpoint, model, new Date().toISOString(), Number(stream), apiKey.prefix, meta.client, meta.userAgent, meta.origin, requestBytes?.byteLength ?? 0, inboundEndpoint, effectiveEndpoint, processMode, routeMode, routeReason, converted, transformSummary)
     const tried = new Set<string>()
     const permanentlyDisabled = new Set<string>()
     let attemptNumber = 0
@@ -392,12 +390,23 @@ export class GatewayService {
           const status = exhausted ? 429 : 503
           const headers = exhausted && cause.retryAfterSeconds ? { "retry-after": String(cause.retryAfterSeconds) } : undefined
           const type = exhausted ? "all_provider_accounts_limited" : "no_eligible_account"
-          this.finalizeRequest(requestId, { status, outcome: type, attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: 0, error: type, logSettings, requestBodyJson, meta, ...routeMeta })
+          // Do not create dashboard noise for requests that never reached an
+          // upstream account; clients commonly retry these 429/503 responses.
+          if (attemptNumber > 0) this.finalizeRequest(requestId, { status, outcome: type, attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: 0, error: type, logSettings, requestBodyJson, meta, ...routeMeta })
           return Response.json({ error: { type, message: exhausted ? "All eligible provider accounts are temporarily rate-limited or quota-limited." : "No eligible provider account is available.", ...(cause.retryAfterSeconds ? { retry_after: cause.retryAfterSeconds } : {}) } }, { status, headers })
         }
         throw cause
       }
 
+      if (attemptNumber === 0) {
+        try {
+          this.db.prepare("INSERT INTO gateway_requests(id,owner_user_id,api_key_id,endpoint,model,started_at,stream,api_key_prefix,client,user_agent,origin,request_size_bytes,inbound_endpoint,upstream_endpoint,process_mode,route_mode,route_reason,converted,transform_summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            .run(requestId, apiKey.ownerUserId, apiKey.id, endpoint, model, new Date().toISOString(), Number(stream), apiKey.prefix, meta.client, meta.userAgent, meta.origin, requestBytes?.byteLength ?? 0, inboundEndpoint, effectiveEndpoint, processMode, routeMode, routeReason, converted, transformSummary)
+        } catch (cause) {
+          routing.releaseLease(selection.leaseId)
+          throw cause
+        }
+      }
       attemptNumber += 1
       const attemptId = randomUUID()
       const attemptStartedAt = Date.now()
