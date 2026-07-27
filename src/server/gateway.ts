@@ -30,6 +30,8 @@ export interface GatewayRequestOptions {
 type GoLimit = { kind: QuotaKind; retryAfterSeconds: number | null }
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
 const MAX_ERROR_CHARS = 2_000
+// 上游错误响应体最大保留字符数（超过截断并标注）
+const MAX_ATTEMPT_BODY_CHARS = 65_536
 
 interface RequestFinalizeInput {
   status: number
@@ -95,6 +97,11 @@ function safeParse(body: string): unknown {
 function truncateError(value: string | null | undefined): string | null {
   if (!value) return null
   return value.length > MAX_ERROR_CHARS ? value.slice(0, MAX_ERROR_CHARS) : value
+}
+
+function truncateAttemptBody(value: string | null | undefined): string | null {
+  if (!value) return null
+  return value.length > MAX_ATTEMPT_BODY_CHARS ? value.slice(0, MAX_ATTEMPT_BODY_CHARS) + "\n...[truncated]" : value
 }
 
 /**
@@ -512,20 +519,20 @@ export class GatewayService {
             tried.add(selection.account.id)
             permanentlyDisabled.add(selection.account.id)
             routing.markPermanentlyDisabled(selection.account.id, errorClass.errorType, extractBodyError(safeParse(body)) ?? body)
-            this.finishAttempt(attemptId, upstream.status, "RETRY_NEXT_ACCOUNT", errorClass.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name)
+            this.finishAttempt(attemptId, upstream.status, "RETRY_NEXT_ACCOUNT", errorClass.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name, body)
             continue
           }
           if (errorClass?.shouldSwitchAccount) {
             tried.add(selection.account.id)
             routing.markQuota(selection.account.id, errorClass.quotaKind ?? "UNKNOWN_GO_LIMIT", errorClass.retryAfterSeconds ?? null)
-            this.finishAttempt(attemptId, upstream.status, "RETRY_NEXT_ACCOUNT", errorClass.errorType, Date.now() - attemptStartedAt, errorClass.errorType, selection.account.name)
+            this.finishAttempt(attemptId, upstream.status, "RETRY_NEXT_ACCOUNT", errorClass.errorType, Date.now() - attemptStartedAt, errorClass.errorType, selection.account.name, body)
             continue
           }
           const type = errorType(body)
           const parsed = safeParse(body)
           const bodyError = extractBodyError(parsed) ?? null
           const status = upstream.status
-          this.finishAttempt(attemptId, status, "RETURN_DIRECTLY", type, Date.now() - attemptStartedAt, bodyError, selection.account.name)
+          this.finishAttempt(attemptId, status, "RETURN_DIRECTLY", type, Date.now() - attemptStartedAt, bodyError, selection.account.name, body)
           this.finalizeRequest(requestId, { status, outcome: type ?? "upstream_error", attempts: attemptNumber, ok: isLogOk(status, bodyError) ? 1 : 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: bodyError, accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: body.length, usage: extractUsage(parsed), logSettings, requestBodyJson, responseBody: parsed, responseTruncated: false, meta, ...routeMeta })
           return new Response(body, { status, headers: responseHeaders(upstream.headers) })
         }
@@ -553,12 +560,12 @@ export class GatewayService {
           if (sseLimit?.permanentlyDisableAccount) {
             await reader.cancel(); tried.add(selection.account.id); permanentlyDisabled.add(selection.account.id)
             routing.markPermanentlyDisabled(selection.account.id, sseLimit.errorType, extractBodyError(safeParse(sseData ?? "")) ?? sseLimit.errorType)
-            this.finishAttempt(attemptId, embeddedStatus ?? 403, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name)
+            this.finishAttempt(attemptId, embeddedStatus ?? 403, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name, sseData)
             continue
           }
           if (sseLimit?.shouldSwitchAccount) {
             await reader.cancel(); tried.add(selection.account.id); routing.markQuota(selection.account.id, sseLimit.quotaKind ?? "UNKNOWN_GO_LIMIT", sseLimit.retryAfterSeconds ?? null)
-            this.finishAttempt(attemptId, 429, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, sseLimit.errorType, selection.account.name)
+            this.finishAttempt(attemptId, 429, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, sseLimit.errorType, selection.account.name, sseData)
             continue
           }
           routing.markSuccess(selection.account.id)
@@ -727,16 +734,16 @@ export class GatewayService {
         return new Response(upstream.body, { status, headers: responseHeaders(upstream.headers) })
       } catch (cause) {
         const message = formatErrorDetail(cause)
-        this.finishAttempt(attemptId, 502, "RETURN_DIRECTLY", "NETWORK", Date.now() - attemptStartedAt, message, selection.account.name)
+        this.finishAttempt(attemptId, 502, "RETURN_DIRECTLY", "NETWORK", Date.now() - attemptStartedAt, message, selection.account.name, null)
         this.finalizeRequest(requestId, { status: 502, outcome: "NETWORK", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: message, accountId: selection.account.id, accountName: selection.account.name, logSettings, requestBodyJson, meta, ...routeMeta })
         return Response.json({ error: { type: "upstream_transport_error", message } }, { status: 502 })
       } finally { routing.releaseLease(selection.leaseId) }
     }
   }
 
-  private finishAttempt(id: string, status: number, decision: string, error: string | null, latencyMs?: number, errorMessage?: string | null, accountName?: string | null) {
-    this.db.prepare("UPDATE gateway_attempts SET status=?,decision=?,error_type=?,completed_at=?,latency_ms=?,error_message=?,account_name=? WHERE id=?")
-      .run(status, decision, error, new Date().toISOString(), latencyMs ?? null, truncateError(errorMessage), accountName ?? null, id)
+  private finishAttempt(id: string, status: number, decision: string, error: string | null, latencyMs?: number, errorMessage?: string | null, accountName?: string | null, responseBody?: string | null) {
+    this.db.prepare("UPDATE gateway_attempts SET status=?,decision=?,error_type=?,completed_at=?,latency_ms=?,error_message=?,account_name=?,response_body=? WHERE id=?")
+      .run(status, decision, error, new Date().toISOString(), latencyMs ?? null, truncateError(errorMessage), accountName ?? null, truncateAttemptBody(responseBody), id)
   }
 
   private finalizeRequest(id: string, input: RequestFinalizeInput): void {

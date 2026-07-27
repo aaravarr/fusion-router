@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS gateway_attempts (
   status INTEGER,
   decision TEXT,
   error_type TEXT,
+  response_body TEXT,
   started_at TEXT NOT NULL,
   completed_at TEXT
 );
@@ -432,6 +433,7 @@ function ensureCurrentGatewayRequestColumns(db: AppDatabase): void {
     ["latency_ms", "INTEGER"],
     ["error_message", "TEXT"],
     ["account_name", "TEXT"],
+    ["response_body", "TEXT"],
   ] as const
   for (const [name, definition] of attemptAdditions) {
     if (!attemptCols.has(name)) db.exec(`ALTER TABLE gateway_attempts ADD COLUMN ${name} ${definition}`)

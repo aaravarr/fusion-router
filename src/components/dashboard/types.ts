@@ -155,6 +155,7 @@ export interface AttemptDetail {
   decision?: string;
   errorType?: string | null;
   errorMessage?: string | null;
+  responseBody?: string | null;
   latencyMs?: number | null;
   startedAt: string;
   completedAt?: string | null;

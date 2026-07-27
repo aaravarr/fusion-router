@@ -438,6 +438,8 @@ function FailoverTimeline({ attempts }: { attempts: AttemptDetail[] }) {
 }
 
 function AttemptItem({ attempt, index, last }: { attempt: AttemptDetail; index: number; last: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasBody = attempt.responseBody && attempt.responseBody.trim().length > 0;
   return (
     <li className="relative grid grid-cols-[28px_minmax(0,1fr)] gap-3 pb-5">
       <div className="relative flex justify-center">
@@ -455,6 +457,25 @@ function AttemptItem({ attempt, index, last }: { attempt: AttemptDetail; index: 
         </p>
         {attempt.errorMessage ? (
           <p className="mt-1 text-xs leading-5 text-destructive">{attempt.errorMessage}</p>
+        ) : null}
+        {hasBody ? (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setExpanded(!expanded)}
+              className="text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {expanded ? "▼ 收起响应报文" : "▶ 展开响应报文"}
+            </button>
+            <pre
+              className={
+                "mt-1 overflow-auto rounded bg-[#1e1e1e] p-2 font-mono text-[10px] leading-5 text-[#d4d4d4] " +
+                (expanded ? "max-h-80" : "line-clamp-2")
+              }
+            >
+              {attempt.responseBody}
+            </pre>
+          </div>
         ) : null}
         <p className="mt-2 font-mono text-[10px] text-muted-foreground">
           {attempt.latencyMs != null ? `${attempt.latencyMs} ms` : "—"} · {formatDate(attempt.startedAt)}
