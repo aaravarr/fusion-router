@@ -61,15 +61,20 @@ describe("system settings", () => {
     expect(getSystemSettings(db)).toMatchObject({
       upstreamBaseUrl: "https://opencode.ai/zen/go/v1",
       upstreamRequestTimeoutMs: 120_000,
+      maxFailoverAttempts: 12,
     })
 
     const updated = updateSystemSettings({
       upstreamBaseUrl: "https://gateway.opencode.ai/api/",
       upstreamRequestTimeoutMs: 30_000,
+      maxFailoverAttempts: 10,
     }, null, db)
     expect(updated.upstreamBaseUrl).toBe("https://gateway.opencode.ai/api")
     expect(updated.upstreamRequestTimeoutMs).toBe(30_000)
+    expect(updated.maxFailoverAttempts).toBe(10)
     expect(() => updateSystemSettings({ upstreamRequestTimeoutMs: 10 }, null, db)).toThrow(/between/)
+    expect(() => updateSystemSettings({ maxFailoverAttempts: 0 }, null, db)).toThrow(/between/)
+    expect(() => updateSystemSettings({ maxFailoverAttempts: 33 }, null, db)).toThrow(/between/)
     expect(() => updateSystemSettings({ upstreamBaseUrl: "https://user:secret@opencode.ai/v1" }, null, db)).toThrow(/embedded credentials/)
     expect(() => updateSystemSettings({ upstreamBaseUrl: "https://evil-opencode.ai/v1" }, null, db)).toThrow(/official HTTPS/)
   })

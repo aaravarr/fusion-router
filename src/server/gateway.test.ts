@@ -4,17 +4,18 @@ import { ApiKeyHasher, SecretVault } from "./crypto"
 import { AccountRepository, ApiKeyRepository } from "./repository"
 import { classifyGoUsageLimit, GatewayService, type CredentialProvider } from "./gateway"
 import { RoutingService } from "./routing"
+import { getSystemSettings, initializeSystemSettings, updateSystemSettings } from "./settings"
 
 const encryptionKey = Buffer.alloc(32, 8).toString("base64")
 const ownerUserId = "user-1"
 const usage = { FIVE_HOUR: { usagePercent: 1, resetInSeconds: 3600 }, WEEKLY: { usagePercent: 2, resetInSeconds: 86400 }, MONTHLY: { usagePercent: 3, resetInSeconds: 2592000 } }
 
-function setup(poolType: "opencode-go" | "xai-grok" = "opencode-go") {
+function setup(poolType: "opencode-go" | "xai-grok" = "opencode-go", accountCount = 2) {
   const db = createDatabase(":memory:"); const timestamp = new Date().toISOString()
   db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES (?,?,?,?,?,'ACTIVE',?,?,?)")
     .run(ownerUserId, "owner", "owner", "Owner", "USER", "hash", timestamp, timestamp)
   const accounts = new AccountRepository(ownerUserId, db, new SecretVault(encryptionKey))
-  const accountIds = ["one", "two"].map((suffix) => poolType === "xai-grok"
+  const accountIds = Array.from({ length: accountCount }, (_, index) => ["one", "two"][index] ?? `account-${index + 1}`).map((suffix) => poolType === "xai-grok"
     ? accounts.createProviderAccount({ name: `grok-${suffix}`, poolType })
     : accounts.upsertBrowserAccount({ workspaceId: `wrk_${suffix}`, authCookie: `cookie-${suffix}`, goApiKey: `sk-go-${suffix}`, goKeyId: `key_${suffix}`, subscriptionState: "ACTIVE", billingGuard: "VERIFIED_GO_ONLY", useBalance: false, usage })).map((account) => account.id)
   const hasher = new ApiKeyHasher("test-pepper"); const apiKey = new ApiKeyRepository(ownerUserId, db, hasher).create("test")
@@ -123,6 +124,51 @@ describe("gateway", () => {
     expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_attempts").get()).toEqual({ value: 2 })
   })
 
+  it("达到可配置切号上限后收敛为一条请求记录并保留每次完整报文", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 5)
+    initializeSystemSettings(db)
+    updateSystemSettings({ maxFailoverAttempts: 3 }, null, db)
+    expect(getSystemSettings(db).maxFailoverAttempts).toBe(3)
+    const errorBodies = Array.from({ length: 3 }, (_, index) => JSON.stringify({
+      error: { type: "GoUsageLimitError", message: `quota-${index + 1}`, detail: "完整报文".repeat(1_000) },
+      metadata: { limitName: "weekly" },
+    }))
+    const fetcher = vi.fn()
+    for (const body of errorBodies) {
+      fetcher.mockResolvedValueOnce(new Response(body, { status: 429, headers: { "retry-after": "600" } }))
+    }
+
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    const payload = await response.json()
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get("retry-after")).toBe("600")
+    expect(payload.error).toMatchObject({
+      type: "failover_attempt_limit_reached",
+      attempts: 3,
+      max_attempts: 3,
+      retry_after: 600,
+    })
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_requests").get()).toEqual({ value: 1 })
+    expect(db.prepare("SELECT status,outcome,attempt_count,ok FROM gateway_requests").get()).toEqual({
+      status: 503,
+      outcome: "failover_attempt_limit_reached",
+      attempt_count: 3,
+      ok: 0,
+    })
+    const attempts = db.prepare("SELECT attempt_number,status,decision,response_body FROM gateway_attempts ORDER BY attempt_number").all() as Array<{
+      attempt_number: number
+      status: number
+      decision: string
+      response_body: string
+    }>
+    expect(attempts).toHaveLength(3)
+    expect(attempts.map((attempt) => attempt.attempt_number)).toEqual([1, 2, 3])
+    expect(attempts.every((attempt) => attempt.status === 429 && attempt.decision === "RETRY_NEXT_ACCOUNT")).toBe(true)
+    expect(attempts.map((attempt) => attempt.response_body)).toEqual(errorBodies)
+  })
+
   it("初次路由即失败的客户端重试不会写入零尝试请求日志", async () => {
     const { db, apiKey, credentials, hasher } = setup()
     const accountIds = (db.prepare("SELECT id FROM accounts WHERE owner_user_id=?").all(ownerUserId) as Array<{ id: string }>).map((row) => row.id)
@@ -151,6 +197,53 @@ describe("gateway", () => {
     expect(response.status).toBe(200); expect(fetcher).toHaveBeenCalledTimes(2)
     const attempt = db.prepare("SELECT response_body FROM gateway_attempts WHERE attempt_number=1").get() as { response_body: string }
     expect(attempt.response_body).toBe(parts.join(""))
+  })
+
+  it("SSE 切号达到上限时返回最短 Retry-After 并保留单主记录和完整事件", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 5)
+    initializeSystemSettings(db)
+    updateSystemSettings({ maxFailoverAttempts: 3 }, null, db)
+    const encoder = new TextEncoder()
+    const retryAfterValues = [300, 120, 240]
+    const events = retryAfterValues.map((_, index) => `data: ${JSON.stringify({
+      error: { type: "GoUsageLimitError", message: `sse-quota-${index + 1}`, detail: "SSE完整报文".repeat(500) },
+      metadata: { limitName: "weekly" },
+    })}\n\n`)
+    const fetcher = vi.fn()
+    events.forEach((event, index) => {
+      const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(event)); controller.close() } })
+      fetcher.mockResolvedValueOnce(new Response(stream, {
+        headers: { "content-type": "text/event-stream", "retry-after": String(retryAfterValues[index]) },
+      }))
+    })
+
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    const payload = await response.json()
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get("retry-after")).toBe("120")
+    expect(payload.error).toMatchObject({
+      type: "failover_attempt_limit_reached",
+      attempts: 3,
+      max_attempts: 3,
+      retry_after: 120,
+    })
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_requests").get()).toEqual({ value: 1 })
+    expect(db.prepare("SELECT status,outcome,attempt_count FROM gateway_requests").get()).toEqual({
+      status: 503,
+      outcome: "failover_attempt_limit_reached",
+      attempt_count: 3,
+    })
+    const attempts = db.prepare("SELECT attempt_number,status,decision,response_body FROM gateway_attempts ORDER BY attempt_number").all() as Array<{
+      attempt_number: number
+      status: number
+      decision: string
+      response_body: string
+    }>
+    expect(attempts).toHaveLength(3)
+    expect(attempts.every((attempt) => attempt.status === 429 && attempt.decision === "RETRY_NEXT_ACCOUNT")).toBe(true)
+    expect(attempts.map((attempt) => attempt.response_body)).toEqual(events)
   })
 
   it("xAI 正常 SSE 首事件不会被误判成 429", async () => {

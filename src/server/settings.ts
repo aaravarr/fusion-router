@@ -7,6 +7,7 @@ export const SYSTEM_SETTING_KEYS = {
   domainMirrorGroups: "domain_mirror_groups",
   upstreamBaseUrl: "opencode_upstream_base_url",
   upstreamRequestTimeoutMs: "upstream_request_timeout_ms",
+  maxFailoverAttempts: "max_failover_attempts",
   maintenanceIntervalMs: "maintenance_interval_ms",
   maintenanceEnabled: "maintenance_enabled",
   refreshBatchLimit: "refresh_batch_limit",
@@ -71,6 +72,7 @@ export interface SystemSettings {
   domainMirrorGroups: DomainMirrorGroup[];
   upstreamBaseUrl: string;
   upstreamRequestTimeoutMs: number;
+  maxFailoverAttempts: number;
   maintenanceEnabled: boolean;
   maintenanceIntervalMs: number;
   refreshBatchLimit: number;
@@ -82,6 +84,7 @@ export interface UpdateSystemSettingsInput {
   domainMirrorGroups?: DomainMirrorGroup[];
   upstreamBaseUrl?: string;
   upstreamRequestTimeoutMs?: number;
+  maxFailoverAttempts?: number;
   maintenanceEnabled?: boolean;
   maintenanceIntervalMs?: number;
   refreshBatchLimit?: number;
@@ -106,6 +109,7 @@ const defaults: SystemSettings & LogSettings = {
   domainMirrorGroups: [],
   upstreamBaseUrl: "https://opencode.ai/zen/go/v1",
   upstreamRequestTimeoutMs: 120_000,
+  maxFailoverAttempts: 12,
   maintenanceEnabled: true,
   maintenanceIntervalMs: 60_000,
   refreshBatchLimit: 25,
@@ -148,6 +152,12 @@ export function initializeSystemSettings(db: AppDatabase): void {
     insert.run(
       SYSTEM_SETTING_KEYS.upstreamRequestTimeoutMs,
       JSON.stringify(defaults.upstreamRequestTimeoutMs),
+      0,
+      now,
+    );
+    insert.run(
+      SYSTEM_SETTING_KEYS.maxFailoverAttempts,
+      JSON.stringify(defaults.maxFailoverAttempts),
       0,
       now,
     );
@@ -245,6 +255,11 @@ export function getSystemSettings(
       db,
       SYSTEM_SETTING_KEYS.upstreamRequestTimeoutMs,
       defaults.upstreamRequestTimeoutMs,
+    ),
+    maxFailoverAttempts: readPublic(
+      db,
+      SYSTEM_SETTING_KEYS.maxFailoverAttempts,
+      defaults.maxFailoverAttempts,
     ),
     maintenanceEnabled: readPublic(
       db,
@@ -352,6 +367,12 @@ export function updateSystemSettings(
           "Request timeout",
         ),
       ),
+    ]);
+  }
+  if (input.maxFailoverAttempts !== undefined) {
+    entries.push([
+      SYSTEM_SETTING_KEYS.maxFailoverAttempts,
+      JSON.stringify(integerInRange(input.maxFailoverAttempts, 1, 32, "Max failover attempts")),
     ]);
   }
   if (input.maintenanceEnabled !== undefined) {

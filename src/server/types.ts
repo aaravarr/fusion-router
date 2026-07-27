@@ -18,6 +18,19 @@ export type QuotaKind = (typeof QUOTA_KINDS)[number]
 export type UserRole = "ADMIN" | "USER"
 export type UserStatus = "ACTIVE" | "DISABLED"
 
+export const ACCOUNT_ROUTE_STATES = [
+  "READY",
+  "TEMP_BLOCKED",
+  "SPENDING_BLOCKED",
+  "CREDENTIAL_INVALID",
+  "ADMIN_DISABLED",
+  "UPSTREAM_BANNED",
+  "SUBSCRIPTION_INACTIVE",
+  "BILLING_UNSAFE",
+  "UNAVAILABLE",
+] as const
+export type AccountRouteState = (typeof ACCOUNT_ROUTE_STATES)[number]
+
 export interface UserRecord {
   id: string
   username: string

@@ -294,6 +294,10 @@ export class GatewayService {
 
     const logSettings = getLogSettings(this.db)
     const logging = logSettings.loggingEnabled
+    const configuredMaxFailoverAttempts = getSystemSettings(this.db).maxFailoverAttempts
+    // Keep a hard runtime ceiling even if the persisted setting was edited
+    // outside the validated settings API.
+    const maxFailoverAttempts = Math.max(1, Math.min(32, Number(configuredMaxFailoverAttempts) || 12))
     const meta = collectRequestHeaders(request.headers)
 
     let upstreamBytes: Uint8Array<ArrayBuffer> | null = requestBytes
@@ -381,8 +385,45 @@ export class GatewayService {
     const tried = new Set<string>()
     const permanentlyDisabled = new Set<string>()
     let attemptNumber = 0
+    let lastAttemptAccountId: string | undefined
+    let lastAttemptAccountName: string | undefined
+    let retryAfterSeconds: number | undefined
 
     while (true) {
+      if (attemptNumber >= maxFailoverAttempts) {
+        const type = "failover_attempt_limit_reached"
+        const status = 503
+        const payload = {
+          error: {
+            type,
+            message: `Upstream failover stopped after ${attemptNumber} attempts.`,
+            attempts: attemptNumber,
+            max_attempts: maxFailoverAttempts,
+            ...(retryAfterSeconds ? { retry_after: retryAfterSeconds } : {}),
+          },
+        }
+        const body = JSON.stringify(payload)
+        const headers = retryAfterSeconds ? { "retry-after": String(retryAfterSeconds) } : undefined
+        this.finalizeRequest(requestId, {
+          status,
+          outcome: type,
+          attempts: attemptNumber,
+          ok: 0,
+          latencyMs: Date.now() - t0,
+          localPrepMs: 0,
+          error: type,
+          accountId: lastAttemptAccountId,
+          accountName: lastAttemptAccountName,
+          responseSizeBytes: new TextEncoder().encode(body).byteLength,
+          logSettings,
+          requestBodyJson,
+          responseBody: payload,
+          responseTruncated: false,
+          meta,
+          ...routeMeta,
+        })
+        return new Response(body, { status, headers: { "content-type": "application/json", ...(headers ?? {}) } })
+      }
       let selection
       try { selection = routing.select(requestId, effectiveEndpoint, tried) } catch (cause) {
         if (cause instanceof NoEligibleAccountError) {
@@ -408,6 +449,8 @@ export class GatewayService {
         }
       }
       attemptNumber += 1
+      lastAttemptAccountId = selection.account.id
+      lastAttemptAccountName = selection.account.name
       const attemptId = randomUUID()
       const attemptStartedAt = Date.now()
       this.db.prepare("INSERT INTO gateway_attempts(id,owner_user_id,request_id,account_id,attempt_number,started_at,account_name) VALUES(?,?,?,?,?,?,?)")
@@ -526,7 +569,13 @@ export class GatewayService {
           }
           if (errorClass?.shouldSwitchAccount) {
             tried.add(selection.account.id)
-            routing.markQuota(selection.account.id, errorClass.quotaKind ?? "UNKNOWN_GO_LIMIT", errorClass.retryAfterSeconds ?? null)
+            const attemptRetryAfterSeconds = errorClass.retryAfterSeconds ?? parseRetryAfter(upstream)
+            if (attemptRetryAfterSeconds && attemptRetryAfterSeconds > 0) {
+              retryAfterSeconds = retryAfterSeconds == null
+                ? attemptRetryAfterSeconds
+                : Math.min(retryAfterSeconds, attemptRetryAfterSeconds)
+            }
+            routing.markQuota(selection.account.id, errorClass.quotaKind ?? "UNKNOWN_GO_LIMIT", attemptRetryAfterSeconds)
             this.finishAttempt(attemptId, upstream.status, "RETRY_NEXT_ACCOUNT", errorClass.errorType, Date.now() - attemptStartedAt, errorClass.errorType, selection.account.name, body)
             continue
           }
@@ -566,7 +615,14 @@ export class GatewayService {
             continue
           }
           if (sseLimit?.shouldSwitchAccount) {
-            await reader.cancel(); tried.add(selection.account.id); routing.markQuota(selection.account.id, sseLimit.quotaKind ?? "UNKNOWN_GO_LIMIT", sseLimit.retryAfterSeconds ?? null)
+            await reader.cancel(); tried.add(selection.account.id)
+            const attemptRetryAfterSeconds = sseLimit.retryAfterSeconds ?? parseRetryAfter(upstream)
+            if (attemptRetryAfterSeconds && attemptRetryAfterSeconds > 0) {
+              retryAfterSeconds = retryAfterSeconds == null
+                ? attemptRetryAfterSeconds
+                : Math.min(retryAfterSeconds, attemptRetryAfterSeconds)
+            }
+            routing.markQuota(selection.account.id, sseLimit.quotaKind ?? "UNKNOWN_GO_LIMIT", attemptRetryAfterSeconds)
             this.finishAttempt(attemptId, 429, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, sseLimit.errorType, selection.account.name, first.text)
             continue
           }

@@ -479,9 +479,13 @@ export class AccountRepository {
     return this.db.prepare("DELETE FROM accounts WHERE id=? AND owner_user_id=?").run(accountId, this.ownerUserId).changes === 1
   }
 
-  bulkSetAdminState(accountIds: string[], adminState: AdminState): { updated: number; skippedBanned: number; notFound: number } {
+  bulkSetAdminState(
+    accountIds: string[],
+    adminState: AdminState,
+    options: { reason?: string; confirmSpendingBlocked?: boolean } = {},
+  ): { updated: number; unchanged: number; skippedBanned: number; skippedCredentialInvalid: number; skippedSpendingBlocked: number; notFound: number } {
     const ids = [...new Set(accountIds)]
-    const result = { updated: 0, skippedBanned: 0, notFound: 0 }
+    const result = { updated: 0, unchanged: 0, skippedBanned: 0, skippedCredentialInvalid: 0, skippedSpendingBlocked: 0, notFound: 0 }
     this.db.transaction(() => {
       for (const accountId of ids) {
         const account = this.get(accountId)
@@ -493,7 +497,34 @@ export class AccountRepository {
           result.skippedBanned += 1
           continue
         }
-        this.updateState(accountId, { adminState })
+        if (adminState === "ENABLED" && (account.disabledReason === "CREDENTIAL_INVALID" || account.authState !== "VALID")) {
+          result.skippedCredentialInvalid += 1
+          continue
+        }
+        if (adminState === "ENABLED" && account.disabledReason === "SPENDING_BLOCKED" && !options.confirmSpendingBlocked) {
+          result.skippedSpendingBlocked += 1
+          continue
+        }
+        const hasActualChange = adminState === "ENABLED"
+          ? account.adminState !== "ENABLED" || account.disabledReason !== null || account.disabledAt !== null
+          : account.adminState !== "DISABLED" || account.disabledReason === null || account.disabledAt === null
+        if (!hasActualChange) {
+          result.unchanged += 1
+          continue
+        }
+        const timestamp = nowIso()
+        const reason = options.reason?.trim() || (adminState === "DISABLED" ? "ADMIN_DISABLED" : "ADMIN_ENABLED")
+        const nextDisabledReason = adminState === "DISABLED"
+          ? account.disabledReason || "ADMIN_DISABLED"
+          : null
+        this.updateState(accountId, {
+          adminState,
+          disabledReason: nextDisabledReason,
+          disabledAt: adminState === "DISABLED" ? timestamp : null,
+        })
+        this.db.prepare("INSERT INTO events(id,owner_user_id,type,severity,account_id,request_id,metadata_json,created_at) VALUES(?,?,?,?,?,NULL,?,?)")
+          .run(randomUUID(), this.ownerUserId, adminState === "ENABLED" ? "ACCOUNT_ADMIN_ENABLED" : "ACCOUNT_ADMIN_DISABLED", "INFO", accountId,
+            JSON.stringify({ reason, previousAdminState: account.adminState, previousDisabledReason: account.disabledReason }), timestamp)
         result.updated += 1
       }
     }).immediate()

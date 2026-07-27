@@ -20,6 +20,7 @@ const schema = z.object({
   })).optional(),
   upstreamBaseUrl: z.url(),
   upstreamRequestTimeoutMs: z.number().int().min(1000).max(600000),
+  maxFailoverAttempts: z.number().int().min(1).max(32).optional(),
   maintenanceEnabled: z.boolean(),
   maintenanceIntervalMs: z.number().int().min(10000).max(86400000),
   refreshBatchLimit: z.number().int().min(1).max(500),

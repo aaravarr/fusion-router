@@ -63,13 +63,21 @@ const statusLabels: Record<string, string> = {
   completed: "已完成",
   failed: "失败",
   unknown: "未知",
+  ready: "可用",
+  temp_blocked: "临时阻塞",
+  spending_blocked: "消费受限",
+  credential_invalid: "凭据失效",
+  admin_disabled: "人工停用",
+  upstream_banned: "上游封禁",
+  billing_unsafe: "计费未验证",
+  unavailable: "不可用",
 };
 
 export function StatusBadge({ status }: { status?: string | null }) {
   const key = (status || "unknown").toLowerCase();
-  const available = key === "available" || key === "active" || key === "success" || key === "completed";
-  const warning = key === "blocked" || key === "exhausted" || key === "pending" || key === "unverified" || key === "cooldown" || key === "queued" || key === "running";
-  const danger = key.includes("error") || key.includes("expired") || key.includes("inactive") || key === "failed" || key === "banned";
+  const available = key === "ready" || key === "available" || key === "active" || key === "success" || key === "completed";
+  const warning = key === "blocked" || key === "exhausted" || key === "pending" || key === "unverified" || key === "cooldown" || key === "queued" || key === "running" || key === "temp_blocked" || key === "spending_blocked" || key === "billing_unsafe";
+  const danger = key.includes("error") || key.includes("expired") || key.includes("inactive") || key === "failed" || key === "banned" || key === "credential_invalid" || key === "upstream_banned";
   return (
     <Badge
       variant="outline"
@@ -89,28 +97,19 @@ export function StatusBadge({ status }: { status?: string | null }) {
 }
 
 export function AccountBadges({ account }: { account: Account }) {
-  const status = account.disabledReason === "XAI_ACCOUNT_BANNED"
-    ? "banned"
-    : account.adminState === "DISABLED"
-    ? "disabled"
-    : account.authState === "AUTH_ERROR" || account.authState === "REAUTH_REQUIRED"
-      ? "auth_error"
-      : account.subscriptionState === "INACTIVE" || account.subscriptionState === "VERIFY_ERROR"
-        ? "subscription_inactive"
-        : account.billingGuard !== "VERIFIED_GO_ONLY"
-          ? "unverified"
-          : account.routingBlocked
-            ? account.routingBlockedUntil ? "cooldown" : "blocked"
-            : account.status || "available";
+  const status = account.routeState || "UNAVAILABLE";
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <StatusBadge status={account.enabled === false ? "disabled" : status} />
-      {account.isCurrent ? (
-        <Badge variant="outline" className="h-5 rounded-sm border-info/20 bg-info-soft px-1.5 text-[11px] text-info">当前服务</Badge>
-      ) : null}
-      {account.isPreferred ? (
-        <Badge variant="outline" className="h-5 rounded-sm border-info/20 bg-white px-1.5 text-[11px] text-info">优先</Badge>
-      ) : null}
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <StatusBadge status={status} />
+        {account.isCurrent ? (
+          <Badge variant="outline" className="h-5 rounded-sm border-info/20 bg-info-soft px-1.5 text-[11px] text-info">当前服务</Badge>
+        ) : null}
+        {account.isPreferred ? (
+          <Badge variant="outline" className="h-5 rounded-sm border-info/20 bg-white px-1.5 text-[11px] text-info">优先</Badge>
+        ) : null}
+      </div>
+      {account.routeReason ? <p className="max-w-[180px] truncate text-[10px] text-muted-foreground" title={account.routeReason}>{account.routeReason}</p> : null}
     </div>
   );
 }

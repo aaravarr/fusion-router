@@ -30,6 +30,7 @@ interface Settings {
   domainMirrorGroups: MirrorGroup[];
   upstreamBaseUrl: string;
   upstreamRequestTimeoutMs: number;
+  maxFailoverAttempts: number;
   maintenanceEnabled: boolean;
   maintenanceIntervalMs: number;
   refreshBatchLimit: number;
@@ -198,6 +199,16 @@ export function SettingsPage() {
                   onChange={(e) =>
                     update("upstreamRequestTimeoutMs", Number(e.target.value))
                   }
+                  required
+                />
+              </Field>
+              <Field label="单请求最大切号次数" description="达到上限后停止继续扫描账号池，并在同一条请求记录中返回明确错误。范围 1-32。">
+                <Input
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={form.maxFailoverAttempts}
+                  onChange={(e) => update("maxFailoverAttempts", Number(e.target.value))}
                   required
                 />
               </Field>

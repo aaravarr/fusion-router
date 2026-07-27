@@ -27,6 +27,9 @@ export interface Account {
   routingEligible?: boolean;
   routingBlocked?: boolean;
   routingBlockedUntil?: string | null;
+  routeState?: "READY" | "TEMP_BLOCKED" | "SPENDING_BLOCKED" | "CREDENTIAL_INVALID" | "ADMIN_DISABLED" | "UPSTREAM_BANNED" | "SUBSCRIPTION_INACTIVE" | "BILLING_UNSAFE" | "UNAVAILABLE";
+  routeReason?: string | null;
+  blockedUntil?: string | null;
   billingGuard?: string | null;
   adminState?: string | null;
   authState?: string | null;

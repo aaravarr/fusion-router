@@ -414,12 +414,18 @@ export class RoutingService {
 
   markPermanentlyDisabled(accountId: string, reason: string, message: string): void {
     const timestamp = nowIso()
+    const spendingBlocked = reason === "SPENDING_BLOCKED"
+    const authState = spendingBlocked ? "VALID" : "AUTH_ERROR"
+    const eventType = reason === "CREDENTIAL_INVALID"
+      ? "ACCOUNT_CREDENTIAL_INVALID"
+      : spendingBlocked ? "ACCOUNT_SPENDING_BLOCKED" : "ACCOUNT_PERMANENTLY_DISABLED"
+    const severity = spendingBlocked ? "WARN" : "ERROR"
     this.db.transaction(() => {
-      this.db.prepare(`UPDATE accounts SET admin_state='DISABLED',auth_state='AUTH_ERROR',disabled_reason=?,disabled_at=?,last_error=?,updated_at=? WHERE id=? AND owner_user_id=?`)
-        .run(reason, timestamp, message.slice(0, 500), timestamp, accountId, this.ownerUserId)
+      this.db.prepare(`UPDATE accounts SET admin_state='DISABLED',auth_state=?,disabled_reason=?,disabled_at=?,last_error=?,updated_at=? WHERE id=? AND owner_user_id=?`)
+        .run(authState, reason, timestamp, message.slice(0, 500), timestamp, accountId, this.ownerUserId)
       this.db.prepare("UPDATE routing_state SET current_account_id=CASE WHEN current_account_id=? THEN NULL ELSE current_account_id END,preferred_account_id=CASE WHEN preferred_account_id=? THEN NULL ELSE preferred_account_id END,cursor_version=cursor_version+1,updated_at=? WHERE owner_user_id=?")
         .run(accountId, accountId, timestamp, this.ownerUserId)
-      this.event("ACCOUNT_PERMANENTLY_DISABLED", "ERROR", accountId, null, { reason, message: message.slice(0, 500) })
+      this.event(eventType, severity, accountId, null, { reason, message: message.slice(0, 500), authState, adminState: "DISABLED" })
     })()
   }
 

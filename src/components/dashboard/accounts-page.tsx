@@ -209,9 +209,18 @@ export function AccountsPage() {
     setActionError(null);
     setActionNotice(null);
     try {
+      const requestBody = { ...body };
+      if (requestBody.adminState === "ENABLED" && account.routeState === "SPENDING_BLOCKED") {
+        const approved = await confirm({ title: "重新启用消费受限账号？", description: "该账号曾被上游因额度或订阅限制自动停用。确认后会清除阻塞原因并重新加入调度。", confirmText: "明确重新启用" });
+        if (!approved) return;
+        requestBody.confirmSpendingBlocked = true;
+        requestBody.reason = "管理员明确重新启用消费受限账号";
+      } else if (requestBody.adminState === "DISABLED") {
+        requestBody.reason = "管理员手动停用";
+      }
       const response = await adminFetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, {
         method: "PATCH",
-        body: JSON.stringify(body),
+        body: JSON.stringify(requestBody),
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "账号更新失败");
@@ -319,21 +328,28 @@ export function AccountsPage() {
       const approved = await confirm({ title: `永久删除 ${accountIds.length} 个账号？`, description: "关联凭据和额度记录也会一并清除，此操作不可恢复。", confirmText: "永久删除", destructive: true });
       if (!approved) return;
     }
+    if (action === "enable" && accounts.some((account) => selectedIds.has(account.id) && account.routeState === "SPENDING_BLOCKED")) {
+      const approved = await confirm({ title: "重新启用消费受限账号？", description: "这些账号曾被上游因额度或订阅限制自动停用。确认后会清除阻塞原因并重新加入调度。", confirmText: "明确重新启用" });
+      if (!approved) return;
+    }
     setBulkBusy(action);
     setActionError(null);
     setActionNotice(null);
     try {
       const response = await adminFetch("/api/admin/accounts/bulk", {
         method: "POST",
-        body: JSON.stringify({ action, accountIds }),
+        body: JSON.stringify({ action, accountIds, reason: action === "disable" ? "管理员批量停用" : "管理员批量启用", confirmSpendingBlocked: action === "enable" }),
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message || "批量操作失败");
       const affected = Number(action === "delete" ? payload?.deleted : payload?.updated) || 0;
       const skippedBanned = Number(payload?.skippedBanned) || 0;
+      const skippedCredentialInvalid = Number(payload?.skippedCredentialInvalid) || 0;
+      const skippedSpendingBlocked = Number(payload?.skippedSpendingBlocked) || 0;
+      const unchanged = Number(payload?.unchanged) || 0;
       const notFound = Number(payload?.notFound) || 0;
       const actionLabel = action === "enable" ? "启用" : action === "disable" ? "停用" : "删除";
-      const details = [skippedBanned ? `跳过永久封禁 ${skippedBanned} 个` : "", notFound ? `未找到 ${notFound} 个` : ""].filter(Boolean);
+      const details = [unchanged ? `状态未变化 ${unchanged} 个` : "", skippedBanned ? `跳过永久封禁 ${skippedBanned} 个` : "", skippedCredentialInvalid ? `需重新认证 ${skippedCredentialInvalid} 个` : "", skippedSpendingBlocked ? `需明确确认消费受限 ${skippedSpendingBlocked} 个` : "", notFound ? `未找到 ${notFound} 个` : ""].filter(Boolean);
       setActionNotice(`已${actionLabel} ${affected} 个账号${details.length ? `，${details.join("，")}` : ""}。`);
       setSelectedIds(new Set());
       if (selected && accountIds.includes(selected.id)) setSelected(null);
@@ -603,7 +619,7 @@ export function AccountsPage() {
                           <DropdownMenuItem onSelect={() => setSelected(account)}><Eye />查看详情</DropdownMenuItem>
                           <DropdownMenuItem onSelect={() => void setPreferred(account)}><Star />设为优先账号</DropdownMenuItem>
                           <DropdownMenuSeparator />
-                          {account.disabledReason !== "XAI_ACCOUNT_BANNED" ? <DropdownMenuItem onSelect={() => void patchAccount(account, { adminState: account.adminState === "DISABLED" ? "ENABLED" : "DISABLED" })}>
+                          {account.routeState !== "UPSTREAM_BANNED" && account.routeState !== "CREDENTIAL_INVALID" ? <DropdownMenuItem onSelect={() => void patchAccount(account, { adminState: account.adminState === "DISABLED" ? "ENABLED" : "DISABLED" })}>
                             <CircleOff />{account.adminState === "DISABLED" ? "启用账号" : "停用账号"}
                           </DropdownMenuItem> : null}
                           <DropdownMenuSeparator />
@@ -756,7 +772,9 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                   <div className="divide-y rounded-md border">
                     <DetailRow label="号池类型" value={getPoolLabel(account.poolType)} />
                     <DetailRow label="凭据状态" value={account.authState === "VALID" ? "有效" : account.authState || "未知"} />
-                    {account.disabledReason ? <DetailRow label="停用原因" value={account.disabledReason === "XAI_ACCOUNT_BANNED" ? "xAI 上游已封禁此账号" : account.disabledReason} /> : null}
+                    <DetailRow label="路由状态" value={account.routeState || "未知"} />
+                    {account.routeReason ? <DetailRow label="状态原因" value={account.routeReason} /> : null}
+                    {account.blockedUntil ? <DetailRow label="预计恢复" value={formatDate(account.blockedUntil)} mono /> : null}
                     {account.lastError ? <DetailRow label="最近错误" value={account.lastError} /> : null}
                     <DetailRow label="最近同步" value={formatDate(account.lastSyncedAt)} mono />
                     <DetailRow label="最近额度检查" value={formatDate(account.lastUsageCheckAt)} mono />
@@ -766,7 +784,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
             </div>
             <DialogFooter className="mb-0 flex-row flex-wrap border-t bg-[#fafafa] px-5 py-4 sm:mx-0 sm:justify-start">
               <Button variant="outline" onClick={() => void onRefresh(account)} disabled={busy}><RefreshCw className={busy ? "animate-spin" : undefined} data-icon="inline-start" />{busy ? "同步中" : "立即同步"}</Button>
-              <Button variant="outline" onClick={() => void onToggle(account)} disabled={busy || account.disabledReason === "XAI_ACCOUNT_BANNED"}>{account.disabledReason === "XAI_ACCOUNT_BANNED" ? "账号已永久封禁" : account.adminState === "DISABLED" ? "启用账号" : "停用账号"}</Button>
+              <Button variant="outline" onClick={() => void onToggle(account)} disabled={busy || account.routeState === "UPSTREAM_BANNED" || account.routeState === "CREDENTIAL_INVALID"}>{account.routeState === "UPSTREAM_BANNED" ? "账号已永久封禁" : account.routeState === "CREDENTIAL_INVALID" ? "请先重新认证" : account.adminState === "DISABLED" ? "启用账号" : "停用账号"}</Button>
               <Button onClick={() => void onPreferred(account)} disabled={busy}><Star data-icon="inline-start" />设为优先</Button>
               <Button variant="outline" className="text-destructive" onClick={() => void onDelete(account)} disabled={busy}><Trash2 data-icon="inline-start" />删除账号</Button>
             </DialogFooter>

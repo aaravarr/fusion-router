@@ -8,6 +8,8 @@ const patchSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   adminState: z.enum(["ENABLED", "DISABLED"]).optional(),
   maxConcurrency: z.number().int().min(1).max(64).optional(),
+  reason: z.string().trim().min(1).max(200).optional(),
+  confirmSpendingBlocked: z.boolean().optional(),
 })
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -19,10 +21,23 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const value = parsed.data
   const repository = new AccountRepository(user.id)
   const existing = repository.get(id)
-  if (value.adminState === "ENABLED" && existing?.disabledReason === "XAI_ACCOUNT_BANNED") {
+  if (!existing) return Response.json({ error: { type: "not_found" } }, { status: 404 })
+  if (value.adminState === "ENABLED" && existing.disabledReason === "XAI_ACCOUNT_BANNED") {
     return Response.json({ error: { type: "account_banned", message: "该账号已被 xAI 上游封禁，不能重新启用" } }, { status: 409 })
   }
-  const account = repository.updateState(id, value)
+  if (value.adminState === "ENABLED" && (existing.disabledReason === "CREDENTIAL_INVALID" || existing.authState !== "VALID")) {
+    return Response.json({ error: { type: "reauthentication_required", message: "凭据已失效，请重新认证后再启用" } }, { status: 409 })
+  }
+  if (value.adminState === "ENABLED" && existing.disabledReason === "SPENDING_BLOCKED" && !value.confirmSpendingBlocked) {
+    return Response.json({ error: { type: "explicit_confirmation_required", message: "消费受限账号需要明确确认后才能重新启用" } }, { status: 409 })
+  }
+  if (value.adminState) {
+    repository.bulkSetAdminState([id], value.adminState, {
+      reason: value.reason,
+      confirmSpendingBlocked: value.confirmSpendingBlocked,
+    })
+  }
+  const account = repository.updateState(id, { name: value.name, maxConcurrency: value.maxConcurrency })
   if (!account) return Response.json({ error: { type: "not_found" } }, { status: 404 })
   return Response.json({ account })
 }

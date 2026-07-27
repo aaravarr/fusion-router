@@ -5,6 +5,7 @@ import { RoutingService } from "@/server/routing"
 import { tryGetProvider, POOL_TYPE_METADATA } from "@/server/providers"
 import type { AccountListSort, AccountListStatusFilter } from "@/server/repository"
 import { CustomProviderRepository } from "@/server/custom-providers"
+import { deriveAccountRouteStatus } from "@/server/account-route-state"
 
 export const runtime = "nodejs"
 
@@ -34,6 +35,8 @@ export async function GET(request: Request) {
 
   const db = getDatabase()
   const repo = new AccountRepository(user.id, db)
+  const customProviders = new CustomProviderRepository(user.id, db).list()
+  const customProviderEnabled = new Map(customProviders.map((customProvider) => [customProvider.poolType, customProvider.enabled]))
   const listed = repo.listPage({ page, pageSize, q, poolType, status, sort })
   const routing = new RoutingService(user.id, db).getState()
   const windows = repo.listQuotaWindows(listed.items.map((account) => account.id))
@@ -48,36 +51,23 @@ export async function GET(request: Request) {
   const accounts = listed.items.map((account) => {
     const provider = tryGetProvider(account.poolType)
     const accountWindows = windowsByAccount.get(account.id) ?? []
-    const activeBlocks = accountWindows.filter((window) => {
-      if ((window.usagePercent ?? 0) < 100) return false
-      if (!window.resetAt) return true
-      const resetAt = Date.parse(window.resetAt)
-      return Number.isFinite(resetAt) && resetAt > now
-    })
-    const routingBlocked = activeBlocks.length > 0
-    const finiteBlockResets = activeBlocks
-      .map((window) => window.resetAt)
-      .filter((resetAt): resetAt is string => Boolean(resetAt))
-      .sort()
-    const routingBlockedUntil = activeBlocks.some((window) => !window.resetAt)
-      ? null
-      : finiteBlockResets[0] ?? null
-    const credentialReady = provider
-      ? provider.isAccountReady(account)
-      : account.adminState === "ENABLED"
-        && account.authState === "VALID"
-        && account.subscriptionState === "ACTIVE"
-        && account.billingGuard === "VERIFIED_GO_ONLY"
-        && account.useBalance === false
+    const customEnabled = account.poolType.startsWith("custom:") ? customProviderEnabled.get(account.poolType) === true : true
+    const providerReady = customEnabled && Boolean(provider?.isAccountReady(account))
+    const providerUnavailableReason = account.poolType.startsWith("custom:") && !customEnabled
+      ? "自定义 Provider 已停用"
+      : provider ? "Provider 规则判定该账号不可参与路由" : "未找到对应的 Provider"
+    const routeStatus = deriveAccountRouteStatus(account, accountWindows, now, { providerReady, providerUnavailableReason })
     return {
       ...account,
       poolLabel: provider?.displayName ?? account.poolType,
       enabled: account.adminState === "ENABLED",
       isCurrent: routing.currentAccountId === account.id,
       isPreferred: routing.preferredAccountId === account.id,
-      routingBlocked,
-      routingBlockedUntil,
-      routingEligible: credentialReady && !routingBlocked,
+      ...routeStatus,
+      // Compatibility fields for older clients. New UI uses routeState exclusively.
+      routingBlocked: routeStatus.routeState === "TEMP_BLOCKED",
+      routingBlockedUntil: routeStatus.blockedUntil,
+      routingEligible: routeStatus.routeState === "READY",
       quotaWindows: accountWindows.map((window) => ({
         kind: window.kind,
         usagePercent: window.usagePercent,
@@ -107,7 +97,7 @@ export async function GET(request: Request) {
         quotaKinds: meta.quotaKinds,
         credentialFields: meta.credentialFields,
       }
-    }).filter(Boolean), ...new CustomProviderRepository(user.id, db).list().map((provider) => ({
+    }).filter(Boolean), ...customProviders.map((provider) => ({
       type: provider.poolType,
       label: provider.name,
       description: provider.description || `${provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · ${provider.baseUrl}`,

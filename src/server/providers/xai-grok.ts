@@ -47,6 +47,43 @@ const ACCOUNT_DENIED_MARKERS = [
   "access to the chat endpoint is denied",
 ] as const
 
+const CREDENTIAL_INVALID_MESSAGES = [
+  "invalid or expired credentials",
+  "no auth context",
+] as const
+
+function parsedErrorFields(body: string): { code: string | null; type: string | null; message: string | null } {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>
+    const nested = parsed.error && typeof parsed.error === "object" ? parsed.error as Record<string, unknown> : null
+    const stringField = (value: unknown): string | null => typeof value === "string" ? value : null
+    return {
+      code: stringField(parsed.code) ?? stringField(nested?.code),
+      type: stringField(parsed.type) ?? stringField(nested?.type),
+      message: stringField(parsed.message) ?? stringField(nested?.message) ?? stringField(parsed.error),
+    }
+  } catch {
+    return { code: null, type: null, message: body || null }
+  }
+}
+
+function normalizedIdentifier(value: string | null): string {
+  return (value ?? "").trim().toLowerCase().replace(/[-_\s]/g, "")
+}
+
+export function isXaiCredentialInvalidResponse(status: number, body: string): boolean {
+  if (status !== 401) return false
+  const fields = parsedErrorFields(body)
+  const permissionDenied = [fields.code, fields.type, fields.message].some((value) => normalizedIdentifier(value) === "permissiondenied")
+  const message = (fields.message ?? "").toLowerCase()
+  return permissionDenied || CREDENTIAL_INVALID_MESSAGES.some((marker) => message.includes(marker))
+}
+
+export function isXaiSpendingBlockedResponse(status: number, body: string): boolean {
+  if (status !== 402) return false
+  return parsedErrorFields(body).code?.trim().toLowerCase() === "personal-team-blocked:spending-limit"
+}
+
 export class XAIAccountBannedError extends Error {
   readonly status = 403
   constructor(message = "xAI 账号已被上游禁止访问") {
@@ -522,22 +559,25 @@ export class XAIGrokProvider implements Provider {
   // ── Error Classification ───────────────────────────────────────────────
 
   classifyError(status: number, body: string, headers: Headers): UpstreamErrorClassification | null {
+    if (isXaiCredentialInvalidResponse(status, body)) {
+      return {
+        shouldSwitchAccount: true,
+        errorType: "CREDENTIAL_INVALID",
+        permanentlyDisableAccount: true,
+      }
+    }
+    if (isXaiSpendingBlockedResponse(status, body)) {
+      return {
+        shouldSwitchAccount: true,
+        errorType: "SPENDING_BLOCKED",
+        permanentlyDisableAccount: true,
+      }
+    }
     if (isXaiAccountBannedResponse(status, body)) {
       return {
         shouldSwitchAccount: true,
         errorType: "XAI_ACCOUNT_BANNED",
         permanentlyDisableAccount: true,
-      }
-    }
-    // 402 payment-required / quota exceeded on free tier: switch account.
-    // Whether this is treated as "day unavailable" is decided by routing when
-    // local 24h usage is already past 1M tokens.
-    if (status === 402) {
-      return {
-        shouldSwitchAccount: true,
-        quotaKind: "ROLLING_24H",
-        retryAfterSeconds: 60,
-        errorType: "XAI_PAYMENT_OR_QUOTA_REQUIRED",
       }
     }
     if (status === 429) {
@@ -557,12 +597,6 @@ export class XAIGrokProvider implements Provider {
         quotaKind: tokenQuotaExhausted ? "ROLLING_24H" : "PROVIDER_RATE_LIMIT",
         retryAfterSeconds: backoff,
         errorType: tokenQuotaExhausted ? "XAI_TOKEN_QUOTA_EXHAUSTED" : remainingRequests === 0 ? "XAI_REQUEST_RATE_LIMITED" : "XAI_TEMPORARILY_RATE_LIMITED",
-      }
-    }
-    if (status === 401 || status === 403) {
-      return {
-        shouldSwitchAccount: false,
-        errorType: "AuthenticationError",
       }
     }
     return null
