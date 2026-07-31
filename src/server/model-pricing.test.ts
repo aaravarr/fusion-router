@@ -4,6 +4,7 @@ import {
   estimateUsageCost,
   findModelPrice,
   formatUsd,
+  getModelPricingStatus,
   refreshModelPricing,
 } from "./model-pricing"
 import { createDatabase } from "./db"
@@ -63,5 +64,37 @@ describe("model-pricing", () => {
     const cost = estimateUsageCost({ model: "totally-unknown-model-xyz", promptTokens: 10, completionTokens: 10 }, db)
     expect(cost.costUsd).toBeNull()
     expect(cost.breakdown).toBeNull()
+  })
+
+  it("applies known cache correction when refreshing", async () => {
+    const db = createDatabase(":memory:")
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      Response.json({
+        data: [{
+          id: "deepseek/deepseek-v4-flash",
+          name: "DeepSeek V4 Flash",
+          pricing: { prompt: "0.00000014", completion: "0.00000028", input_cache_read: "0.000000028" },
+        }],
+      }),
+    ))
+    await refreshModelPricing(db)
+    expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
+  })
+
+  it("applies cache correction to previously cached rows", () => {
+    const db = createDatabase(":memory:")
+    getModelPricingStatus(db)
+    db.prepare("INSERT INTO model_pricing_cache(id,models_json,updated_at) VALUES(?,?,?)").run(
+      "openrouter",
+      JSON.stringify([{
+        id: "deepseek/deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        prompt: 1.4e-7,
+        completion: 2.8e-7,
+        cacheRead: 2.8e-8,
+      }]),
+      new Date().toISOString(),
+    )
+    expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
   })
 })

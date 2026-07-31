@@ -14,6 +14,20 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 const CACHE_ID = "openrouter"
 const REQUEST_TIMEOUT_MS = 30_000
 
+// OpenRouter occasionally publishes cache pricing 10x the official rate for
+// stale model ids. Keep known corrections in USD per token.
+const PRICING_OVERRIDES: Record<string, Partial<ModelPrice>> = {
+  "deepseek/deepseek-v4-flash": {
+    // DeepSeek official cached input: CNY 0.02 / 1M tokens ≈ USD 0.0028 / 1M.
+    cacheRead: 2.8e-9,
+  },
+}
+
+function applyPricingOverride(price: ModelPrice): ModelPrice {
+  const override = PRICING_OVERRIDES[price.id]
+  return override ? { ...price, ...override } : price
+}
+
 export interface ModelPrice {
   id: string
   name: string
@@ -149,13 +163,13 @@ function parseOpenRouterModels(payload: unknown): ModelPrice[] {
     const prompt = toNumber(pricing.prompt) ?? 0
     const completion = toNumber(pricing.completion) ?? 0
     const cacheRead = toNumber(pricing.input_cache_read)
-    out.push({
+    out.push(applyPricingOverride({
       id,
       name: typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : id,
       prompt,
       completion,
       cacheRead,
-    })
+    }))
   }
   return out
 }
@@ -168,7 +182,7 @@ function loadFromDb(db: AppDatabase): PriceIndex {
   if (!row?.models_json) return emptyIndex()
   try {
     const parsed = JSON.parse(row.models_json) as unknown
-    const models = Array.isArray(parsed) ? (parsed as ModelPrice[]) : []
+    const models = Array.isArray(parsed) ? (parsed as ModelPrice[]).map(applyPricingOverride) : []
     return indexPrices(models.filter((m) => m && typeof m.id === "string"), {
       fetchedAt: row.fetched_at,
       updatedAt: row.updated_at,
