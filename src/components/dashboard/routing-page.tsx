@@ -470,7 +470,7 @@ function ProviderModelsSection({ catalogs, loading, error, adminFetch, onRefresh
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
-  async function refreshCatalog(poolType?: string) {
+  async function refreshCatalog(poolType?: string, label?: string) {
     setRefreshing(poolType ?? "all");
     setActionError(null);
     setActionMessage(null);
@@ -481,7 +481,7 @@ function ProviderModelsSection({ catalogs, loading, error, adminFetch, onRefresh
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "刷新模型列表失败");
-      setActionMessage(poolType ? `${getPoolLabel(poolType)} 模型列表已刷新` : "全部 Provider 模型列表已刷新");
+      setActionMessage(poolType ? `${label ?? getPoolLabel(poolType)} 模型列表已刷新` : "全部 Provider 模型列表已刷新");
       onRefresh();
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : "刷新模型列表失败");
@@ -514,7 +514,7 @@ function ProviderModelsSection({ catalogs, loading, error, adminFetch, onRefresh
             <div key={catalog.poolType} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-start sm:px-5">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <PoolTypeBadge poolType={catalog.poolType} />
+                  <PoolTypeBadge poolType={catalog.poolType} label={catalog.label} />
                   <Badge variant="outline" className="h-5 rounded-sm px-1.5 text-[11px]">{catalog.source}</Badge>
                   <span className="text-[11px] text-muted-foreground">{catalog.models.length} 个模型</span>
                 </div>
@@ -534,7 +534,7 @@ function ProviderModelsSection({ catalogs, loading, error, adminFetch, onRefresh
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void refreshCatalog(catalog.poolType)}
+                onClick={() => void refreshCatalog(catalog.poolType, catalog.label)}
                 disabled={Boolean(refreshing)}
               >
                 <RefreshCw data-icon="inline-start" />
