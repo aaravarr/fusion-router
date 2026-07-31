@@ -4,12 +4,13 @@ import { useMemo, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { javascript } from "@codemirror/lang-javascript";
-import { Braces, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Braces, Check, Copy, Info, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { copyToClipboard } from "@/lib/utils";
 import { useAdmin } from "./admin-context";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel, formatDate } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
@@ -36,6 +37,25 @@ const DEFAULT_EXTRACTOR = `function(response) {
 
 const JSON_EDITOR_EXTENSIONS = [json()];
 const JAVASCRIPT_EDITOR_EXTENSIONS = [javascript()];
+
+const CURL_CHAT_EXAMPLE = `curl http://localhost:13600/v1/chat/completions \\
+  -H "Authorization: Bearer <网关 API Key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"<上游模型 ID>","messages":[{"role":"user","content":"你好"}]}'`;
+const CURL_RESPONSES_EXAMPLE = `curl http://localhost:13600/v1/responses \\
+  -H "Authorization: Bearer <网关 API Key>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"<上游模型 ID>","input":"你好"}'`;
+const MODELS_RESPONSE_EXAMPLE = `{
+  "object": "list",
+  "data": [
+    { "id": "gpt-4o-mini", "object": "model" },
+    { "id": "claude-sonnet-4.5", "object": "model" }
+  ]
+}`;
+const EXTRACTOR_EXAMPLE = `function(response) {
+  return { isValid: response.is_active !== false, remaining: response.balance, total: response.total, type: "permanent", unit: "USD" };
+}`;
 
 function errorMessage(payload: unknown, fallback: string) {
   if (!payload || typeof payload !== "object") return fallback;
@@ -131,6 +151,10 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
   const [extractor, setExtractor] = useState(provider?.balanceConfig?.extractor ?? DEFAULT_EXTRACTOR);
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
+  const [debugKey, setDebugKey] = useState("");
+  const [debugResult, setDebugResult] = useState<{ kind: "models" | "balance"; payload: unknown } | null>(null);
+  const [debugging, setDebugging] = useState<"models" | "balance" | null>(null);
+  const [debugError, setDebugError] = useState<string | null>(null);
 
   async function save() {
     setSaving(true); setError(null);
@@ -155,6 +179,33 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
     finally { setSaving(false); }
   }
 
+  async function runDebug(kind: "models" | "balance") {
+    setDebugging(kind); setDebugError(null); setDebugResult(null);
+    try {
+      let headers: Record<string, string> = {};
+      let requestBody: unknown;
+      if (balanceEnabled) {
+        const parsed = JSON.parse(balanceHeaders) as unknown;
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("余额请求 Headers 必须是 JSON 对象");
+        headers = parsed as Record<string, string>;
+        requestBody = balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
+      }
+      const payload = {
+        baseUrl,
+        interfaceType,
+        apiKey: debugKey.trim() || undefined,
+        providerId: provider?.id,
+        extraHeaders: balanceEnabled ? headers : undefined,
+        balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers, ...(requestBody === undefined ? {} : { body: requestBody }) }, extractor } : null,
+      };
+      const response = await adminFetch("/api/admin/custom-providers/test-connection", { method: "POST", body: JSON.stringify(payload) });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(errorMessage(result, "调试请求失败"));
+      setDebugResult({ kind, payload: result && typeof result === "object" ? (result as { result?: unknown }).result : undefined });
+    } catch (cause) { setDebugError(cause instanceof Error ? cause.message : "调试失败"); }
+    finally { setDebugging(null); }
+  }
+
   return <Dialog open onOpenChange={(open) => { if (!open && !saving) onClose(); }}><DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
     <DialogHeader className="border-b px-5 py-4 pr-14 sm:px-6">
       <DialogTitle>{provider ? "编辑 Provider" : "新建 Provider"}</DialogTitle>
@@ -163,11 +214,11 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto bg-muted/20 p-4 sm:p-6">
       <EditorSection title="基础信息" description="定义 Provider 的连接方式和可用模型。">
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="名称"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Internal OpenAI" /></Field>
-          <Field label="接口类型"><Select value={interfaceType} onValueChange={(value) => setInterfaceType(value as InterfaceType)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses API</SelectItem><SelectItem value="chat">Chat Completions API</SelectItem></SelectContent></Select></Field>
-          <Field label="Base URL" wide><Input className="font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /></Field>
-          <Field label="描述" wide><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="用途、地域或计费说明" /></Field>
-          <div className="sm:col-span-2"><CodeEditor label="模型列表" description="每行一个；留空时自动拉取 /models。" value={models} onChange={setModels} language="text" height="112px" placeholder={"gpt-5.6\nclaude-sonnet-4.5"} /></div>
+          <Field label="名称" hint="控制台内显示的名称，不影响上游请求。"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Internal OpenAI" /></Field>
+          <Field label="接口类型" hint="选择上游遵循的 OpenAI 协议：Responses 走 /responses，Chat 走 /chat/completions。"><Select value={interfaceType} onValueChange={(value) => setInterfaceType(value as InterfaceType)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses API</SelectItem><SelectItem value="chat">Chat Completions API</SelectItem></SelectContent></Select></Field>
+          <Field label="Base URL" hint="上游 API 根地址，需包含版本前缀，例如 https://api.example.com/v1。模型与转发请求都会拼在这个地址后面。" wide><Input className="font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /></Field>
+          <Field label="描述" hint="可选备注，展示在 Provider 列表中。" wide><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="用途、地域或计费说明" /></Field>
+          <div className="sm:col-span-2"><CodeEditor label="模型列表" description="每行一个模型 ID；留空时自动拉取上游 /models。" value={models} onChange={setModels} language="text" height="112px" placeholder={"gpt-5.6\nclaude-sonnet-4.5"} /></div>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <OptionCard checked={enabled} onChange={setEnabled} title="启用 Provider" description="允许该 Provider 参与模型路由和账号调度。" />
@@ -178,18 +229,39 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
       {balanceEnabled ? <>
         <EditorSection title="余额请求" description="使用模板变量 {{baseUrl}} 和 {{apiKey}} 构造请求。">
           <div className="grid gap-4 sm:grid-cols-[1fr_160px]">
-            <Field label="余额接口 URL"><Input className="font-mono text-xs" value={balanceUrl} onChange={(event) => setBalanceUrl(event.target.value)} placeholder="{{baseUrl}}/user/balance" /></Field>
-            <Field label="请求方法"><Select value={balanceMethod} onValueChange={(value) => setBalanceMethod(value as "GET" | "POST")}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="GET">GET</SelectItem><SelectItem value="POST">POST</SelectItem></SelectContent></Select></Field>
+            <Field label="余额接口 URL" hint="余额查询地址，支持 {{baseUrl}} 与 {{apiKey}} 模板变量。"><Input className="font-mono text-xs" value={balanceUrl} onChange={(event) => setBalanceUrl(event.target.value)} placeholder="{{baseUrl}}/user/balance" /></Field>
+            <Field label="请求方法" hint="余额接口使用的 HTTP 方法。"><Select value={balanceMethod} onValueChange={(value) => setBalanceMethod(value as "GET" | "POST")}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="GET">GET</SelectItem><SelectItem value="POST">POST</SelectItem></SelectContent></Select></Field>
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <CodeEditor label="Headers" language="json" value={balanceHeaders} onChange={setBalanceHeaders} height="176px" invalid={!isValidJson(balanceHeaders)} onFormat={() => setBalanceHeaders(formatJson(balanceHeaders))} />
-            <CodeEditor label="Body" description="可选；GET 请求通常留空。" language="json" value={balanceBody} onChange={setBalanceBody} height="176px" placeholder={'{"scope":"billing"}'} invalid={Boolean(balanceBody.trim()) && !isValidJson(balanceBody)} onFormat={balanceBody.trim() ? () => setBalanceBody(formatJson(balanceBody)) : undefined} />
+            <CodeEditor label="Headers" description="字符串键值对，支持 {{baseUrl}} 与 {{apiKey}}。" language="json" value={balanceHeaders} onChange={setBalanceHeaders} height="176px" invalid={!isValidJson(balanceHeaders)} onFormat={() => setBalanceHeaders(formatJson(balanceHeaders))} />
+            <CodeEditor label="Body" description="可选请求体；GET 通常留空，支持 JSON 与模板变量。" language="json" value={balanceBody} onChange={setBalanceBody} height="176px" placeholder={'{"scope":"billing"}'} invalid={Boolean(balanceBody.trim()) && !isValidJson(balanceBody)} onFormat={balanceBody.trim() ? () => setBalanceBody(formatJson(balanceBody)) : undefined} />
           </div>
         </EditorSection>
         <EditorSection title="响应解析" description="函数接收上游响应 JSON，并返回标准余额结构。">
-          <CodeEditor label="Extractor 函数" language="javascript" value={extractor} onChange={setExtractor} height="280px" />
+          <CodeEditor label="Extractor 函数" description="函数接收上游响应并返回 { remaining, total?, isValid?, type?, unit? }，详见页面底部协议说明。" language="javascript" value={extractor} onChange={setExtractor} height="280px" />
         </EditorSection>
       </> : null}
+      <EditorSection title="调试接口" description="用当前表单值直接探测上游，不会保存任何修改。">
+        <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+          <Field label="临时 API Key" hint={provider ? "留空时使用该 Provider 已保存的第一个 API Key。" : "新建时留空则发送无鉴权请求（可能返回 401）。"} wide>
+            <Input type="password" className="font-mono text-xs" value={debugKey} onChange={(event) => setDebugKey(event.target.value)} placeholder="sk-..." />
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={Boolean(debugging)} onClick={() => void runDebug("models")}>{debugging === "models" ? <LoaderCircle className="animate-spin" /> : null}测试 /models</Button>
+            {balanceEnabled ? <Button type="button" variant="outline" size="sm" disabled={Boolean(debugging)} onClick={() => void runDebug("balance")}>{debugging === "balance" ? <LoaderCircle className="animate-spin" /> : null}测试余额接口</Button> : null}
+          </div>
+        </div>
+        {debugError ? <p className="mt-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{debugError}</p> : null}
+        {debugResult ? <DebugResultView result={debugResult} onFillModels={(models) => { setModels(models.join("\n")); }} /> : null}
+      </EditorSection>
+      <EditorSection title="代码示例" description="保存 Provider 并添加 API Key 后，即可通过网关 OpenAI 兼容接口调用。">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ExampleBlock title="Chat Completions" code={CURL_CHAT_EXAMPLE} />
+          <ExampleBlock title="Responses" code={CURL_RESPONSES_EXAMPLE} />
+          <ExampleBlock title="/models 响应格式" code={MODELS_RESPONSE_EXAMPLE} />
+          <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} />
+        </div>
+      </EditorSection>
       {error ? <p className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{error}</p> : null}
     </div>
     <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-background px-5 py-4 sm:px-6"><Button variant="outline" onClick={onClose} disabled={saving}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? <LoaderCircle className="animate-spin" /> : null}保存 Provider</Button></DialogFooter>
@@ -318,8 +390,97 @@ function KeyManager({ provider, onClose, adminFetch }: { provider: CustomProvide
   </DialogContent></Dialog>;
 }
 
-function Field({ label, wide, children }: { label: string; wide?: boolean; children: React.ReactNode }) {
-  return <div className={wide ? "sm:col-span-2" : ""}><Label className="mb-1.5">{label}</Label>{children}</div>;
+function Field({ label, hint, wide, children }: { label: string; hint?: string; wide?: boolean; children: React.ReactNode }) {
+  const [hintOpen, setHintOpen] = useState(false);
+  return <div className={wide ? "sm:col-span-2" : ""}>
+    <div className="mb-1.5 flex items-center gap-1"><Label className="mb-0">{label}</Label>{hint ? <button type="button" onClick={() => setHintOpen((open) => !open)} className="grid size-4 place-items-center rounded-full border text-muted-foreground hover:text-foreground" aria-label={`${label} 说明`} aria-expanded={hintOpen}><Info className="size-2.5" /></button> : null}</div>
+    {hintOpen && hint ? <p className="mb-1.5 text-[11px] leading-5 text-muted-foreground">{hint}</p> : null}
+    {children}
+  </div>;
+}
+
+type DebugProbePayload = {
+  ok?: unknown
+  durationMs?: unknown
+  models?: { ok?: unknown; status?: unknown; durationMs?: unknown; models?: unknown; error?: unknown } | null
+  balance?: { ok?: unknown; status?: unknown; durationMs?: unknown; valid?: unknown; windows?: unknown; error?: unknown } | null
+};
+
+function DebugResultView({ result, onFillModels }: { result: { kind: "models" | "balance"; payload: unknown }; onFillModels: (models: string[]) => void }) {
+  const payload = result.payload && typeof result.payload === "object" ? result.payload as DebugProbePayload : null;
+  const ok = payload?.ok === true;
+  const durationMs = typeof payload?.durationMs === "number" ? payload.durationMs : null;
+  return <div className="mt-3 space-y-3 rounded-lg border bg-background p-3">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={`rounded-sm px-1.5 py-0.5 text-[10px] ${ok ? "bg-success-soft text-success" : "bg-destructive/10 text-destructive"}`}>{ok ? "成功" : "失败"}</span>
+      {durationMs !== null ? <span className="font-mono text-[11px] text-muted-foreground">{durationMs} ms</span> : null}
+    </div>
+    {result.kind === "models" ? <ModelsDebugResult models={payload?.models} onFillModels={onFillModels} /> : <BalanceDebugResult balance={payload?.balance} />}
+  </div>;
+}
+
+function ModelsDebugResult({ models, onFillModels }: { models: DebugProbePayload["models"]; onFillModels: (models: string[]) => void }) {
+  const ok = models?.ok === true;
+  const status = typeof models?.status === "number" ? models.status : null;
+  const durationMs = typeof models?.durationMs === "number" ? models.durationMs : null;
+  const modelList = Array.isArray(models?.models) ? models.models.filter((value): value is string => typeof value === "string") : [];
+  const error = typeof models?.error === "string" ? models.error : null;
+  if (!models) return <p className="text-xs text-muted-foreground">没有返回 /models 结果。</p>;
+  return <div className="space-y-3 text-xs">
+    <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+      {status !== null ? <span className="font-mono">HTTP {status}</span> : null}
+      {durationMs !== null ? <span className="font-mono">{durationMs} ms</span> : null}
+      {ok ? <span>共 {modelList.length} 个模型</span> : null}
+    </div>
+    {ok ? <>
+      <div className="flex flex-wrap gap-1.5">{modelList.map((model) => <code key={model} className="rounded-md border bg-[#fbfbfa] px-1.5 py-0.5 font-mono text-[10px]">{model}</code>)}</div>
+      <Button type="button" variant="outline" size="sm" onClick={() => onFillModels(modelList)}>填入模型列表</Button>
+    </> : error ? <p className="text-destructive">{error}</p> : <p className="text-muted-foreground">未返回错误信息。</p>}
+  </div>;
+}
+
+function BalanceDebugResult({ balance }: { balance: DebugProbePayload["balance"] }) {
+  const ok = balance?.ok === true;
+  const valid = balance?.valid === true;
+  const status = typeof balance?.status === "number" ? balance.status : null;
+  const durationMs = typeof balance?.durationMs === "number" ? balance.durationMs : null;
+  const error = typeof balance?.error === "string" ? balance.error : null;
+  const windows = Array.isArray(balance?.windows) ? balance.windows as Array<{ kind?: unknown; remaining?: unknown; total?: unknown; unit?: unknown }> : [];
+  if (!balance) return <p className="text-xs text-muted-foreground">没有返回余额结果。</p>;
+  return <div className="space-y-3 text-xs">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={`rounded-sm px-1.5 py-0.5 text-[10px] ${valid ? "bg-success-soft text-success" : "bg-destructive/10 text-destructive"}`}>{valid ? "额度有效" : "额度无效"}</span>
+      {status !== null ? <span className="font-mono text-muted-foreground">HTTP {status}</span> : null}
+      {durationMs !== null ? <span className="font-mono text-muted-foreground">{durationMs} ms</span> : null}
+    </div>
+    {windows.length ? <>
+      <div className="grid grid-cols-[90px_1fr_1fr_70px] gap-2 px-2 text-[10px] text-muted-foreground"><span>类型</span><span>剩余</span><span>总量</span><span>单位</span></div>
+      <div className="grid gap-2 sm:grid-cols-2">{windows.map((window, index) => (
+        <div key={index} className="grid grid-cols-[90px_1fr_1fr_70px] gap-2 rounded-md border bg-[#fbfbfa] px-2 py-1.5 font-mono text-[11px]">
+          <code>{typeof window.kind === "string" ? window.kind : "-"}</code>
+          <span>{typeof window.remaining === "number" ? window.remaining : "-"}</span>
+          <span>{typeof window.total === "number" ? window.total : "∞"}</span>
+          <span>{typeof window.unit === "string" ? window.unit : "-"}</span>
+        </div>
+      ))}</div>
+    </> : ok ? <p className="text-muted-foreground">没有窗口数据。</p> : null}
+    {error ? <p className="text-destructive">{error}</p> : null}
+  </div>;
+}
+
+function ExampleBlock({ title, code }: { title: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    const ok = await copyToClipboard(code);
+    if (ok) { setCopied(true); window.setTimeout(() => setCopied(false), 1500); }
+  }
+  return <div>
+    <div className="mb-1.5 flex items-center gap-2">
+      <p className="text-xs font-medium">{title}</p>
+      <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => void copy()} aria-label={`复制 ${title} 示例`}>{copied ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}{copied ? "已复制" : "复制"}</Button>
+    </div>
+    <pre className="overflow-x-auto rounded-md border bg-[#fbfbfa] p-3 font-mono text-[11px] leading-5">{code}</pre>
+  </div>;
 }
 
 function BalanceDocumentation() {

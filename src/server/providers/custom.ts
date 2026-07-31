@@ -1,5 +1,6 @@
 import { Script, createContext } from "node:vm"
 import { apiFetchWithMirrorContext } from "../api-fetch"
+import type { MirrorSelectionAccount } from "../api-fetch"
 import { getCustomProviderByPoolType, type CustomProviderBalanceConfig } from "../custom-providers"
 import { getDatabase } from "../db"
 import { ProviderCredentialRepository } from "../repository"
@@ -30,7 +31,7 @@ function configFor(poolType: PoolType) {
   return config
 }
 
-function parseModelList(value: unknown): string[] {
+export function parseModelList(value: unknown): string[] {
   const object = value && typeof value === "object" ? value as { data?: unknown; models?: unknown } : {}
   const rows = Array.isArray(value) ? value : Array.isArray(object.data) ? object.data : Array.isArray(object.models) ? object.models : []
   const models = new Set<string>()
@@ -89,7 +90,7 @@ function balanceWindow(value: BalanceWindowResult, observedAt: string): QuotaWin
   }
 }
 
-async function queryBalance(config: CustomProviderBalanceConfig, baseUrl: string, apiKey: string, account: AccountRecord): Promise<{ valid: boolean; windows: QuotaWindow[] }> {
+async function queryBalance(config: CustomProviderBalanceConfig, baseUrl: string, apiKey: string, account: MirrorSelectionAccount): Promise<{ valid: boolean; windows: QuotaWindow[] }> {
   const request = config.request
   const headers = new Headers(renderValue(request.headers ?? {}, baseUrl, apiKey) as Record<string, string>)
   const bodyValue = renderValue(request.body, baseUrl, apiKey)
@@ -194,5 +195,82 @@ export class CustomProvider implements Provider {
   isAccountReady(account: AccountRecord): boolean {
     const config = getCustomProviderByPoolType(this.poolType)
     return Boolean(config?.enabled) && account.adminState === "ENABLED" && account.authState === "VALID" && account.subscriptionState === "ACTIVE"
+  }
+}
+
+interface CustomProviderModelsProbeResult {
+  ok: boolean
+  status?: number
+  durationMs: number
+  models: string[]
+  error?: string
+}
+
+interface CustomProviderBalanceProbeResult {
+  ok: boolean
+  status?: number
+  durationMs: number
+  valid: boolean
+  windows: Array<{ kind: string; remaining: number; total: number | null; unit: string | null }>
+  error?: string
+}
+
+export interface CustomProviderProbeResult {
+  ok: boolean
+  durationMs: number
+  models: CustomProviderModelsProbeResult | null
+  balance: CustomProviderBalanceProbeResult | null
+}
+
+export async function probeCustomProvider(input: {
+  baseUrl: string
+  interfaceType: "chat" | "responses"
+  apiKey?: string | null
+  extraHeaders?: Record<string, string>
+  balanceConfig?: CustomProviderBalanceConfig | null
+}): Promise<CustomProviderProbeResult> {
+  const { baseUrl, apiKey, extraHeaders, balanceConfig } = input
+  const probeAccount: MirrorSelectionAccount = { id: "custom-provider-probe", poolType: "custom:probe" }
+  const startedAt = Date.now()
+
+  const modelsPromise = (async (): Promise<CustomProviderModelsProbeResult> => {
+    const requestStartedAt = Date.now()
+    try {
+      const headers = new Headers(extraHeaders ?? {})
+      if (apiKey) headers.set("authorization", `Bearer ${apiKey}`)
+      headers.set("accept", "application/json")
+      const response = await apiFetchWithMirrorContext(`${baseUrl}/models`, {
+        headers,
+        signal: AbortSignal.timeout(20_000),
+      }, { account: probeAccount })
+      const text = await response.text()
+      if (!response.ok) return { ok: false, status: response.status, durationMs: Date.now() - requestStartedAt, models: [], error: `/models 拉取失败（HTTP ${response.status}）: ${text.slice(0, 200)}` }
+      return { ok: true, status: response.status, durationMs: Date.now() - requestStartedAt, models: parseModelList(JSON.parse(text)) }
+    } catch (cause) {
+      return { ok: false, durationMs: Date.now() - requestStartedAt, models: [], error: cause instanceof Error ? cause.message : "未知错误" }
+    }
+  })()
+
+  const balancePromise = balanceConfig ? (async (): Promise<CustomProviderBalanceProbeResult> => {
+    const requestStartedAt = Date.now()
+    try {
+      const result = await queryBalance(balanceConfig, baseUrl, apiKey ?? "", probeAccount)
+      return {
+        ok: true,
+        durationMs: Date.now() - requestStartedAt,
+        valid: result.valid,
+        windows: result.windows.map((window) => ({ kind: window.kind, remaining: window.remainingValue ?? 0, total: window.limitValue ?? null, unit: window.unit ?? null })),
+      }
+    } catch (cause) {
+      return { ok: false, durationMs: Date.now() - requestStartedAt, valid: false, windows: [], error: cause instanceof Error ? cause.message : "未知错误" }
+    }
+  })() : null
+
+  const [modelsResult, balanceResult] = await Promise.all([modelsPromise, balancePromise ?? Promise.resolve(null)])
+  return {
+    ok: modelsResult.ok && (balanceResult === null || balanceResult.ok),
+    durationMs: Date.now() - startedAt,
+    models: modelsResult,
+    balance: balanceResult,
   }
 }
