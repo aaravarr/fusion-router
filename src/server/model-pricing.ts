@@ -2,8 +2,9 @@
  * OpenRouter model pricing cache.
  *
  * Pricing is fetched from https://openrouter.ai/api/v1/models once at startup
- * (and on demand via admin refresh). Values are USD per token as published by
- * OpenRouter (prompt / completion / optional input_cache_read).
+ * (and on demand via admin refresh); https://models.dev/api.json is used as a
+ * fallback for models OpenRouter does not cover. Values are USD per token
+ * (prompt / completion / optional input_cache_read).
  */
 
 import { apiFetch } from "./api-fetch"
@@ -29,7 +30,7 @@ interface AuthoritativeIndex {
 }
 
 // Official provider prices (USD per 1M tokens) from models.dev. OpenRouter is
-// only used as a fallback for models that are missing here.
+// the primary source; models.dev only fills models OpenRouter lacks.
 function parseModelsDevAuthoritative(payload: unknown): AuthoritativeIndex {
   const exact = new Map<string, AuthoritativePrice>()
   const short = new Map<string, AuthoritativePrice>()
@@ -74,15 +75,18 @@ function parseModelsDevAuthoritative(payload: unknown): AuthoritativeIndex {
   return { exact, short }
 }
 
-// Prefer models.dev entries; append OpenRouter entries only for models that
-// models.dev does not cover.
+// Keep OpenRouter entries as the primary catalog; append models.dev entries
+// only for models OpenRouter does not cover (by id or by base short id).
 function mergeModelPricing(openRouterModels: ModelPrice[], authoritative: AuthoritativeIndex): ModelPrice[] {
-  const result: ModelPrice[] = []
-  const seen = new Set<string>()
+  const result = [...openRouterModels]
+  const seenIds = new Set(result.map((model) => normalizeKey(model.id)))
+  const seenBaseIds = new Set(result.map((model) => normalizeKey(baseId(model.id))))
   for (const price of authoritative.exact.values()) {
-    const key = normalizeKey(price.id)
-    if (seen.has(key)) continue
-    seen.add(key)
+    const idKey = normalizeKey(price.id)
+    const baseKey = normalizeKey(baseId(price.id))
+    if (seenIds.has(idKey) || seenBaseIds.has(baseKey)) continue
+    seenIds.add(idKey)
+    seenBaseIds.add(baseKey)
     result.push({
       id: price.id,
       name: price.name,
@@ -90,13 +94,6 @@ function mergeModelPricing(openRouterModels: ModelPrice[], authoritative: Author
       completion: price.completion,
       cacheRead: price.cacheRead,
     })
-  }
-  for (const model of openRouterModels) {
-    const key = normalizeKey(model.id)
-    if (seen.has(key)) continue
-    if (authoritative.exact.has(key) || authoritative.short.has(normalizeKey(shortId(model.id)))) continue
-    seen.add(key)
-    result.push(model)
   }
   return result
 }
@@ -110,6 +107,8 @@ export interface ModelPrice {
   completion: number
   /** USD per cached input token when provided */
   cacheRead: number | null
+  /** OpenRouter model catalog creation time in unix seconds (when available) */
+  created?: number
 }
 
 export interface ModelPricingStatus {
@@ -197,16 +196,27 @@ function shortId(id: string): string {
   return slash >= 0 ? cleaned.slice(slash + 1) : cleaned
 }
 
+// Strip trailing version/date suffixes so all variants of a model share one
+// base short id (e.g. deepseek-v4-flash-0731 -> deepseek-v4-flash).
+function baseId(id: string): string {
+  return shortId(id)
+    .replace(/-\d{8}$/, "")
+    .replace(/-\d{4}$/, "")
+    .replace(/-\d{4}-\d{2}-\d{2}$/, "")
+}
+
 function indexPrices(models: ModelPrice[], meta: { fetchedAt: string | null; updatedAt: string | null; error: string | null }): PriceIndex {
   const byExact = new Map<string, ModelPrice>()
   const byShort = new Map<string, ModelPrice>()
   for (const model of models) {
     byExact.set(normalizeKey(model.id), model)
-    const short = normalizeKey(shortId(model.id))
-    // Prefer non-free / first-seen short id. If free and paid collide, keep paid.
-    const existing = byShort.get(short)
-    if (!existing || (existing.prompt === 0 && existing.completion === 0 && (model.prompt > 0 || model.completion > 0))) {
-      byShort.set(short, model)
+    const base = normalizeKey(baseId(model.id))
+    // Ignore version/date suffixes and prefer the newest variant.
+    const existing = byShort.get(base)
+    const created = model.created ?? 0
+    const existingCreated = existing?.created ?? 0
+    if (!existing || created > existingCreated || (created === existingCreated && existing.prompt === 0 && existing.completion === 0 && (model.prompt > 0 || model.completion > 0))) {
+      byShort.set(base, model)
     }
     // Also index name-like keys when unique-ish.
     const nameKey = normalizeKey(model.name)
@@ -236,12 +246,14 @@ function parseOpenRouterModels(payload: unknown): ModelPrice[] {
     const prompt = toNumber(pricing.prompt) ?? 0
     const completion = toNumber(pricing.completion) ?? 0
     const cacheRead = toNumber(pricing.input_cache_read)
+    const created = toNumber(rec.created)
     out.push({
       id,
       name: typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : id,
       prompt,
       completion,
       cacheRead,
+      ...(created == null ? {} : { created }),
     })
   }
   return out
@@ -326,7 +338,13 @@ export function findModelPrice(model: string | null | undefined, db: AppDatabase
   if (!index.list.length) return null
   for (const key of candidateKeys(model)) {
     const exact = index.byExact.get(key)
-    if (exact) return exact
+    if (exact) {
+      // Even an exact id match should prefer the newest variant of the same
+      // base model (e.g. deepseek/deepseek-v4-flash -> -0731).
+      const latest = index.byShort.get(normalizeKey(baseId(key)))
+      if (latest && latest.id !== exact.id && (latest.created ?? 0) > (exact.created ?? 0)) return latest
+      return exact
+    }
     const short = index.byShort.get(key)
     if (short) return short
   }

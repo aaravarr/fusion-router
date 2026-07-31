@@ -76,15 +76,21 @@ describe("model-pricing", () => {
     expect(cost.breakdown).toBeNull()
   })
 
-  it("applies models.dev official cache price over openrouter", async () => {
+  it("uses newest openrouter variant for base model ids", async () => {
     const db = createDatabase(":memory:")
     stubPricingFetch(
-      { data: [{ id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", pricing: { prompt: "0.00000014", completion: "0.00000028", input_cache_read: "0.000000028" } }] },
-      { deepseek: { id: "deepseek", name: "DeepSeek", models: { "deepseek-v4-flash": { cost: { input: 0.14, output: 0.28, cache_read: 0.0028 } } } } },
+      {
+        data: [
+          { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", created: 1777000666, pricing: { prompt: "0.00000014", completion: "0.00000028", input_cache_read: "0.000000028" } },
+          { id: "deepseek/deepseek-v4-flash-0731", name: "DeepSeek V4 Flash 0731", created: 1785478908, pricing: { prompt: "0.00000014", completion: "0.00000028", input_cache_read: "0.0000000028" } },
+        ],
+      },
+      {},
     )
     await refreshModelPricing(db)
     expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
-    expect(findModelPrice("deepseek/deepseek-v4-flash", db)?.prompt).toBeCloseTo(1.4e-7, 12)
+    expect(findModelPrice("deepseek/deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
+    expect(findModelPrice("deepseek-v4-flash", db)?.id).toBe("deepseek/deepseek-v4-flash-0731")
   })
 
   it("keeps openrouter pricing when models.dev unavailable", async () => {
@@ -117,6 +123,19 @@ describe("model-pricing", () => {
     )
     await refreshModelPricing(db)
     expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
+  })
+
+  it("prefers openrouter when models.dev also has the same base model", async () => {
+    const db = createDatabase(":memory:")
+    stubPricingFetch(
+      { data: [{ id: "openai/gpt-4o", name: "GPT-4o", created: 1700000000, pricing: { prompt: "0.00001", completion: "0.00003" } }] },
+      { openai: { id: "openai", name: "OpenAI", models: { "gpt-4o": { name: "GPT-4o", cost: { input: 2.5, output: 10 } } } } },
+    )
+    await refreshModelPricing(db)
+    const price = findModelPrice("gpt-4o", db)
+    expect(price?.id).toBe("openai/gpt-4o")
+    expect(price?.prompt).toBeCloseTo(0.00001, 12)
+    expect(price?.completion).toBeCloseTo(0.00003, 12)
   })
 
   it("keeps models.dev catalog when openrouter unavailable", async () => {
