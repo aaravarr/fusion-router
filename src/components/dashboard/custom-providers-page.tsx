@@ -21,7 +21,7 @@ type InterfaceType = "chat" | "responses";
 interface BalanceConfig { request: { url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: unknown }; extractor: string }
 interface CustomProvider {
   id: string; poolType: string; name: string; description: string; baseUrl: string; interfaceType: InterfaceType;
-  models: string[] | null; balanceConfig: BalanceConfig | null; enabled: boolean; createdAt: string; updatedAt: string;
+  models: string[] | null; balanceConfig: BalanceConfig | null; enabled: boolean; createdAt: string; updatedAt: string; keyCount?: number;
 }
 interface ProviderKey { id: string; name: string; adminState: "ENABLED" | "DISABLED"; authState: string; maxConcurrency: number; lastSuccessAt: string | null; createdAt: string }
 
@@ -151,10 +151,10 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
   const [extractor, setExtractor] = useState(provider?.balanceConfig?.extractor ?? DEFAULT_EXTRACTOR);
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
-  const [debugKey, setDebugKey] = useState("");
-  const [debugResult, setDebugResult] = useState<{ kind: "models" | "balance"; payload: unknown } | null>(null);
-  const [debugging, setDebugging] = useState<"models" | "balance" | null>(null);
-  const [debugError, setDebugError] = useState<string | null>(null);
+  const [apiKeys, setApiKeys] = useState("");
+  const [modelsProbe, setModelsProbe] = useState<{ testing: boolean; result: unknown; error: string | null }>({ testing: false, result: null, error: null });
+  const [balanceProbe, setBalanceProbe] = useState<{ testing: boolean; result: unknown; error: string | null }>({ testing: false, result: null, error: null });
+  const apiKeyList = apiKeys.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
 
   async function save() {
     setSaving(true); setError(null);
@@ -168,6 +168,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
       const requestBody = balanceEnabled && balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
       const payload = {
         name, description, baseUrl, interfaceType, enabled,
+        apiKeys: apiKeyList,
         models: models.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
         balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers, ...(requestBody === undefined ? {} : { body: requestBody }) }, extractor } : null,
       };
@@ -179,8 +180,26 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
     finally { setSaving(false); }
   }
 
-  async function runDebug(kind: "models" | "balance") {
-    setDebugging(kind); setDebugError(null); setDebugResult(null);
+  async function runModelsProbe() {
+    if (!apiKeyList.length && !provider) {
+      setModelsProbe({ testing: false, result: null, error: "请先填写至少一个 API Key" });
+      return;
+    }
+    setModelsProbe((current) => ({ ...current, testing: true, error: null, result: null }));
+    try {
+      const payload = { baseUrl, interfaceType, apiKey: apiKeyList[0] || undefined, providerId: provider?.id };
+      const response = await adminFetch("/api/admin/custom-providers/test-connection", { method: "POST", body: JSON.stringify(payload) });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(errorMessage(result, "调试请求失败"));
+      setModelsProbe({ testing: false, result: result && typeof result === "object" ? (result as { result?: unknown }).result : undefined, error: null });
+    } catch (cause) {
+      setModelsProbe({ testing: false, result: null, error: cause instanceof Error ? cause.message : "调试失败" });
+    } finally {
+      setModelsProbe((current) => ({ ...current, testing: false }));
+    }
+  }
+
+  async function runBalanceProbe() {
     try {
       let headers: Record<string, string> = {};
       let requestBody: unknown;
@@ -190,20 +209,28 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
         headers = parsed as Record<string, string>;
         requestBody = balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
       }
+      if (!apiKeyList.length && !provider) {
+        setBalanceProbe({ testing: false, result: null, error: "请先填写至少一个 API Key" });
+        return;
+      }
+      setBalanceProbe((current) => ({ ...current, testing: true, error: null, result: null }));
       const payload = {
         baseUrl,
         interfaceType,
-        apiKey: debugKey.trim() || undefined,
+        apiKey: apiKeyList[0] || undefined,
         providerId: provider?.id,
-        extraHeaders: balanceEnabled ? headers : undefined,
-        balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers, ...(requestBody === undefined ? {} : { body: requestBody }) }, extractor } : null,
+        extraHeaders: headers,
+        balanceConfig: { request: { url: balanceUrl, method: balanceMethod, headers, ...(requestBody === undefined ? {} : { body: requestBody }) }, extractor },
       };
       const response = await adminFetch("/api/admin/custom-providers/test-connection", { method: "POST", body: JSON.stringify(payload) });
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(errorMessage(result, "调试请求失败"));
-      setDebugResult({ kind, payload: result && typeof result === "object" ? (result as { result?: unknown }).result : undefined });
-    } catch (cause) { setDebugError(cause instanceof Error ? cause.message : "调试失败"); }
-    finally { setDebugging(null); }
+      setBalanceProbe({ testing: false, result: result && typeof result === "object" ? (result as { result?: unknown }).result : undefined, error: null });
+    } catch (cause) {
+      setBalanceProbe({ testing: false, result: null, error: cause instanceof Error ? cause.message : "调试失败" });
+    } finally {
+      setBalanceProbe((current) => ({ ...current, testing: false }));
+    }
   }
 
   return <Dialog open onOpenChange={(open) => { if (!open && !saving) onClose(); }}><DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
@@ -218,12 +245,23 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
           <Field label="接口类型" hint="选择上游遵循的 OpenAI 协议：Responses 走 /responses，Chat 走 /chat/completions。"><Select value={interfaceType} onValueChange={(value) => setInterfaceType(value as InterfaceType)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses API</SelectItem><SelectItem value="chat">Chat Completions API</SelectItem></SelectContent></Select></Field>
           <Field label="Base URL" hint="上游 API 根地址，需包含版本前缀，例如 https://api.example.com/v1。模型与转发请求都会拼在这个地址后面。" wide><Input className="font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /></Field>
           <Field label="描述" hint="可选备注，展示在 Provider 列表中。" wide><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="用途、地域或计费说明" /></Field>
-          <div className="sm:col-span-2"><CodeEditor label="模型列表" description="每行一个模型 ID；留空时自动拉取上游 /models。" value={models} onChange={setModels} language="text" height="112px" placeholder={"gpt-5.6\nclaude-sonnet-4.5"} /></div>
+          <div className="sm:col-span-2">
+            <CodeEditor label="模型列表" description="每行一个模型 ID；留空时自动拉取上游 /models。" value={models} onChange={setModels} language="text" height="112px" placeholder={"gpt-5.6\nclaude-sonnet-4.5"} />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" disabled={modelsProbe.testing} onClick={() => void runModelsProbe()}>{modelsProbe.testing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}快速获取</Button>
+              {modelsProbe.error ? <span className="text-xs text-destructive" role="alert">{modelsProbe.error}</span> : null}
+            </div>
+            {modelsProbe.result ? <div className="mt-3"><DebugResultView result={{ kind: "models", payload: modelsProbe.result }} onFillModels={(next) => { setModels(next.join("\n")); setModelsProbe({ testing: false, result: null, error: null }); }} /></div> : null}
+          </div>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <OptionCard checked={enabled} onChange={setEnabled} title="启用 Provider" description="允许该 Provider 参与模型路由和账号调度。" />
           <OptionCard checked={balanceEnabled} onChange={setBalanceEnabled} title="配置余额查询" description="定期请求余额接口并按返回值控制调度。" />
         </div>
+      </EditorSection>
+
+      <EditorSection title="API Key 列表" description="每行一个上游 API Key；保存时自动创建对应账号，已保存的 Key 不会回显。">
+        <CodeEditor label="API Key" description={provider ? `已保存 ${provider.keyCount ?? 0} 个 Key；留空保持不变，填写新 Key 会在保存时追加。` : "每行一个，保存 Provider 时一起创建。"} language="text" value={apiKeys} onChange={setApiKeys} height="112px" placeholder={"sk-one\nsk-two"} />
       </EditorSection>
 
       {balanceEnabled ? <>
@@ -239,29 +277,21 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
         </EditorSection>
         <EditorSection title="响应解析" description="函数接收上游响应 JSON，并返回标准余额结构。">
           <CodeEditor label="Extractor 函数" description="函数接收上游响应并返回 { remaining, total?, isValid?, type?, unit? }，详见页面底部协议说明。" language="javascript" value={extractor} onChange={setExtractor} height="280px" />
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={balanceProbe.testing} onClick={() => void runBalanceProbe()}>{balanceProbe.testing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}测试余额接口</Button>
+            {balanceProbe.error ? <span className="text-xs text-destructive" role="alert">{balanceProbe.error}</span> : null}
+          </div>
+          {balanceProbe.result ? <div className="mt-3"><DebugResultView result={{ kind: "balance", payload: balanceProbe.result }} onFillModels={() => undefined} /></div> : null}
+        </EditorSection>
+        <EditorSection title="代码示例" description="保存 Provider 并添加 API Key 后，即可通过网关 OpenAI 兼容接口调用。">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ExampleBlock title="Chat Completions" code={CURL_CHAT_EXAMPLE} />
+            <ExampleBlock title="Responses" code={CURL_RESPONSES_EXAMPLE} />
+            <ExampleBlock title="/models 响应格式" code={MODELS_RESPONSE_EXAMPLE} />
+            <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} />
+          </div>
         </EditorSection>
       </> : null}
-      <EditorSection title="调试接口" description="用当前表单值直接探测上游，不会保存任何修改。">
-        <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
-          <Field label="临时 API Key" hint={provider ? "留空时使用该 Provider 已保存的第一个 API Key。" : "新建时留空则发送无鉴权请求（可能返回 401）。"} wide>
-            <Input type="password" className="font-mono text-xs" value={debugKey} onChange={(event) => setDebugKey(event.target.value)} placeholder="sk-..." />
-          </Field>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" size="sm" disabled={Boolean(debugging)} onClick={() => void runDebug("models")}>{debugging === "models" ? <LoaderCircle className="animate-spin" /> : null}测试 /models</Button>
-            {balanceEnabled ? <Button type="button" variant="outline" size="sm" disabled={Boolean(debugging)} onClick={() => void runDebug("balance")}>{debugging === "balance" ? <LoaderCircle className="animate-spin" /> : null}测试余额接口</Button> : null}
-          </div>
-        </div>
-        {debugError ? <p className="mt-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{debugError}</p> : null}
-        {debugResult ? <DebugResultView result={debugResult} onFillModels={(models) => { setModels(models.join("\n")); }} /> : null}
-      </EditorSection>
-      <EditorSection title="代码示例" description="保存 Provider 并添加 API Key 后，即可通过网关 OpenAI 兼容接口调用。">
-        <div className="grid gap-4 lg:grid-cols-2">
-          <ExampleBlock title="Chat Completions" code={CURL_CHAT_EXAMPLE} />
-          <ExampleBlock title="Responses" code={CURL_RESPONSES_EXAMPLE} />
-          <ExampleBlock title="/models 响应格式" code={MODELS_RESPONSE_EXAMPLE} />
-          <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} />
-        </div>
-      </EditorSection>
       {error ? <p className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{error}</p> : null}
     </div>
     <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-background px-5 py-4 sm:px-6"><Button variant="outline" onClick={onClose} disabled={saving}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? <LoaderCircle className="animate-spin" /> : null}保存 Provider</Button></DialogFooter>

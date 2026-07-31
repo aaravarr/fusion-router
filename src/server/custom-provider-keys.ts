@@ -44,3 +44,13 @@ export function createCustomProviderKeyAccount(input: {
     })!
   }).immediate()
 }
+
+export function createCustomProviderKeys(input: {
+  ownerUserId: string
+  poolType: PoolType
+  apiKeys: string[]
+}, db: AppDatabase = getDatabase()): AccountRecord[] {
+  return db.transaction(() =>
+    input.apiKeys.map((apiKey) => createCustomProviderKeyAccount({ ownerUserId: input.ownerUserId, poolType: input.poolType, apiKey }, db)),
+  ).immediate()
+}
