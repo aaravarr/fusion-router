@@ -16,7 +16,7 @@ import type { AttemptDetail, RequestDetail, RequestListResponse, RequestRecord }
 
 const pageSize = 20;
 
-interface AccountsResponse { items?: { id: string; poolType?: string }[]; accounts?: { id: string; poolType?: string }[] }
+interface AccountsResponse { items?: { id: string; poolType?: string; poolLabel?: string }[]; accounts?: { id: string; poolType?: string; poolLabel?: string }[] }
 
 
 
@@ -108,9 +108,9 @@ export function RequestsPage() {
   const resource = useAdminResource<RequestListResponse>(path);
   const accountsResource = useAdminResource<AccountsResponse>("/api/admin/accounts?pageSize=500");
   const poolTypeByAccountId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const account of (accountsResource.data?.items ?? accountsResource.data?.accounts ?? [])) {
-      if (account.poolType) map.set(account.id, account.poolType);
+    const map = new Map<string, { poolType?: string; poolLabel?: string }>();
+    for (const account of [...(accountsResource.data?.items ?? []), ...(accountsResource.data?.accounts ?? [])]) {
+      if (account.poolType) map.set(account.id, { poolType: account.poolType, poolLabel: account.poolLabel });
     }
     return map;
   }, [accountsResource.data]);
@@ -217,7 +217,7 @@ export function RequestsPage() {
                   <TableCell className="font-mono text-xs">
                     <span className="inline-flex items-center gap-1.5">
                       {request.accountName || "未分配"}
-                      {request.accountId ? <PoolTypeBadge poolType={poolTypeByAccountId.get(request.accountId)} /> : null}
+                      {request.accountId ? <PoolTypeBadge poolType={poolTypeByAccountId.get(request.accountId)?.poolType} label={poolTypeByAccountId.get(request.accountId)?.poolLabel} /> : null}
                     </span>
                   </TableCell>
                   <TableCell className="tabular text-right font-mono text-xs">{request.attemptCount ?? 0}</TableCell>
@@ -259,13 +259,14 @@ export function RequestsPage() {
         key={selected?.id ?? "closed"}
         request={selected}
         onOpenChange={(open) => { if (!open) setSelected(null); }}
-        poolType={selected?.accountId ? poolTypeByAccountId.get(selected.accountId) : undefined}
+        poolType={selected?.accountId ? poolTypeByAccountId.get(selected.accountId)?.poolType : undefined}
+        poolLabel={selected?.accountId ? poolTypeByAccountId.get(selected.accountId)?.poolLabel : undefined}
       />
     </>
   );
 }
 
-function RequestDetailSheet({ request, onOpenChange, poolType }: { request: RequestRecord | null; onOpenChange: (open: boolean) => void; poolType?: string }) {
+function RequestDetailSheet({ request, onOpenChange, poolType, poolLabel }: { request: RequestRecord | null; onOpenChange: (open: boolean) => void; poolType?: string; poolLabel?: string }) {
   const { sessionFetch } = useAdmin();
   const [detail, setDetail] = useState<RequestDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -312,7 +313,7 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
                 <ErrorState message={error} />
               ) : detail ? (
                 <div className="space-y-6">
-                  <BasicInfo request={detail.request} poolType={poolType} />
+                  <BasicInfo request={detail.request} poolType={poolType} poolLabel={poolLabel} />
                   <TokenBreakdown request={detail.request} />
                   <div className="rounded-md border bg-[#fafafa] p-3">
                     <h3 className="mb-2 text-sm font-medium">估算费用</h3>
@@ -350,7 +351,7 @@ function RequestDetailSheet({ request, onOpenChange, poolType }: { request: Requ
   );
 }
 
-function BasicInfo({ request, poolType }: { request: RequestDetail["request"]; poolType?: string }) {
+function BasicInfo({ request, poolType, poolLabel }: { request: RequestDetail["request"]; poolType?: string; poolLabel?: string }) {
   const rows: Array<{ label: string; value: string; full?: boolean }> = [
     { label: "密钥", value: request.apiKeyName || request.apiKeyPrefix || "—" },
     { label: "__account__", value: request.accountName || "—", full: true },
@@ -385,7 +386,7 @@ function BasicInfo({ request, poolType }: { request: RequestDetail["request"]; p
             <span className="pt-0.5 text-muted-foreground">{label === "__account__" ? "服务账号" : label}</span>
             <span className="inline-flex min-w-0 flex-wrap items-start gap-1.5 break-all font-mono leading-5">
               <span className="min-w-0 whitespace-pre-wrap break-all">{value}</span>
-              {label === "__account__" ? <PoolTypeBadge poolType={poolType} /> : null}
+              {label === "__account__" ? <PoolTypeBadge poolType={poolType} label={poolLabel} /> : null}
             </span>
           </div>
         ))}

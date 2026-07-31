@@ -106,10 +106,12 @@ export function UsagePage() {
   const [range, setRange] = useState<RangeKey>("24h");
   const [granularity, setGranularity] = useState<Granularity>("auto");
   const [poolType, setPoolType] = useState<PoolTypeFilter>("");
+  const [model, setModel] = useState<string>("");
   const effectiveGranularity = granularity === "auto" ? autoGranularity(range) : granularity;
   const hours = rangeHours[range];
   const poolParam = poolType ? `&poolType=${poolType}` : "";
-  const path = `/api/admin/usage?hours=${hours}&granularity=${granularity}${poolParam}`;
+  const modelParam = model ? `&model=${encodeURIComponent(model)}` : "";
+  const path = `/api/admin/usage?hours=${hours}&granularity=${granularity}${poolParam}${modelParam}`;
   const resource = useAdminResource<UsageStats>(path);
   const data = resource.data;
   const apiPoolTypes = resource.data?.poolTypes;
@@ -121,6 +123,20 @@ export function UsagePage() {
       ? [...base, { value: poolType, label: poolType }]
       : base;
   }, [apiPoolTypes, poolType]);
+  const modelOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: Array<{ value: string; label: string }> = [];
+    for (const bucket of resource.data?.byModel ?? []) {
+      const key = bucket.key || bucket.label || "";
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      options.push({ value: key, label: bucket.label || key });
+    }
+    if (model && !options.some((option) => option.value === model)) {
+      options.push({ value: model, label: model });
+    }
+    return options;
+  }, [resource.data?.byModel, model]);
 
   function selectRange(next: RangeKey) {
     setRange(next);
@@ -180,6 +196,17 @@ export function UsagePage() {
           </SelectTrigger>
           <SelectContent>
             {poolTypeOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={model} onValueChange={(value) => setModel(value)}>
+          <SelectTrigger size="sm" className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">全部模型</SelectItem>
+            {modelOptions.map((option) => (
               <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
             ))}
           </SelectContent>
