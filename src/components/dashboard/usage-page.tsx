@@ -36,7 +36,7 @@ type Granularity = "auto" | "5m" | "1m" | "1h" | "1d";
 
 type PoolTypeFilter = string;
 const fallbackPoolTypeOptions: { value: PoolTypeFilter; label: string }[] = [
-  { value: "", label: "全部号池" },
+  { value: "all", label: "全部号池" },
   { value: "opencode-go", label: "OpenCode Go" },
   { value: "openai", label: "OpenAI" },
   { value: "xai-grok", label: "xAI Grok" },
@@ -105,21 +105,21 @@ function formatUsd(value?: number | null) {
 export function UsagePage() {
   const [range, setRange] = useState<RangeKey>("24h");
   const [granularity, setGranularity] = useState<Granularity>("auto");
-  const [poolType, setPoolType] = useState<PoolTypeFilter>("");
-  const [model, setModel] = useState<string>("");
+  const [poolType, setPoolType] = useState<PoolTypeFilter>("all");
+  const [model, setModel] = useState<string>("all");
   const effectiveGranularity = granularity === "auto" ? autoGranularity(range) : granularity;
   const hours = rangeHours[range];
-  const poolParam = poolType ? `&poolType=${poolType}` : "";
-  const modelParam = model ? `&model=${encodeURIComponent(model)}` : "";
+  const poolParam = poolType && poolType !== "all" ? `&poolType=${poolType}` : "";
+  const modelParam = model && model !== "all" ? `&model=${encodeURIComponent(model)}` : "";
   const path = `/api/admin/usage?hours=${hours}&granularity=${granularity}${poolParam}${modelParam}`;
   const resource = useAdminResource<UsageStats>(path);
   const data = resource.data;
   const apiPoolTypes = resource.data?.poolTypes;
   const poolTypeOptions = useMemo(() => {
     const base = apiPoolTypes?.length
-      ? [{ value: "", label: "全部号池" }, ...apiPoolTypes.map((pool) => ({ value: pool.type, label: pool.label }))]
+      ? [{ value: "all", label: "全部号池" }, ...apiPoolTypes.map((pool) => ({ value: pool.type, label: pool.label }))]
       : fallbackPoolTypeOptions;
-    return poolType && !base.some((option) => option.value === poolType)
+    return poolType !== "all" && !base.some((option) => option.value === poolType)
       ? [...base, { value: poolType, label: poolType }]
       : base;
   }, [apiPoolTypes, poolType]);
@@ -132,7 +132,7 @@ export function UsagePage() {
       seen.add(key);
       options.push({ value: key, label: bucket.label || key });
     }
-    if (model && !options.some((option) => option.value === model)) {
+    if (model !== "all" && !options.some((option) => option.value === model)) {
       options.push({ value: model, label: model });
     }
     return options;
@@ -205,7 +205,7 @@ export function UsagePage() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">全部模型</SelectItem>
+            <SelectItem value="all">全部模型</SelectItem>
             {modelOptions.map((option) => (
               <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
             ))}
