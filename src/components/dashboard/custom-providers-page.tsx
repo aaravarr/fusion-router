@@ -283,15 +283,15 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
           </div>
           {balanceProbe.result ? <div className="mt-3"><DebugResultView result={{ kind: "balance", payload: balanceProbe.result }} onFillModels={() => undefined} /></div> : null}
         </EditorSection>
-        <EditorSection title="代码示例" description="保存 Provider 并添加 API Key 后，即可通过网关 OpenAI 兼容接口调用。">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <ExampleBlock title="Chat Completions" code={CURL_CHAT_EXAMPLE} />
-            <ExampleBlock title="Responses" code={CURL_RESPONSES_EXAMPLE} />
-            <ExampleBlock title="/models 响应格式" code={MODELS_RESPONSE_EXAMPLE} />
-            <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} />
-          </div>
-        </EditorSection>
       </> : null}
+      <EditorSection title="代码示例" description="保存 Provider 并添加 API Key 后，即可通过网关 OpenAI 兼容接口调用。">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ExampleBlock title="Chat Completions" code={CURL_CHAT_EXAMPLE} />
+          <ExampleBlock title="Responses" code={CURL_RESPONSES_EXAMPLE} />
+          <ExampleBlock title="/models 响应格式" code={MODELS_RESPONSE_EXAMPLE} />
+          {balanceEnabled ? <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} /> : null}
+        </div>
+      </EditorSection>
       {error ? <p className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{error}</p> : null}
     </div>
     <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-background px-5 py-4 sm:px-6"><Button variant="outline" onClick={onClose} disabled={saving}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? <LoaderCircle className="animate-spin" /> : null}保存 Provider</Button></DialogFooter>
