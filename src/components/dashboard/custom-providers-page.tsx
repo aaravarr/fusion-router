@@ -56,6 +56,16 @@ const MODELS_RESPONSE_EXAMPLE = `{
 const EXTRACTOR_EXAMPLE = `function(response) {
   return { isValid: response.is_active !== false, remaining: response.balance, total: response.total, type: "permanent", unit: "USD" };
 }`;
+const DEEPSEEK_BALANCE_EXAMPLE = `function(response) {
+  const info = response.balance_infos?.[0] || {};
+  return {
+    isValid: response.is_available !== false,
+    remaining: Number(info.total_balance ?? 0),
+    total: null,
+    type: "permanent",
+    unit: info.currency || "CNY"
+  };
+}`;
 
 function errorMessage(payload: unknown, fallback: string) {
   if (!payload || typeof payload !== "object") return fallback;
@@ -165,12 +175,12 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
         if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("余额请求 Headers 必须是 JSON 对象");
         headers = parsed as Record<string, string>;
       }
-      const requestBody = balanceEnabled && balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
+      const requestBody = balanceEnabled && balanceMethod === "POST" && balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
       const payload = {
         name, description, baseUrl, interfaceType, enabled,
         apiKeys: apiKeyList,
         models: models.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
-        balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers, ...(requestBody === undefined ? {} : { body: requestBody }) }, extractor } : null,
+        balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers, ...(balanceMethod === "POST" && requestBody !== undefined ? { body: requestBody } : {}) }, extractor } : null,
       };
       const response = await adminFetch(provider ? `/api/admin/custom-providers/${provider.id}` : "/api/admin/custom-providers", { method: provider ? "PATCH" : "POST", body: JSON.stringify(payload) });
       const result = await response.json().catch(() => null);
@@ -207,7 +217,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
         const parsed = JSON.parse(balanceHeaders) as unknown;
         if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("余额请求 Headers 必须是 JSON 对象");
         headers = parsed as Record<string, string>;
-        requestBody = balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
+        requestBody = balanceMethod === "POST" && balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
       }
       if (!apiKeyList.length && !provider) {
         setBalanceProbe({ testing: false, result: null, error: "请先填写至少一个 API Key" });
@@ -220,7 +230,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
         apiKey: apiKeyList[0] || undefined,
         providerId: provider?.id,
         extraHeaders: headers,
-        balanceConfig: { request: { url: balanceUrl, method: balanceMethod, headers, ...(requestBody === undefined ? {} : { body: requestBody }) }, extractor },
+        balanceConfig: { request: { url: balanceUrl, method: balanceMethod, headers, ...(balanceMethod === "POST" && requestBody !== undefined ? { body: requestBody } : {}) }, extractor },
       };
       const response = await adminFetch("/api/admin/custom-providers/test-connection", { method: "POST", body: JSON.stringify(payload) });
       const result = await response.json().catch(() => null);
@@ -267,12 +277,12 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
       {balanceEnabled ? <>
         <EditorSection title="余额请求" description="使用模板变量 {{baseUrl}} 和 {{apiKey}} 构造请求。">
           <div className="grid gap-4 sm:grid-cols-[1fr_160px]">
-            <Field label="余额接口 URL" hint="余额查询地址，支持 {{baseUrl}} 与 {{apiKey}} 模板变量。"><Input className="font-mono text-xs" value={balanceUrl} onChange={(event) => setBalanceUrl(event.target.value)} placeholder="{{baseUrl}}/user/balance" /></Field>
+            <Field label="余额接口 URL" hint="余额查询地址，支持 {{baseUrl}} 与 {{apiKey}} 模板变量。DeepSeek 为 GET https://api.deepseek.com/user/balance（无 /v1 前缀，无 Body）。"><Input className="font-mono text-xs" value={balanceUrl} onChange={(event) => setBalanceUrl(event.target.value)} placeholder="{{baseUrl}}/user/balance" /></Field>
             <Field label="请求方法" hint="余额接口使用的 HTTP 方法。"><Select value={balanceMethod} onValueChange={(value) => setBalanceMethod(value as "GET" | "POST")}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="GET">GET</SelectItem><SelectItem value="POST">POST</SelectItem></SelectContent></Select></Field>
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <CodeEditor label="Headers" description="字符串键值对，支持 {{baseUrl}} 与 {{apiKey}}。" language="json" value={balanceHeaders} onChange={setBalanceHeaders} height="176px" invalid={!isValidJson(balanceHeaders)} onFormat={() => setBalanceHeaders(formatJson(balanceHeaders))} />
-            <CodeEditor label="Body" description="可选请求体；GET 通常留空，支持 JSON 与模板变量。" language="json" value={balanceBody} onChange={setBalanceBody} height="176px" placeholder={'{"scope":"billing"}'} invalid={Boolean(balanceBody.trim()) && !isValidJson(balanceBody)} onFormat={balanceBody.trim() ? () => setBalanceBody(formatJson(balanceBody)) : undefined} />
+            <CodeEditor label="Body" description={balanceMethod === "GET" ? "GET 请求不发送 Body，已禁用。" : "可选请求体；仅 POST 时发送，支持 JSON 与模板变量。"} language="json" value={balanceBody} onChange={setBalanceBody} height="176px" placeholder={'{"scope":"billing"}'} invalid={balanceMethod === "POST" && Boolean(balanceBody.trim()) && !isValidJson(balanceBody)} onFormat={balanceBody.trim() ? () => setBalanceBody(formatJson(balanceBody)) : undefined} disabled={balanceMethod === "GET"} />
           </div>
         </EditorSection>
         <EditorSection title="响应解析" description="函数接收上游响应 JSON，并返回标准余额结构。">
@@ -289,7 +299,10 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
           <ExampleBlock title="Chat Completions" code={CURL_CHAT_EXAMPLE} />
           <ExampleBlock title="Responses" code={CURL_RESPONSES_EXAMPLE} />
           <ExampleBlock title="/models 响应格式" code={MODELS_RESPONSE_EXAMPLE} />
-          {balanceEnabled ? <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} /> : null}
+          {balanceEnabled ? <>
+            <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} />
+            <ExampleBlock title="DeepSeek 余额 Extractor 示例" code={DEEPSEEK_BALANCE_EXAMPLE} />
+          </> : null}
         </div>
       </EditorSection>
       {error ? <p className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{error}</p> : null}
@@ -312,7 +325,7 @@ function OptionCard({ checked, onChange, title, description }: { checked: boolea
   </label>;
 }
 
-function CodeEditor({ label, description, language, value, onChange, height, placeholder, invalid = false, onFormat }: { label: string; description?: string; language: "json" | "javascript" | "text"; value: string; onChange: (value: string) => void; height: string; placeholder?: string; invalid?: boolean; onFormat?: () => void }) {
+function CodeEditor({ label, description, language, value, onChange, height, placeholder, invalid = false, onFormat, disabled = false }: { label: string; description?: string; language: "json" | "javascript" | "text"; value: string; onChange: (value: string) => void; height: string; placeholder?: string; invalid?: boolean; onFormat?: () => void; disabled?: boolean }) {
   const extensions = language === "json" ? JSON_EDITOR_EXTENSIONS : language === "javascript" ? JAVASCRIPT_EDITOR_EXTENSIONS : [];
   const languageLabel = language === "javascript" ? "JavaScript" : language === "json" ? "JSON" : "TEXT";
   return <div>
@@ -322,12 +335,13 @@ function CodeEditor({ label, description, language, value, onChange, height, pla
       <span className={`ml-auto rounded px-1.5 py-0.5 font-mono text-[9px] tracking-wide ${invalid ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"}`}>{invalid ? "INVALID JSON" : languageLabel}</span>
       {onFormat ? <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={onFormat}>格式化</Button> : null}
     </div>
-    <div className={`overflow-hidden rounded-lg border bg-[#fbfbfa] transition-shadow focus-within:ring-2 focus-within:ring-ring/30 ${invalid ? "border-destructive/50" : "border-input"}`}>
+    <div className={`overflow-hidden rounded-lg border bg-[#fbfbfa] transition-shadow focus-within:ring-2 focus-within:ring-ring/30 ${invalid ? "border-destructive/50" : "border-input"} ${disabled ? "opacity-60" : ""}`}>
       <CodeMirror
         aria-label={label}
         value={value}
         height={height}
         extensions={extensions}
+        editable={!disabled}
         onChange={onChange}
         placeholder={placeholder}
         theme="light"

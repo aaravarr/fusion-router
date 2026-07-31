@@ -94,9 +94,13 @@ async function queryBalance(config: CustomProviderBalanceConfig, baseUrl: string
   const request = config.request
   const headers = new Headers(renderValue(request.headers ?? {}, baseUrl, apiKey) as Record<string, string>)
   const bodyValue = renderValue(request.body, baseUrl, apiKey)
+  const method = request.method ?? "GET"
+  // GET/HEAD requests cannot carry a body; ignore configured body instead of
+  // letting fetch reject the request (e.g. DeepSeek balance is a GET with no body).
+  const sendBody = method !== "GET" && bodyValue != null
   const response = await apiFetchWithMirrorContext(renderTemplate(request.url, baseUrl, apiKey), {
-    method: request.method ?? "GET", headers,
-    body: bodyValue == null ? undefined : typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue),
+    method, headers,
+    body: sendBody ? (typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue)) : undefined,
     signal: AbortSignal.timeout(20_000), redirect: "error",
   }, { account })
   const text = await response.text()
