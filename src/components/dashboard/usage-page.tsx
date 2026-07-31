@@ -276,6 +276,7 @@ export function UsagePage() {
 
 function KpiRow({ summary }: { summary: UsageStats["summary"] }) {
   const successRate = summary.requests > 0 ? (summary.ok / summary.requests) * 100 : null;
+  const cacheHitRate = summary.promptTokens > 0 ? Math.min(100, (summary.cachedTokens / summary.promptTokens) * 100) : null;
   const items: Array<{ label: string; value: string; note?: string }> = [
     { label: "请求数", value: formatNumber(summary.requests), note: `${formatNumber(summary.ok)} 成功 · ${formatNumber(summary.fail)} 失败` },
     { label: "成功率", value: successRate != null ? `${successRate.toFixed(1)}%` : "—", note: "成功 / 总请求" },
@@ -287,6 +288,7 @@ function KpiRow({ summary }: { summary: UsageStats["summary"] }) {
     { label: "输入 Token", value: formatNumber(summary.promptTokens), note: "含缓存" },
     { label: "输出 Token", value: formatNumber(summary.completionTokens), note: "含推理" },
     { label: "缓存 Token", value: formatNumber(summary.cachedTokens), note: "命中缓存" },
+    { label: "缓存命中率", value: cacheHitRate != null ? `${cacheHitRate.toFixed(1)}%` : "—", note: "缓存 / 输入" },
     { label: "推理 Token", value: formatNumber(summary.reasoningTokens), note: "思维链" },
   ];
   const cols = 6
