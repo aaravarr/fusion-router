@@ -4,10 +4,20 @@ import {
   estimateUsageCost,
   findModelPrice,
   formatUsd,
-  getModelPricingStatus,
   refreshModelPricing,
 } from "./model-pricing"
 import { createDatabase } from "./db"
+
+function stubPricingFetch(openRouterModels: unknown, modelsDev: unknown, failModelsDev = false) {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes("models.dev")) {
+      if (failModelsDev) throw new Error("models.dev unavailable")
+      return Response.json(modelsDev)
+    }
+    return Response.json(openRouterModels)
+  }))
+}
 
 describe("model-pricing", () => {
   afterEach(() => {
@@ -66,35 +76,70 @@ describe("model-pricing", () => {
     expect(cost.breakdown).toBeNull()
   })
 
-  it("applies known cache correction when refreshing", async () => {
+  it("applies models.dev official cache price over openrouter", async () => {
     const db = createDatabase(":memory:")
-    vi.stubGlobal("fetch", vi.fn(async () =>
-      Response.json({
-        data: [{
-          id: "deepseek/deepseek-v4-flash",
-          name: "DeepSeek V4 Flash",
-          pricing: { prompt: "0.00000014", completion: "0.00000028", input_cache_read: "0.000000028" },
-        }],
-      }),
-    ))
+    stubPricingFetch(
+      { data: [{ id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", pricing: { prompt: "0.00000014", completion: "0.00000028", input_cache_read: "0.000000028" } }] },
+      { deepseek: { id: "deepseek", name: "DeepSeek", models: { "deepseek-v4-flash": { cost: { input: 0.14, output: 0.28, cache_read: 0.0028 } } } } },
+    )
+    await refreshModelPricing(db)
+    expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
+    expect(findModelPrice("deepseek/deepseek-v4-flash", db)?.prompt).toBeCloseTo(1.4e-7, 12)
+  })
+
+  it("keeps openrouter pricing when models.dev unavailable", async () => {
+    const db = createDatabase(":memory:")
+    stubPricingFetch(
+      { data: [{ id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", pricing: { prompt: "0.00000014", completion: "0.00000028", input_cache_read: "0.000000028" } }] },
+      {},
+      true,
+    )
+    await refreshModelPricing(db)
+    expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-8, 12)
+  })
+
+  it("indexes models.dev entries not present on openrouter", async () => {
+    const db = createDatabase(":memory:")
+    stubPricingFetch(
+      { data: [{ id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", pricing: { prompt: "0.000000435", completion: "0.00000087" } }] },
+      {
+        deepseek: {
+          id: "deepseek",
+          name: "DeepSeek",
+          models: {
+            "deepseek-v4-flash": {
+              name: "DeepSeek V4 Flash",
+              cost: { input: 0.14, output: 0.28, cache_read: 0.0028 },
+            },
+          },
+        },
+      },
+    )
     await refreshModelPricing(db)
     expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
   })
 
-  it("applies cache correction to previously cached rows", () => {
+  it("keeps models.dev catalog when openrouter unavailable", async () => {
     const db = createDatabase(":memory:")
-    getModelPricingStatus(db)
-    db.prepare("INSERT INTO model_pricing_cache(id,models_json,updated_at) VALUES(?,?,?)").run(
-      "openrouter",
-      JSON.stringify([{
-        id: "deepseek/deepseek-v4-flash",
-        name: "DeepSeek V4 Flash",
-        prompt: 1.4e-7,
-        completion: 2.8e-7,
-        cacheRead: 2.8e-8,
-      }]),
-      new Date().toISOString(),
-    )
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes("models.dev")) {
+        return Response.json({
+          deepseek: {
+            id: "deepseek",
+            name: "DeepSeek",
+            models: {
+              "deepseek-v4-flash": {
+                name: "DeepSeek V4 Flash",
+                cost: { input: 0.14, output: 0.28, cache_read: 0.0028 },
+              },
+            },
+          },
+        })
+      }
+      throw new Error("openrouter unavailable")
+    }))
+    await refreshModelPricing(db)
     expect(findModelPrice("deepseek-v4-flash", db)?.cacheRead).toBeCloseTo(2.8e-9, 12)
   })
 })

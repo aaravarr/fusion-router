@@ -11,21 +11,94 @@ import type { AppDatabase } from "./db"
 import { getDatabase } from "./db"
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+const MODELS_DEV_URL = "https://models.dev/api.json"
 const CACHE_ID = "openrouter"
 const REQUEST_TIMEOUT_MS = 30_000
 
-// OpenRouter occasionally publishes cache pricing 10x the official rate for
-// stale model ids. Keep known corrections in USD per token.
-const PRICING_OVERRIDES: Record<string, Partial<ModelPrice>> = {
-  "deepseek/deepseek-v4-flash": {
-    // DeepSeek official cached input: CNY 0.02 / 1M tokens ≈ USD 0.0028 / 1M.
-    cacheRead: 2.8e-9,
-  },
+interface AuthoritativePrice {
+  id: string
+  name: string
+  prompt: number
+  completion: number
+  cacheRead: number | null
 }
 
-function applyPricingOverride(price: ModelPrice): ModelPrice {
-  const override = PRICING_OVERRIDES[price.id]
-  return override ? { ...price, ...override } : price
+interface AuthoritativeIndex {
+  exact: Map<string, AuthoritativePrice>
+  short: Map<string, AuthoritativePrice>
+}
+
+// Official provider prices (USD per 1M tokens) from models.dev. OpenRouter is
+// only used as a fallback for models that are missing here.
+function parseModelsDevAuthoritative(payload: unknown): AuthoritativeIndex {
+  const exact = new Map<string, AuthoritativePrice>()
+  const short = new Map<string, AuthoritativePrice>()
+  const shortKeyConflict = new Set<string>()
+  const shortKeyOwner = new Map<string, string>()
+  if (!payload || typeof payload !== "object") return { exact, short }
+  for (const [providerId, provider] of Object.entries(payload as Record<string, unknown>)) {
+    if (providerId === "openrouter") continue
+    if (!provider || typeof provider !== "object") continue
+    const models = (provider as { models?: unknown }).models
+    if (!models || typeof models !== "object") continue
+    for (const [modelId, model] of Object.entries(models as Record<string, unknown>)) {
+      if (!model || typeof model !== "object") continue
+      const cost = (model as { cost?: unknown }).cost
+      if (!cost || typeof cost !== "object") continue
+      const costRec = cost as Record<string, unknown>
+      const prompt = toNumber(costRec.input)
+      const completion = toNumber(costRec.output)
+      if (prompt == null && completion == null) continue
+      const cacheRead = toNumber(costRec.cache_read)
+      const price: AuthoritativePrice = {
+        id: `${providerId}/${modelId}`,
+        name: typeof (model as { name?: unknown }).name === "string" ? String((model as { name: string }).name) : modelId,
+        prompt: (prompt ?? 0) / 1_000_000,
+        completion: (completion ?? 0) / 1_000_000,
+        cacheRead: cacheRead == null ? null : cacheRead / 1_000_000,
+      }
+      const exactKey = normalizeKey(`${providerId}/${modelId}`)
+      exact.set(exactKey, price)
+      const shortKey = normalizeKey(modelId)
+      const owner = shortKeyOwner.get(shortKey)
+      if (owner === undefined) {
+        shortKeyOwner.set(shortKey, providerId)
+        short.set(shortKey, price)
+      } else if (owner !== providerId) {
+        shortKeyConflict.add(shortKey)
+        short.delete(shortKey)
+      }
+    }
+  }
+  for (const key of shortKeyConflict) short.delete(key)
+  return { exact, short }
+}
+
+// Prefer models.dev entries; append OpenRouter entries only for models that
+// models.dev does not cover.
+function mergeModelPricing(openRouterModels: ModelPrice[], authoritative: AuthoritativeIndex): ModelPrice[] {
+  const result: ModelPrice[] = []
+  const seen = new Set<string>()
+  for (const price of authoritative.exact.values()) {
+    const key = normalizeKey(price.id)
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push({
+      id: price.id,
+      name: price.name,
+      prompt: price.prompt,
+      completion: price.completion,
+      cacheRead: price.cacheRead,
+    })
+  }
+  for (const model of openRouterModels) {
+    const key = normalizeKey(model.id)
+    if (seen.has(key)) continue
+    if (authoritative.exact.has(key) || authoritative.short.has(normalizeKey(shortId(model.id)))) continue
+    seen.add(key)
+    result.push(model)
+  }
+  return result
 }
 
 export interface ModelPrice {
@@ -163,13 +236,13 @@ function parseOpenRouterModels(payload: unknown): ModelPrice[] {
     const prompt = toNumber(pricing.prompt) ?? 0
     const completion = toNumber(pricing.completion) ?? 0
     const cacheRead = toNumber(pricing.input_cache_read)
-    out.push(applyPricingOverride({
+    out.push({
       id,
       name: typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : id,
       prompt,
       completion,
       cacheRead,
-    }))
+    })
   }
   return out
 }
@@ -182,7 +255,7 @@ function loadFromDb(db: AppDatabase): PriceIndex {
   if (!row?.models_json) return emptyIndex()
   try {
     const parsed = JSON.parse(row.models_json) as unknown
-    const models = Array.isArray(parsed) ? (parsed as ModelPrice[]).map(applyPricingOverride) : []
+    const models = Array.isArray(parsed) ? (parsed as ModelPrice[]) : []
     return indexPrices(models.filter((m) => m && typeof m.id === "string"), {
       fetchedAt: row.fetched_at,
       updatedAt: row.updated_at,
@@ -310,16 +383,27 @@ export function formatUsd(value: number | null | undefined): string {
 export async function refreshModelPricing(db: AppDatabase = getDatabase()): Promise<ModelPricingStatus> {
   ensureTable(db)
   try {
-    const response = await apiFetch(OPENROUTER_MODELS_URL, {
-      method: "GET",
-      headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-    const body = await response.text()
-    if (!response.ok) throw new Error(`OpenRouter /models failed (HTTP ${response.status}): ${body.slice(0, 200)}`)
-    const models = parseOpenRouterModels(JSON.parse(body) as unknown)
-    if (!models.length) throw new Error("OpenRouter /models returned empty catalog")
-    saveToDb(db, models, null)
+    const [openRouterResult, modelsDevResult] = await Promise.allSettled([
+      apiFetch(OPENROUTER_MODELS_URL, { method: "GET", headers: { accept: "application/json" }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }).then(async (response) => {
+        const body = await response.text()
+        if (!response.ok) throw new Error(`OpenRouter /models failed (HTTP ${response.status}): ${body.slice(0, 200)}`)
+        const models = parseOpenRouterModels(JSON.parse(body) as unknown)
+        if (!models.length) throw new Error("OpenRouter /models returned empty catalog")
+        return models
+      }),
+      apiFetch(MODELS_DEV_URL, { method: "GET", headers: { accept: "application/json" }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }).then(async (response) => {
+        const body = await response.text()
+        if (!response.ok) throw new Error(`models.dev failed (HTTP ${response.status})`)
+        return parseModelsDevAuthoritative(JSON.parse(body) as unknown)
+      }),
+    ])
+    const emptyAuthoritative: AuthoritativeIndex = { exact: new Map(), short: new Map() }
+    const authoritative = modelsDevResult.status === "fulfilled" ? modelsDevResult.value : emptyAuthoritative
+    if (openRouterResult.status === "rejected" && authoritative.exact.size === 0) throw openRouterResult.reason
+    const openRouterModels = openRouterResult.status === "fulfilled" ? openRouterResult.value : []
+    const merged = mergeModelPricing(openRouterModels, authoritative)
+    if (!merged.length) throw new Error("No model pricing available")
+    saveToDb(db, merged, null)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const existing = loadFromDb(db)
