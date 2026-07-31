@@ -560,8 +560,8 @@ export function AccountsPage() {
                 <TableHead className="w-[230px] px-4 text-xs text-muted-foreground">账号</TableHead>
                 <TableHead className="w-[110px] text-xs text-muted-foreground">号池</TableHead>
                 <TableHead className="w-[150px] text-xs text-muted-foreground">状态</TableHead>
-                <TableHead className="text-xs text-muted-foreground">{poolFilter === "xai-grok" ? "滚动 24 小时" : poolFilter === "all" ? "主额度窗口" : "5 小时"}</TableHead>
-                <TableHead className="text-xs text-muted-foreground">{poolFilter === "xai-grok" ? "其他窗口" : poolFilter === "all" ? "次额度窗口" : "周"}</TableHead>
+                <TableHead className="text-xs text-muted-foreground">{poolFilter === "xai-grok" ? "滚动 24 小时" : poolFilter.startsWith("custom:") ? "余额" : poolFilter === "all" ? "主额度窗口" : "5 小时"}</TableHead>
+                <TableHead className="text-xs text-muted-foreground">{poolFilter === "xai-grok" ? "其他窗口" : poolFilter.startsWith("custom:") ? "周期" : poolFilter === "all" ? "次额度窗口" : "周"}</TableHead>
                 {showMonthly ? <TableHead className="text-xs text-muted-foreground">月</TableHead> : null}
                 <TableHead className="w-[150px] text-xs text-muted-foreground">订阅 / 凭据</TableHead>
                 <TableHead className="w-[130px] text-xs text-muted-foreground">最近同步</TableHead>
@@ -591,10 +591,15 @@ export function AccountsPage() {
                     </TableCell>
                     <TableCell><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /></TableCell>
                     <TableCell><AccountBadges account={account} /></TableCell>
-                    {account.poolType === "xai-grok" ? (
+                      {account.poolType === "xai-grok" ? (
                       <>
                         <TableCell><QuotaStatus label="24H" quota={getQuota(account, "rolling24h")} /></TableCell>
                         <TableCell><span className="font-mono text-[10px] text-muted-foreground">—</span></TableCell>
+                      </>
+                    ) : (account.poolType || "").startsWith("custom:") ? (
+                      <>
+                        <TableCell><QuotaStatus label="余额" quota={getQuota(account, "permanent") ?? getQuota(account, "fiveHour")} /></TableCell>
+                        <TableCell><QuotaStatus label="周期" quota={getQuota(account, "customPeriod") ?? getQuota(account, "weekly")} /></TableCell>
                       </>
                     ) : (
                       <>

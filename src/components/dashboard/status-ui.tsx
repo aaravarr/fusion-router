@@ -279,6 +279,11 @@ export function QuotaStatus({
             : "等待首次请求或手动同步"}
       </p>
       )}
+      {quota?.unit && quota.remainingValue != null ? (
+        <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={`剩余 ${Number(quota.remainingValue).toLocaleString()} ${quota.unit}`}>
+          {`剩余 ${Number(quota.remainingValue).toLocaleString()} ${quota.unit}`}
+        </p>
+      ) : null}
     </div>
   );
 }

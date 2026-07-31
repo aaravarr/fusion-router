@@ -27,22 +27,19 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const db = getDatabase()
     const { apiKeys, ...input } = parsed.data
     const provider = new CustomProviderRepository(user.id, db).update(id, input)
-    if (provider && !provider.models?.length && (parsed.data.models !== undefined || parsed.data.baseUrl !== undefined)) {
-      const account = new AccountRepository(user.id, db).listByPoolType(provider.poolType)[0]
-      if (account) await syncProviderModelsForAccount(user.id, account.id, db).catch(() => null)
-    }
     let warnings: string[] = []
-    if (provider && apiKeys?.length) {
-      const accounts = createCustomProviderKeys({ ownerUserId: user.id, poolType: provider.poolType, apiKeys }, db)
-      const firstAccount = accounts[0]
-      if (firstAccount) {
-        const checks = await Promise.allSettled([
-          syncProviderModelsForAccount(user.id, firstAccount.id, db),
-          ...(provider.balanceConfig ? [syncProviderAccount(user.id, firstAccount.id, db)] : []),
-        ])
-        warnings = checks.filter((result): result is PromiseRejectedResult => result.status === "rejected")
-          .map((result) => result.reason instanceof Error ? result.reason.message : "上游探测失败")
+    // 配置变更（Key、余额、地址、协议）后，对该 Provider 全部账号重新同步模型与额度。
+    if (provider && (apiKeys?.length || input.balanceConfig !== undefined || input.baseUrl !== undefined || input.interfaceType !== undefined)) {
+      if (apiKeys?.length) {
+        createCustomProviderKeys({ ownerUserId: user.id, poolType: provider.poolType, apiKeys }, db)
       }
+      const accountIds = new AccountRepository(user.id, db).listByPoolType(provider.poolType).map((account) => account.id)
+      const checks = await Promise.allSettled(accountIds.flatMap((accountId) => [
+        syncProviderModelsForAccount(user.id, accountId, db),
+        syncProviderAccount(user.id, accountId, db),
+      ]))
+      warnings = checks.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => result.reason instanceof Error ? result.reason.message : "上游探测失败")
     }
     return provider ? Response.json({ provider, warnings }) : Response.json({ error: { type: "not_found" } }, { status: 404 })
   } catch (cause) {
