@@ -41,6 +41,8 @@ interface ProviderModelsPayload { catalogs?: ProviderModelCatalog[] }
 
 const POOL_OPTIONS = ["opencode-go", "openai", "xai-grok", "kimi-code"] as const;
 
+interface PoolTypeOptionItem { type: string; label: string }
+
 export function RoutingPage() {
   const routingResource = useAdminResource<RoutingPayload>("/api/admin/routing");
   const accountsResource = useAdminResource<AccountsPayload>("/api/admin/accounts?pageSize=500&sort=name");
@@ -49,12 +51,35 @@ export function RoutingPage() {
   const { adminFetch } = useAdmin();
   const routing = routingResource.data?.routing ?? routingResource.data;
   const accounts = useMemo(() => accountsResource.data?.items ?? accountsResource.data?.accounts ?? [], [accountsResource.data]);
-  const rules = modelRoutingResource.data?.rules ?? [];
+  const rules = useMemo(() => modelRoutingResource.data?.rules ?? [], [modelRoutingResource.data?.rules]);
   const catalogs = providerModelsResource.data?.catalogs ?? [];
-  // per-pool-type 首选账号：从 routing data 取当前配置与号池类型列表
-  const rawPoolTypes = routing?.poolTypes ?? accountsResource.data?.poolTypes ?? Array.from(new Set(accounts.map((a) => a.poolType || "opencode-go"))) ?? [...POOL_OPTIONS];
-  // Normalize: accounts API may return poolTypes as objects { type, label, ... }, extract .type
-  const poolTypes = Array.from(new Set(rawPoolTypes.map((pt: unknown) => typeof pt === "string" ? pt : (pt as { type?: string }).type ?? "").filter(Boolean)));
+  const poolTypeOptions = useMemo<PoolTypeOptionItem[]>(() => {
+    const result: PoolTypeOptionItem[] = [];
+    const seen = new Set<string>();
+    const add = (item: PoolTypeOptionItem) => {
+      if (seen.has(item.type)) return;
+      seen.add(item.type);
+      result.push(item);
+    };
+    const normalize = (item: string | { type: string; label: string }) => {
+      if (typeof item === "string") add({ type: item, label: getPoolLabel(item) });
+      else add({ type: item.type, label: item.label || getPoolLabel(item.type) });
+    };
+    const accountPoolTypes = accountsResource.data?.poolTypes ?? [];
+    const routingPoolTypes = routing?.poolTypes ?? [];
+    if (accountPoolTypes.length || routingPoolTypes.length) {
+      for (const item of accountPoolTypes) normalize(item);
+      for (const item of routingPoolTypes) normalize(item);
+    } else {
+      for (const type of POOL_OPTIONS) add({ type, label: getPoolLabel(type) });
+    }
+    for (const rule of rules) {
+      for (const type of rule.poolTypePriority) add({ type, label: getPoolLabel(type) });
+    }
+    return result;
+  }, [accountsResource.data?.poolTypes, routing?.poolTypes, rules]);
+  const poolTypeLabels = useMemo(() => Object.fromEntries(poolTypeOptions.map((option) => [option.type, option.label])), [poolTypeOptions]);
+  const poolTypes = poolTypeOptions.map((option) => option.type);
   const poolPreferences = routing?.poolPreferences ?? accountsResource.data?.poolPreferences ?? {};
   const [updatingPool, setUpdatingPool] = useState<string | null>(null);
   const [poolMessage, setPoolMessage] = useState<string | null>(null);
@@ -94,7 +119,7 @@ export function RoutingPage() {
       const response = await adminFetch("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ poolType, preferredAccountId }) });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "保存失败");
-      setPoolMessage(`${getPoolLabel(poolType)} 首选账号已更新`);
+      setPoolMessage(`${poolTypeLabels[poolType] ?? getPoolLabel(poolType)} 首选账号已更新`);
       await routingResource.refresh();
     } catch (cause) { setPoolMessage(cause instanceof Error ? cause.message : "保存失败"); }
     finally { setUpdatingPool(null); }
@@ -166,7 +191,7 @@ export function RoutingPage() {
                     <SelectContent>
                     <SelectItem value="all">全部号池</SelectItem>
                     {poolTypes.map((poolType) => (
-                      <SelectItem key={poolType} value={poolType}>{getPoolLabel(poolType)}</SelectItem>
+                      <SelectItem key={poolType} value={poolType}>{poolTypeLabels[poolType] ?? getPoolLabel(poolType)}</SelectItem>
                     ))}
                     </SelectContent>
                   </Select>
@@ -209,7 +234,7 @@ export function RoutingPage() {
           </Panel>
         </div> : null}
 
-        <ModelRoutingSection rules={rules} loading={modelRoutingResource.loading} error={modelRoutingResource.error} adminFetch={adminFetch} onRefresh={() => void modelRoutingResource.refresh()} />
+        <ModelRoutingSection rules={rules} loading={modelRoutingResource.loading} error={modelRoutingResource.error} adminFetch={adminFetch} onRefresh={() => void modelRoutingResource.refresh()} poolTypeOptions={poolTypeOptions} labels={poolTypeLabels} />
         <ProviderModelsSection
           catalogs={catalogs}
           loading={providerModelsResource.loading}
@@ -523,12 +548,14 @@ function ProviderModelsSection({ catalogs, loading, error, adminFetch, onRefresh
   );
 }
 
-function ModelRoutingSection({ rules, loading, error, adminFetch, onRefresh }: {
+function ModelRoutingSection({ rules, loading, error, adminFetch, onRefresh, poolTypeOptions, labels }: {
   rules: ModelRouteRule[];
   loading: boolean;
   error: string | null;
   adminFetch: (path: string, init?: RequestInit) => Promise<Response>;
   onRefresh: () => void;
+  poolTypeOptions: PoolTypeOptionItem[];
+  labels: Record<string, string>;
 }) {
   const confirm = useConfirm();
   const [addOpen, setAddOpen] = useState(false);
@@ -592,6 +619,7 @@ function ModelRoutingSection({ rules, loading, error, adminFetch, onRefresh }: {
             <ModelRouteRow
               key={rule.id}
               rule={rule}
+              labels={labels}
               onToggle={() => void toggleRule(rule)}
               onEdit={() => setEditRule(rule)}
               onDelete={() => void deleteRule(rule)}
@@ -600,20 +628,21 @@ function ModelRoutingSection({ rules, loading, error, adminFetch, onRefresh }: {
           ))}
         </div>
       ) : null}
-      <AddRuleDialog open={addOpen} onOpenChange={setAddOpen} adminFetch={adminFetch} onCreated={onRefresh} />
+      <AddRuleDialog open={addOpen} onOpenChange={setAddOpen} adminFetch={adminFetch} onCreated={onRefresh} options={poolTypeOptions} />
       {editRule ? (
-        <EditRuleDialog rule={editRule} open={Boolean(editRule)} onOpenChange={(o) => { if (!o) setEditRule(null); }} adminFetch={adminFetch} onUpdated={onRefresh} />
+        <EditRuleDialog rule={editRule} open={Boolean(editRule)} onOpenChange={(o) => { if (!o) setEditRule(null); }} adminFetch={adminFetch} onUpdated={onRefresh} options={poolTypeOptions} />
       ) : null}
     </Panel>
   );
 }
 
-function ModelRouteRow({ rule, onToggle, onEdit, onDelete, onReorder }: {
+function ModelRouteRow({ rule, onToggle, onEdit, onDelete, onReorder, labels }: {
   rule: ModelRouteRule;
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onReorder: (newPriority: string[]) => void;
+  labels: Record<string, string>;
 }) {
   const priority = rule.poolTypePriority;
   function moveUp(idx: number) { if (idx > 0) { const next = [...priority]; [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]; onReorder(next); } }
@@ -632,7 +661,7 @@ function ModelRouteRow({ rule, onToggle, onEdit, onDelete, onReorder }: {
               {idx > 0 ? <span className="text-[10px] text-muted-foreground">→</span> : null}
               <div className="flex items-center gap-0.5">
                 <span className="inline-flex items-center gap-1 rounded-sm border bg-white px-1.5 py-0.5 text-[11px] font-medium">
-                  {getPoolLabel(pool)}
+                  {labels[pool] ?? getPoolLabel(pool)}
                 </span>
                 <div className="flex flex-col">
                   <Button type="button" variant="ghost" size="icon-xs" onClick={() => moveUp(idx)} disabled={idx === 0} className="text-muted-foreground" aria-label="上移">
@@ -656,7 +685,11 @@ function ModelRouteRow({ rule, onToggle, onEdit, onDelete, onReorder }: {
   );
 }
 
-function PrioritySelector({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+function PrioritySelector({ value, onChange, options }: {
+  value: string[];
+  onChange: (v: string[]) => void;
+  options: PoolTypeOptionItem[];
+}) {
   const [selected, setSelected] = useState<string[]>(value);
 
   function toggle(pool: string) {
@@ -672,10 +705,14 @@ function PrioritySelector({ value, onChange }: { value: string[]; onChange: (v: 
     if (idx < selected.length - 1) { const next = [...selected]; [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]]; setSelected(next); onChange(next); }
   }
 
+  const optionTypes = options.map((option) => option.type);
+  const buttonPools = Array.from(new Set([...optionTypes, ...value.filter((pool) => !optionTypes.includes(pool))]));
+  const labelFor = (pool: string) => options.find((option) => option.type === pool)?.label ?? getPoolLabel(pool);
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-1.5">
-        {POOL_OPTIONS.map((pool) => (
+        {buttonPools.map((pool) => (
           <Button
             key={pool}
             type="button"
@@ -684,7 +721,7 @@ function PrioritySelector({ value, onChange }: { value: string[]; onChange: (v: 
             onClick={() => toggle(pool)}
             className={selected.includes(pool) ? undefined : "bg-white text-muted-foreground"}
           >
-            {getPoolLabel(pool)}
+            {labelFor(pool)}
           </Button>
         ))}
       </div>
@@ -696,7 +733,7 @@ function PrioritySelector({ value, onChange }: { value: string[]; onChange: (v: 
               <div key={pool + idx} className="flex items-center gap-2">
                 <GripVertical className="size-3.5 text-muted-foreground/50" />
                 <span className="font-mono text-[10px] text-muted-foreground">{idx + 1}</span>
-                <span className="text-xs font-medium">{getPoolLabel(pool)}</span>
+                <span className="text-xs font-medium">{labelFor(pool)}</span>
                 <div className="ml-auto flex gap-0.5">
                   <Button type="button" variant="ghost" size="icon-xs" onClick={() => moveUp(idx)} disabled={idx === 0} className="text-muted-foreground" aria-label="上移"><ArrowUp className="size-3.5" /></Button>
                   <Button type="button" variant="ghost" size="icon-xs" onClick={() => moveDown(idx)} disabled={idx === selected.length - 1} className="text-muted-foreground" aria-label="下移"><ArrowDown className="size-3.5" /></Button>
@@ -710,18 +747,19 @@ function PrioritySelector({ value, onChange }: { value: string[]; onChange: (v: 
   );
 }
 
-function AddRuleDialog({ open, onOpenChange, adminFetch, onCreated }: {
+function AddRuleDialog({ open, onOpenChange, adminFetch, onCreated, options }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   adminFetch: (path: string, init?: RequestInit) => Promise<Response>;
   onCreated: () => void;
+  options: PoolTypeOptionItem[];
 }) {
   const [patterns, setPatterns] = useState("");
-  const [priority, setPriority] = useState<string[]>([...POOL_OPTIONS]);
+  const [priority, setPriority] = useState<string[]>(options.map((option) => option.type));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function reset() { setPatterns(""); setPriority([...POOL_OPTIONS]); setError(null); }
+  function reset() { setPatterns(""); setPriority(options.map((option) => option.type)); setError(null); }
 
   async function handleSubmit() {
     const patternList = patterns.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
@@ -745,7 +783,7 @@ function AddRuleDialog({ open, onOpenChange, adminFetch, onCreated }: {
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) reset(); onOpenChange(next); }}>
+    <Dialog open={open} onOpenChange={(next) => { reset(); onOpenChange(next); }}>
       <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-lg">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle>添加模型路由规则</DialogTitle>
@@ -761,7 +799,7 @@ function AddRuleDialog({ open, onOpenChange, adminFetch, onCreated }: {
           </div>
           <div className="space-y-2">
             <Label className="text-xs font-medium text-foreground">号池优先级</Label>
-            <PrioritySelector value={priority} onChange={setPriority} />
+            <PrioritySelector value={priority} onChange={setPriority} options={options} />
           </div>
           {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
         </div>
@@ -774,12 +812,13 @@ function AddRuleDialog({ open, onOpenChange, adminFetch, onCreated }: {
   );
 }
 
-function EditRuleDialog({ rule, open, onOpenChange, adminFetch, onUpdated }: {
+function EditRuleDialog({ rule, open, onOpenChange, adminFetch, onUpdated, options }: {
   rule: ModelRouteRule;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   adminFetch: (path: string, init?: RequestInit) => Promise<Response>;
   onUpdated: () => void;
+  options: PoolTypeOptionItem[];
 }) {
   const [pattern, setPattern] = useState(rule.modelPattern);
   const [priority, setPriority] = useState<string[]>(rule.poolTypePriority);
@@ -818,7 +857,7 @@ function EditRuleDialog({ rule, open, onOpenChange, adminFetch, onUpdated }: {
           </div>
           <div className="space-y-2">
             <Label className="text-xs font-medium text-foreground">号池优先级</Label>
-            <PrioritySelector value={priority} onChange={setPriority} />
+            <PrioritySelector value={priority} onChange={setPriority} options={options} />
           </div>
           {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
         </div>

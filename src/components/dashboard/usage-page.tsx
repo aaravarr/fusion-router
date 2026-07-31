@@ -34,8 +34,8 @@ const palette = ["#0070f3", "#7928ca", "#0a7a3e", "#ab570a", "#ee0000", "#00a0a0
 type RangeKey = "1h" | "6h" | "24h" | "7d" | "30d";
 type Granularity = "auto" | "5m" | "1m" | "1h" | "1d";
 
-type PoolTypeFilter = "" | "opencode-go" | "openai" | "xai-grok" | "kimi-code";
-const poolTypeOptions: { value: PoolTypeFilter; label: string }[] = [
+type PoolTypeFilter = string;
+const fallbackPoolTypeOptions: { value: PoolTypeFilter; label: string }[] = [
   { value: "", label: "全部号池" },
   { value: "opencode-go", label: "OpenCode Go" },
   { value: "openai", label: "OpenAI" },
@@ -112,6 +112,15 @@ export function UsagePage() {
   const path = `/api/admin/usage?hours=${hours}&granularity=${granularity}${poolParam}`;
   const resource = useAdminResource<UsageStats>(path);
   const data = resource.data;
+  const apiPoolTypes = resource.data?.poolTypes;
+  const poolTypeOptions = useMemo(() => {
+    const base = apiPoolTypes?.length
+      ? [{ value: "", label: "全部号池" }, ...apiPoolTypes.map((pool) => ({ value: pool.type, label: pool.label }))]
+      : fallbackPoolTypeOptions;
+    return poolType && !base.some((option) => option.value === poolType)
+      ? [...base, { value: poolType, label: poolType }]
+      : base;
+  }, [apiPoolTypes, poolType]);
 
   function selectRange(next: RangeKey) {
     setRange(next);
@@ -165,7 +174,7 @@ export function UsagePage() {
         <span className="text-xs text-muted-foreground">
           粒度：{granLabels[effectiveGranularity]}
         </span>
-        <Select value={poolType} onValueChange={(value) => setPoolType(value as PoolTypeFilter)}>
+        <Select value={poolType} onValueChange={(value) => setPoolType(value)}>
           <SelectTrigger size="sm" className="w-32">
             <SelectValue />
           </SelectTrigger>

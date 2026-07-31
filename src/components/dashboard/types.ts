@@ -295,6 +295,7 @@ export interface UsageStats {
   byModel: Bucket[];
   byAccount: Bucket[];
   byKey: Bucket[];
+  poolTypes?: Array<{ type: string; label: string }>;
 }
 
 export interface LogSettings {
@@ -329,7 +330,7 @@ export interface RoutingConfig {
   currentAccountId?: string | null;
   candidates?: Account[];
   poolPreferences?: Record<string, string | null>;
-  poolTypes?: string[];
+  poolTypes?: Array<string | { type: string; label: string }>;
 }
 
 export interface AdminSettings {

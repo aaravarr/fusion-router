@@ -1,6 +1,7 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../_auth";
 import { estimateUsageCost } from "@/server/model-pricing";
+import { listPoolTypeOptions } from "@/server/pool-type-options";
 
 export const runtime = "nodejs";
 
@@ -170,10 +171,11 @@ export function GET(request: Request): Response {
  const apiKeyId = url.searchParams.get("apiKeyId");
   const poolType = url.searchParams.get("poolType");
   const cacheKey = `${user.id}|${hours}|${gran}|${model ?? ""}|${accountId ?? ""}|${apiKeyId ?? ""}|${poolType ?? ""}`;
-  const cached = cache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return Response.json(cached.data);
-
   const db = getDatabase();
+  const poolTypes = listPoolTypeOptions(user.id, db);
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return Response.json({ ...cached.data, poolTypes });
+
   const now = Date.now();
   const fromIso = new Date(now - hours * 3600 * 1000).toISOString();
   const toIso = new Date(now).toISOString();
@@ -243,7 +245,7 @@ export function GET(request: Request): Response {
     byKey: [...byKey.values()],
   };
   cache.set(cacheKey, { ts: Date.now(), data });
-  return Response.json(data);
+  return Response.json({ ...data, poolTypes });
 }
 
 function clampInt(value: string | null, min: number, max: number, fallback: number): number {

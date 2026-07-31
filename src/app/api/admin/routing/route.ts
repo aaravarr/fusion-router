@@ -2,7 +2,7 @@ import { RoutingService } from "@/server/routing"
 import { getDatabase } from "@/server/db"
 import { z } from "zod"
 import { requireSession } from "../_auth"
-import { POOL_TYPES } from "@/server/providers"
+import { listPoolTypeOptions } from "@/server/pool-type-options"
 import type { PoolType } from "@/server/types"
 
 export const runtime = "nodejs"
@@ -10,8 +10,9 @@ export const runtime = "nodejs"
 export async function GET(request: Request) {
   const user = requireSession(request)
   if (user instanceof Response) return user
-  const svc = new RoutingService(user.id, getDatabase())
-  return Response.json({ routing: svc.getState(), poolPreferences: svc.getPoolPreferences(), poolTypes: POOL_TYPES })
+  const db = getDatabase()
+  const svc = new RoutingService(user.id, db)
+  return Response.json({ routing: svc.getState(), poolPreferences: svc.getPoolPreferences(), poolTypes: listPoolTypeOptions(user.id, db) })
 }
 
 export async function PATCH(request: Request) {
@@ -19,7 +20,7 @@ export async function PATCH(request: Request) {
   if (user instanceof Response) return user
   const body = await request.json().catch(() => null)
   const legacyParsed = z.object({ preferredAccountId: z.string().uuid().nullable() }).safeParse(body)
-  const poolParsed = z.object({ poolType: z.enum(POOL_TYPES as unknown as [string, ...string[]]), preferredAccountId: z.string().uuid().nullable() }).safeParse(body)
+  const poolParsed = z.object({ poolType: z.string().trim().min(1), preferredAccountId: z.string().uuid().nullable() }).safeParse(body)
   try {
     const svc = new RoutingService(user.id, getDatabase())
     if (poolParsed.success) {

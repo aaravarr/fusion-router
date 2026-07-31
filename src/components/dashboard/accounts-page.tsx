@@ -76,13 +76,15 @@ const POOL_FILTERS = [
 
 const STATUS_FILTERS = [
   { key: "all", label: "全部状态" },
-  { key: "ready", label: "可路由" },
-  { key: "blocked", label: "额度阻塞" },
-  { key: "over_quota", label: "已超限" },
-  { key: "disabled", label: "已停用" },
-  { key: "banned", label: "已封禁" },
-  { key: "auth_error", label: "认证异常" },
-  { key: "inactive", label: "不可用" },
+  { key: "ready", label: "可用" },
+  { key: "temp_blocked", label: "临时阻塞" },
+  { key: "spending_blocked", label: "消费受限" },
+  { key: "credential_invalid", label: "凭据失效" },
+  { key: "admin_disabled", label: "人工停用" },
+  { key: "upstream_banned", label: "上游封禁" },
+  { key: "subscription_inactive", label: "订阅不可用" },
+  { key: "billing_unsafe", label: "计费未验证" },
+  { key: "unavailable", label: "不可用" },
 ] as const;
 
 const SORT_OPTIONS = [

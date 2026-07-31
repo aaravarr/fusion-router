@@ -76,7 +76,7 @@ describe("account list pagination", () => {
     expect(all.stats.byPoolType["xai-grok"]?.total).toBe(3)
     expect(all.stats.byPoolType["opencode-go"]?.total).toBe(1)
 
-    const blocked = repository.listPage({ page: 1, pageSize: 50, poolType: "xai-grok", status: "over_quota" })
+    const blocked = repository.listPage({ page: 1, pageSize: 50, poolType: "xai-grok", status: "temp_blocked" })
     expect(blocked.total).toBe(1)
     expect(blocked.items.map((item) => item.id)).toEqual([over.id])
 

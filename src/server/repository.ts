@@ -6,6 +6,7 @@ import { getSystemSecret } from "./settings"
 import type { AccountCredential, AccountRecord, AdminState, AuthState, BillingGuard, QuotaKind, SubscriptionState } from "./types"
 import type { ModelRouteRule, PoolType } from "./types"
 import type { ParsedUsage } from "./opencode-web/parser"
+import { deriveAccountRouteStatus } from "./account-route-state"
 
 type Row = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
@@ -54,7 +55,7 @@ export class AccountOwnershipConflictError extends Error {
 }
 
 
-export type AccountListStatusFilter = "all" | "ready" | "blocked" | "disabled" | "banned" | "auth_error" | "inactive" | "over_quota"
+export type AccountListStatusFilter = "all" | "ready" | "temp_blocked" | "spending_blocked" | "credential_invalid" | "admin_disabled" | "upstream_banned" | "subscription_inactive" | "billing_unsafe" | "unavailable"
 export type AccountListSort = "recent" | "usage" | "name" | "created"
 
 export interface AccountListQuery {
@@ -168,41 +169,53 @@ export class AccountRepository {
       WHERE owner_user_id = ? AND usage_percent >= 100 AND (reset_at IS NULL OR reset_at > ?)`)
       .all(this.ownerUserId, timestamp) as { account_id: string }[]
     const blockedSet = new Set(blockedRows.map((row) => row.account_id))
+    const customProviderRows = this.db.prepare("SELECT id,enabled FROM custom_providers WHERE owner_user_id=?")
+      .all(this.ownerUserId) as Array<{ id: string; enabled: number }>
+    const customProviderEnabled = new Map(customProviderRows.map((row) => [`custom:${row.id}`, Boolean(row.enabled)]))
 
-    const usageRows = this.db.prepare(`SELECT account_id, kind, usage_percent FROM quota_windows WHERE owner_user_id = ?`)
-      .all(this.ownerUserId) as Array<{ account_id: string; kind: string; usage_percent: number | null }>
-    const usageByAccount = new Map<string, Array<{ kind: string; usagePercent: number | null }>>()
+    const usageRows = this.db.prepare(`SELECT account_id, kind, usage_percent, reset_at FROM quota_windows WHERE owner_user_id = ?`)
+      .all(this.ownerUserId) as Array<{ account_id: string; kind: string; usage_percent: number | null; reset_at: string | null }>
+    const usageByAccount = new Map<string, Array<{ kind: string; usagePercent: number | null; resetAt: string | null }>>()
     for (const row of usageRows) {
       const list = usageByAccount.get(row.account_id) ?? []
-      list.push({ kind: row.kind, usagePercent: row.usage_percent })
+      list.push({ kind: row.kind, usagePercent: row.usage_percent, resetAt: row.reset_at })
       usageByAccount.set(row.account_id, list)
     }
 
     const classify = (account: AccountRecord) => {
-      const banned = account.disabledReason === "XAI_ACCOUNT_BANNED"
+      const providerReady = account.poolType === "opencode-go"
+        ? account.adminState === "ENABLED" && account.authState === "VALID" && account.subscriptionState === "ACTIVE" && account.billingGuard === "VERIFIED_GO_ONLY" && account.useBalance === false
+        : account.poolType.startsWith("custom:")
+          ? customProviderEnabled.get(account.poolType) === true && account.adminState === "ENABLED" && account.authState === "VALID" && account.subscriptionState === "ACTIVE"
+          : account.adminState === "ENABLED" && account.authState === "VALID"
+      const routeState = deriveAccountRouteStatus(account, usageByAccount.get(account.id) ?? [], Date.parse(timestamp), {
+        providerReady,
+        providerUnavailableReason: account.poolType.startsWith("custom:") && customProviderEnabled.get(account.poolType) !== true
+          ? "自定义 Provider 已停用"
+          : null,
+      }).routeState
+      const banned = routeState === "UPSTREAM_BANNED"
       const disabled = account.adminState === "DISABLED"
-      const authError = account.authState === "AUTH_ERROR" || account.authState === "REAUTH_REQUIRED"
+      const authError = routeState === "CREDENTIAL_INVALID"
       const overQuota = (accountPrimaryUsagePercent(usageByAccount.get(account.id) ?? []) ?? 0) >= 100 || blockedSet.has(account.id)
-      const readyBase = account.adminState === "ENABLED"
-        && account.authState === "VALID"
-        && account.subscriptionState === "ACTIVE"
-        && !banned
-      const ready = readyBase && !overQuota
-      const inactive = !readyBase
-      const blocked = readyBase && overQuota
-      return { banned, disabled, authError, overQuota, ready, inactive, blocked }
+      const ready = routeState === "READY"
+      const blocked = routeState === "TEMP_BLOCKED"
+      const inactive = !ready && !blocked
+      return { routeState, banned, disabled, authError, overQuota, ready, inactive, blocked }
     }
 
     if (status !== "all") {
       accounts = accounts.filter((account) => {
         const flags = classify(account)
         if (status === "ready") return flags.ready
-        if (status === "blocked") return flags.blocked
-        if (status === "disabled") return flags.disabled
-        if (status === "banned") return flags.banned
-        if (status === "auth_error") return flags.authError
-        if (status === "inactive") return flags.inactive
-        if (status === "over_quota") return flags.overQuota
+        if (status === "temp_blocked") return flags.routeState === "TEMP_BLOCKED"
+        if (status === "spending_blocked") return flags.routeState === "SPENDING_BLOCKED"
+        if (status === "credential_invalid") return flags.routeState === "CREDENTIAL_INVALID"
+        if (status === "admin_disabled") return flags.routeState === "ADMIN_DISABLED"
+        if (status === "upstream_banned") return flags.routeState === "UPSTREAM_BANNED"
+        if (status === "subscription_inactive") return flags.routeState === "SUBSCRIPTION_INACTIVE"
+        if (status === "billing_unsafe") return flags.routeState === "BILLING_UNSAFE"
+        if (status === "unavailable") return flags.routeState === "UNAVAILABLE"
         return true
       })
     }
