@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { javascript } from "@codemirror/lang-javascript";
-import { Braces, Check, Copy, Info, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Copy, Info, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -124,7 +124,6 @@ export function CustomProvidersPage() {
         ) : <EmptyState title="还没有自定义 Provider" description="创建后添加一个或多个 API Key，即可进入现有模型路由和账号调度。" action={<Button size="sm" onClick={() => setEditing(null)}><Plus />新建 Provider</Button>} />}
       </Panel> : null}
 
-      <BalanceDocumentation />
       {editing !== undefined ? <ProviderEditor provider={editing} onClose={() => setEditing(undefined)} onSaved={async () => { setEditing(undefined); await resource.refresh(); }} /> : null}
       {keyProvider ? <KeyManager provider={keyProvider} onClose={() => setKeyProvider(null)} adminFetch={adminFetch} /> : null}
     </>
@@ -271,7 +270,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
           </div>
         </EditorSection>
         <EditorSection title="响应解析" description="函数接收上游响应 JSON，并返回标准余额结构。">
-          <CodeEditor label="Extractor 函数" description="函数接收上游响应并返回 { remaining, total?, isValid?, type?, unit? }，详见页面底部协议说明。" language="javascript" value={extractor} onChange={setExtractor} height="280px" />
+          <CodeEditor label="Extractor 函数" description="函数接收上游响应并返回 { remaining, total?, isValid?, type?, unit? }，详见下方余额查询说明。" language="javascript" value={extractor} onChange={setExtractor} height="280px" />
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" size="sm" disabled={balanceProbe.testing} onClick={() => void runBalanceProbe()}>{balanceProbe.testing ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}测试余额接口</Button>
             {balanceProbe.error ? <span className="text-xs text-destructive" role="alert">{balanceProbe.error}</span> : null}
@@ -279,6 +278,9 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
           {balanceProbe.result ? <div className="mt-3"><DebugResultView result={{ kind: "balance", payload: balanceProbe.result }} onFillModels={() => undefined} /></div> : null}
         </EditorSection>
       </> : null}
+      {balanceEnabled ? <EditorSection title="余额查询说明" description="请求配置、Extractor 返回值与额度周期映射。">
+        <BalanceDocumentationContent />
+      </EditorSection> : null}
       {balanceEnabled ? <EditorSection title="余额查询示例" description="余额查询的 Extractor 写法；请按上游实际响应调整字段。">
         <div className="grid gap-4 lg:grid-cols-2">
           <ExampleBlock title="通用余额 Extractor" code={EXTRACTOR_EXAMPLE} />
@@ -507,7 +509,7 @@ function ExampleBlock({ title, code }: { title: string; code: string }) {
   </div>;
 }
 
-function BalanceDocumentation() {
+function BalanceDocumentationContent() {
   const kinds = useMemo(() => [
     ["permanent", "永久余额", "不自动恢复；remaining ≤ 0 时退出调度。"],
     ["5h", "5 小时窗口", "映射为 FIVE_HOUR。建议返回 resetAt。"],
@@ -515,18 +517,17 @@ function BalanceDocumentation() {
     ["monthly", "月窗口", "映射为 MONTHLY。"],
     ["period", "自定义周期", "映射为 CUSTOM_PERIOD；可用 resetAt 或 periodSeconds。"],
   ], []);
-  return <Panel className="mt-4" title="余额脚本协议" description="请求模板支持 {{baseUrl}} 与 {{apiKey}}；extractor 在无网络、无模块加载能力的受限上下文中执行，单次最多 100ms。" action={<Braces className="size-4 text-muted-foreground" />}>
-    <div className="grid gap-5 p-4 sm:p-5 xl:grid-cols-2">
+  return <div className="grid gap-5 lg:grid-cols-2">
       <div className="space-y-3 text-xs leading-5 text-muted-foreground">
         <p className="font-medium text-foreground">请求配置</p>
-        <p><code className="text-foreground">request.url</code> 必填；可在任意位置使用模板变量。<code className="text-foreground">method</code> 支持 GET/POST，<code className="text-foreground">headers</code> 是字符串键值对象，<code className="text-foreground">body</code> 可为字符串或 JSON。</p>
+        <p><code className="text-foreground">request.url</code> 必填；可在任意位置使用模板变量 <code className="text-foreground">{"{{baseUrl}}"}</code> 与 <code className="text-foreground">{"{{apiKey}}"}</code>。<code className="text-foreground">method</code> 支持 GET/POST，<code className="text-foreground">headers</code> 是字符串键值对象，<code className="text-foreground">body</code> 可为字符串或 JSON。</p>
         <p className="font-medium text-foreground">Extractor 返回值</p>
         <p><code className="text-foreground">isValid</code> 可选，严格等于 false 表示 Key 无效；<code className="text-foreground">remaining</code> 必填；<code className="text-foreground">total</code> 可选，用于计算 usagePercent；<code className="text-foreground">unit</code> 用于展示；<code className="text-foreground">type</code> 指定周期。</p>
         <p>同时返回多个窗口时使用 <code className="text-foreground">windows: [...]</code>。每项字段与单窗口相同。调度会在任一有效窗口耗尽时暂时排除该 Key。</p>
+        <p>extractor 在无网络、无模块加载能力的受限上下文中执行，单次最多 100ms。</p>
       </div>
       <div className="overflow-hidden rounded-md border">
         {kinds.map(([kind, label, description]) => <div key={kind} className="grid grid-cols-[90px_100px_1fr] gap-2 border-b px-3 py-2 text-xs last:border-b-0"><code>{kind}</code><span>{label}</span><span className="text-muted-foreground">{description}</span></div>)}
       </div>
-    </div>
-  </Panel>;
+  </div>;
 }
