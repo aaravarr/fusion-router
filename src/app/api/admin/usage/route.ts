@@ -1,73 +1,16 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../_auth";
-import { estimateUsageCost } from "@/server/model-pricing";
 import { listPoolTypeOptions } from "@/server/pool-type-options";
+import { addRow, createBucket, finalizeBucketCost, finalizeSummary, type UsageBucket, type UsageBucketRow, type UsageSummary } from "@/server/usage-stats";
 
 export const runtime = "nodejs";
 
-interface BucketRow {
-  started_at: string;
-  status: number | null;
-  ok: number | null;
-  latency_ms: number | null;
-  local_prep_ms: number | null;
-  first_token_ms: number | null;
-  model: string | null;
-  account_id: string | null;
-  account_name: string | null;
-  api_key_id: string | null;
-  api_key_prefix: string | null;
-  prompt_tokens: number | null;
-  completion_tokens: number | null;
-  total_tokens: number | null;
-  cached_tokens: number | null;
-  reasoning_tokens: number | null;
-  stream: number | null;
-}
-
-interface Bucket {
-  key: string;
-  label: string;
-  requests: number;
-  ok: number;
-  fail: number;
-  latencySum: number;
-  firstTokenSum: number;
-  firstTokenCount: number;
-  tpsSampleCount: number;
-  genLatencySum: number;
-  genTokensForTps: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  cachedTokens: number;
-  reasoningTokens: number;
-  costUsd: number;
-  poolType?: string;
-}
-
-interface UsageSummary {
-  requests: number;
-  ok: number;
-  fail: number;
-  avgLatencyMs: number;
-  avgFirstTokenMs: number | null;
-  avgTps: number;
-  tpsSampleCount: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  cachedTokens: number;
-  reasoningTokens: number;
-  costUsd: number;
-}
-
 interface UsageStats {
   summary: UsageSummary;
-  byTime: Bucket[];
-  byModel: Bucket[];
-  byAccount: Bucket[];
-  byKey: Bucket[];
+  byTime: UsageBucket[];
+  byModel: UsageBucket[];
+  byAccount: UsageBucket[];
+  byKey: UsageBucket[];
 }
 
 const MAX_BUCKETS = 1000;
@@ -109,56 +52,6 @@ function bucketLabel(bucketStartMs: number, gran: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function createBucket(key: string, label: string): Bucket {
-  return { key, label, requests: 0, ok: 0, fail: 0, latencySum: 0, firstTokenSum: 0, firstTokenCount: 0, tpsSampleCount: 0, genLatencySum: 0, genTokensForTps: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, reasoningTokens: 0, costUsd: 0 };
-}
-
-function addRow(bucket: Bucket, row: BucketRow): void {
-  bucket.requests += 1;
-  const ok = row.ok === 1;
-  if (ok) bucket.ok += 1; else bucket.fail += 1;
-  if (row.latency_ms != null) bucket.latencySum += row.latency_ms;
-  if (row.first_token_ms != null) { bucket.firstTokenSum += row.first_token_ms; bucket.firstTokenCount += 1 }
-  const localPrep = row.local_prep_ms ?? 0;
-  const firstToken = row.first_token_ms ?? 0;
-  const genLatency = (row.latency_ms ?? 0) - localPrep - firstToken;
-  if (row.latency_ms != null && genLatency >= 50) {
-    bucket.tpsSampleCount += 1;
-    bucket.genLatencySum += genLatency;
-    bucket.genTokensForTps += (row.completion_tokens ?? 0) + (row.reasoning_tokens ?? 0);
-  }
-  bucket.promptTokens += row.prompt_tokens ?? 0;
-  bucket.completionTokens += row.completion_tokens ?? 0;
-  bucket.totalTokens += row.total_tokens ?? 0;
-  bucket.cachedTokens += row.cached_tokens ?? 0;
-  bucket.reasoningTokens += row.reasoning_tokens ?? 0;
-  const cost = estimateUsageCost({
-    model: row.model,
-    promptTokens: row.prompt_tokens,
-    completionTokens: row.completion_tokens,
-    cachedTokens: row.cached_tokens,
-  }).costUsd;
-  if (cost != null) bucket.costUsd += cost;
-}
-
-function finalizeSummary(b: Bucket, latencyCount: number): UsageSummary {
-  return {
-    requests: b.requests,
-    ok: b.ok,
-    fail: b.fail,
-    avgLatencyMs: latencyCount > 0 ? b.latencySum / latencyCount : 0,
-    avgFirstTokenMs: b.firstTokenCount > 0 ? b.firstTokenSum / b.firstTokenCount : null,
-    avgTps: b.tpsSampleCount > 0 && b.genLatencySum > 0 ? b.genTokensForTps / (b.genLatencySum / 1000) : 0,
-    tpsSampleCount: b.tpsSampleCount,
-    promptTokens: b.promptTokens,
-    completionTokens: b.completionTokens,
-    totalTokens: b.totalTokens,
-    cachedTokens: b.cachedTokens,
-    reasoningTokens: b.reasoningTokens,
-    costUsd: b.costUsd,
-  };
-}
-
 export function GET(request: Request): Response {
   const user = requireSession(request);
   if (user instanceof Response) return user;
@@ -185,7 +78,7 @@ export function GET(request: Request): Response {
   if (accountId) { conditions.push("account_id = ?"); params.push(accountId) }
  if (apiKeyId) { conditions.push("api_key_id = ?"); params.push(apiKeyId) }
   if (poolType) { conditions.push("account_id IN (SELECT id FROM accounts WHERE owner_user_id = ? AND pool_type = ?)"); params.push(user.id, poolType) }
-  const rows = db.prepare(`SELECT started_at,status,ok,latency_ms,local_prep_ms,first_token_ms,model,account_id,account_name,api_key_id,api_key_prefix,prompt_tokens,completion_tokens,total_tokens,cached_tokens,reasoning_tokens,stream FROM gateway_requests WHERE ${conditions.join(" AND ")}`).all(...params) as BucketRow[];
+  const rows = db.prepare(`SELECT started_at,status,ok,latency_ms,local_prep_ms,first_token_ms,model,account_id,account_name,api_key_id,api_key_prefix,prompt_tokens,completion_tokens,total_tokens,cached_tokens,reasoning_tokens,stream FROM gateway_requests WHERE ${conditions.join(" AND ")}`).all(...params) as UsageBucketRow[];
   const apiKeyNames = new Map(
     (db.prepare("SELECT id,name FROM api_keys WHERE owner_user_id=?").all(user.id) as Array<{ id: string; name: string }>)
       .map((key) => [key.id, key.name] as const),
@@ -197,10 +90,10 @@ export function GET(request: Request): Response {
 
   const bucketSeconds = granularitySeconds(gran);
   const bucketMs = bucketSeconds * 1000;
-  const byTimeMap = new Map<number, Bucket>();
-  const byModel = new Map<string, Bucket>();
-  const byAccount = new Map<string, Bucket>();
-  const byKey = new Map<string, Bucket>();
+  const byTimeMap = new Map<number, UsageBucket>();
+  const byModel = new Map<string, UsageBucket>();
+  const byAccount = new Map<string, UsageBucket>();
+  const byKey = new Map<string, UsageBucket>();
   const summary = createBucket("summary", "汇总");
   let latencyCount = 0;
 
@@ -236,6 +129,9 @@ export function GET(request: Request): Response {
     if (!byTimeMap.has(t)) byTimeMap.set(t, createBucket(String(t), bucketLabel(t, gran)));
   }
   const byTime = [...byTimeMap.entries()].sort((a, b) => a[0] - b[0]).map(([, bucket]) => bucket);
+
+  const allBuckets = [summary, ...byTime, ...byModel.values(), ...byAccount.values(), ...byKey.values()]
+  for (const bucket of allBuckets) finalizeBucketCost(bucket, db)
 
   const data: UsageStats = {
     summary: finalizeSummary(summary, latencyCount),
