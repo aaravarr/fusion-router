@@ -38,21 +38,6 @@ const DEFAULT_EXTRACTOR = `function(response) {
 const JSON_EDITOR_EXTENSIONS = [json()];
 const JAVASCRIPT_EDITOR_EXTENSIONS = [javascript()];
 
-const CURL_CHAT_EXAMPLE = `curl http://localhost:13600/v1/chat/completions \\
-  -H "Authorization: Bearer <网关 API Key>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"<上游模型 ID>","messages":[{"role":"user","content":"你好"}]}'`;
-const CURL_RESPONSES_EXAMPLE = `curl http://localhost:13600/v1/responses \\
-  -H "Authorization: Bearer <网关 API Key>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"<上游模型 ID>","input":"你好"}'`;
-const MODELS_RESPONSE_EXAMPLE = `{
-  "object": "list",
-  "data": [
-    { "id": "gpt-4o-mini", "object": "model" },
-    { "id": "claude-sonnet-4.5", "object": "model" }
-  ]
-}`;
 const EXTRACTOR_EXAMPLE = `function(response) {
   return { isValid: response.is_active !== false, remaining: response.balance, total: response.total, type: "permanent", unit: "USD" };
 }`;
@@ -294,17 +279,12 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
           {balanceProbe.result ? <div className="mt-3"><DebugResultView result={{ kind: "balance", payload: balanceProbe.result }} onFillModels={() => undefined} /></div> : null}
         </EditorSection>
       </> : null}
-      <EditorSection title="代码示例" description="保存 Provider 并添加 API Key 后，即可通过网关 OpenAI 兼容接口调用。">
+      {balanceEnabled ? <EditorSection title="余额查询示例" description="余额查询的 Extractor 写法；请按上游实际响应调整字段。">
         <div className="grid gap-4 lg:grid-cols-2">
-          <ExampleBlock title="Chat Completions" code={CURL_CHAT_EXAMPLE} />
-          <ExampleBlock title="Responses" code={CURL_RESPONSES_EXAMPLE} />
-          <ExampleBlock title="/models 响应格式" code={MODELS_RESPONSE_EXAMPLE} />
-          {balanceEnabled ? <>
-            <ExampleBlock title="余额 Extractor 简例" code={EXTRACTOR_EXAMPLE} />
-            <ExampleBlock title="DeepSeek 余额 Extractor 示例" code={DEEPSEEK_BALANCE_EXAMPLE} />
-          </> : null}
+          <ExampleBlock title="通用余额 Extractor" code={EXTRACTOR_EXAMPLE} />
+          <ExampleBlock title="DeepSeek 余额 Extractor" code={DEEPSEEK_BALANCE_EXAMPLE} />
         </div>
-      </EditorSection>
+      </EditorSection> : null}
       {error ? <p className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">{error}</p> : null}
     </div>
     <DialogFooter className="m-0 shrink-0 rounded-none border-t bg-background px-5 py-4 sm:px-6"><Button variant="outline" onClick={onClose} disabled={saving}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? <LoaderCircle className="animate-spin" /> : null}保存 Provider</Button></DialogFooter>
