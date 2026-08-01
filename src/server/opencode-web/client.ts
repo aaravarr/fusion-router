@@ -121,7 +121,7 @@ export class OpenCodeWebClient {
     const route = /src\/routes\/workspace\/\[id\]\/go\/index\.tsx[\s\S]{0,700}?import\([\s\S]*?"(\.\/index-[^"]+\.js)"/.exec(manifest)?.[1]
     if (!route) throw new OpenCodeWebError("OpenCode Go route asset was not found", "PROTOCOL")
     const chunk = await this.fetchText(new URL(route, `${BASE}${entry}`).toString())
-    const action = /createServerReference\("([a-f0-9]{64})"\);\s*const\s+\w+\s*=\s*action\(\1,\s*"go\.providerRouting\.set"\)/.exec(chunk)?.[1]
+    const action = /createServerReference\("([a-f0-9]{64})"\);\s*const\s+\w+\s*=\s*action\(\w+,\s*"go\.providerRouting\.set"\)/.exec(chunk)?.[1]
     if (!action) throw new OpenCodeWebError("OpenCode go.providerRouting.set action was not found", "PROTOCOL")
     cachedProviderRoutingAction = action
     return action
