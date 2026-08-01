@@ -1496,12 +1496,30 @@ export function remapXaiOutputItemForCodex(item: unknown, ctx?: CodexToolContext
   });
 }
 
+function ensureReasoningSummaryForCodex(item: unknown): unknown {
+  if (!isObj(item) || String(item.type || '').toLowerCase() !== 'reasoning') return item;
+  let text = '';
+  if (Array.isArray(item.content)) {
+    for (const part of item.content) {
+      if (!isObj(part) || typeof part.text !== 'string') continue;
+      const partType = String(part.type || '');
+      if (partType === 'reasoning_text' || partType === 'summary_text' || partType === 'output_text') text += part.text;
+    }
+  }
+  if (!text && typeof item.text === 'string') text = item.text;
+  if (!text) return item;
+  const summary = Array.isArray(item.summary) ? item.summary : [];
+  const hasText = summary.some((p) => isObj(p) && typeof p.text === 'string' && p.text.length > 0);
+  if (hasText) return item;
+  return { ...item, summary: [{ type: 'summary_text', text }] };
+}
+
 /** Remap a full xAI Responses JSON payload for Codex. */
 export function remapXaiResponsesJsonForCodex(payload: unknown, ctx?: CodexToolContext): unknown {
   if (!isObj(payload)) return payload;
   const out = { ...payload };
   if (Array.isArray(out.output)) {
-    out.output = out.output.map((it) => remapXaiOutputItemForCodex(it, ctx));
+    out.output = out.output.map((it) => ensureReasoningSummaryForCodex(remapXaiOutputItemForCodex(it, ctx)));
   }
   return out;
 }
@@ -1547,6 +1565,10 @@ export function transformXaiResponsesSseForCodex(
   const suppressArgIds = new Set<string>();
   // Track x_search custom_tool_call ids remapped to web_search_call (drop custom input events).
   const serverSearchIds = new Set<string>();
+  // OpenCode-style upstreams stream reasoning as reasoning_text.*; Codex expects
+  // the reasoning_summary_text.* lifecycle plus a populated summary on completion.
+  const reasoningTexts = new Map<string, string>();
+  const reasoningPartsAdded = new Set<string>();
 
   const enqueueEvent = (controller: ReadableStreamDefaultController<Uint8Array>, eventName: string, data: Obj) => {
     const ev = eventName || (typeof data.type === 'string' ? data.type : 'message');
@@ -1604,6 +1626,47 @@ export function transformXaiResponsesSseForCodex(
 
               const evType = String(parsed.type || '');
 
+              if (evType === 'response.reasoning_text.delta') {
+                const itemId = String(parsed.item_id || 'idx_' + (parsed.output_index ?? 0));
+                const delta = typeof parsed.delta === 'string' ? parsed.delta : '';
+                if (delta) reasoningTexts.set(itemId, (reasoningTexts.get(itemId) || '') + delta);
+                if (!reasoningPartsAdded.has(itemId)) {
+                  reasoningPartsAdded.add(itemId);
+                  enqueueEvent(controller, 'response.reasoning_summary_part.added', {
+                    type: 'response.reasoning_summary_part.added',
+                    item_id: itemId,
+                    output_index: parsed.output_index,
+                    summary_index: 0,
+                    part: { type: 'summary_text', text: '' },
+                  });
+                }
+                enqueueEvent(controller, 'response.reasoning_summary_text.delta', {
+                  ...parsed,
+                  type: 'response.reasoning_summary_text.delta',
+                  summary_index: 0,
+                });
+                continue;
+              }
+              if (evType === 'response.reasoning_text.done') {
+                const itemId = String(parsed.item_id || 'idx_' + (parsed.output_index ?? 0));
+                const text = typeof parsed.text === 'string' ? parsed.text : (reasoningTexts.get(itemId) || '');
+                reasoningTexts.set(itemId, text);
+                enqueueEvent(controller, 'response.reasoning_summary_text.done', {
+                  ...parsed,
+                  type: 'response.reasoning_summary_text.done',
+                  summary_index: 0,
+                  text,
+                });
+                enqueueEvent(controller, 'response.reasoning_summary_part.done', {
+                  type: 'response.reasoning_summary_part.done',
+                  item_id: itemId,
+                  output_index: parsed.output_index,
+                  summary_index: 0,
+                  part: { type: 'summary_text', text },
+                });
+                continue;
+              }
+
               // Drop custom_tool_call_input.* for remapped x_search server tools.
               if (
                 (evType === 'response.custom_tool_call_input.delta' ||
@@ -1627,6 +1690,11 @@ export function transformXaiResponsesSseForCodex(
 
               const afterItem = isObj(remapped.item) ? (remapped.item as Obj) : null;
               const serverSearch = isServerSearchRemap(beforeItem, afterItem);
+              if (afterItem && String(remapped.type || '') === 'response.output_item.done' && String(afterItem.type || '').toLowerCase() === 'reasoning') {
+                const itemId = String(afterItem.id || parsed.item_id || '');
+                const accumulated = reasoningTexts.get(itemId) || '';
+                if (accumulated) afterItem.summary = [{ type: 'summary_text', text: accumulated }];
+              }
 
               if (beforeItem && afterItem) {
                 const beforeType = String(beforeItem.type || '').toLowerCase();
