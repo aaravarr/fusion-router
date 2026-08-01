@@ -501,6 +501,57 @@ describe("gateway logging", () => {
     expect(String(row.transform_summary || "")).not.toContain("chat-normalize")
   })
 
+  it("opencode-go strips responses server search tools before forwarding", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    let sent: Record<string, unknown> = {}
+    const fetcher = vi.fn().mockImplementation(async (_url, init) => {
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({ id: "ok", output: [] })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.3-codex",
+        input: "hello",
+        tools: [
+          { type: "function", name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
+          { type: "web_search" },
+          { type: "x_search" },
+        ],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    const tools = sent.tools as Array<{ type?: string; name?: string }>
+    expect(tools.map((t) => t.type)).toEqual(["function"])
+    expect(tools[0].name).toBe("read_file")
+    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(row.transform_summary || "")).toContain("strip:web_search+x_search")
+  })
+
+  it("xai-grok keeps client-declared server search tools", async () => {
+    const { db, apiKey, credentials, hasher } = setup("xai-grok")
+    let sent: Record<string, unknown> = {}
+    const fetcher = vi.fn().mockImplementation(async (_url, init) => {
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({ id: "ok", output: [] })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "grok-4.5",
+        input: "hello",
+        tools: [{ type: "web_search" }],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect((sent.tools as Array<{ type?: string }>).map((t) => t.type)).toEqual(["web_search"])
+  })
+
+
   it("free Grok without client server tools may chat-fallback on foreign previous_response_id", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok")
     let sentUrl = ""

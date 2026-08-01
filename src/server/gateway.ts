@@ -533,6 +533,39 @@ export class GatewayService {
               }
             } catch { /* keep original body */ }
           }
+          // OpenCode Go rejects Responses server search tools (web_search/x_search).
+          if (
+            processResponses
+            && selection.account.poolType === "opencode-go"
+            && attemptUpstreamBytes
+          ) {
+            try {
+              const current = JSON.parse(new TextDecoder().decode(attemptUpstreamBytes)) as { tools?: unknown; tool_choice?: unknown }
+              if (Array.isArray(current.tools)) {
+                const kept = current.tools.filter((tool) => {
+                  if (!tool || typeof tool !== "object") return true
+                  const type = String((tool as { type?: unknown }).type || "").toLowerCase()
+                  return type !== "web_search" && type !== "x_search"
+                })
+                if (kept.length !== current.tools.length) {
+                  if (kept.length === 0) delete current.tools
+                  else current.tools = kept
+                  if (current.tool_choice && typeof current.tool_choice === "object") {
+                    const choice = current.tool_choice as { name?: unknown; function?: { name?: unknown } }
+                    const choiceName = String(choice.name || (choice.function && choice.function.name) || "").toLowerCase()
+                    if (choiceName === "web_search" || choiceName === "x_search") current.tool_choice = "auto"
+                  }
+                  attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(current))
+                  requestBodyJson = current
+                  const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+                  if (!parts.some((p) => p.startsWith("strip:"))) parts.splice(1, 0, "strip:web_search+x_search")
+                  routeMeta.transformSummary = parts.join(" | ")
+                  this.db.prepare("UPDATE gateway_requests SET transform_summary=?, process_mode=process_mode WHERE id=?")
+                    .run(routeMeta.transformSummary, requestId)
+                }
+              }
+            } catch { /* keep original body */ }
+          }
           const target = provider.buildForwardTarget({
             method: request.method, endpoint: attemptEndpoint, model: model ?? "", upstreamModel,
             body: attemptUpstreamBytes, headers: request.headers,
