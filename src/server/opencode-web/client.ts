@@ -98,7 +98,7 @@ export class OpenCodeWebClient {
 
   async setChinaProviders(authCookie: string, workspaceId: string, enabled: boolean): Promise<void> {
     const actionId = await this.discoverProviderRoutingAction()
-    const body = new URLSearchParams({ workspaceID: workspaceId, useChinaProviders: String(enabled) })
+    const body = new URLSearchParams({ workspaceID: workspaceId, useChinaProviders: enabled ? "on" : "" })
     const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}`, {
       method: "POST",
       headers: this.headers(authCookie, `${BASE}/workspace/${workspaceId}/go`, "application/x-www-form-urlencoded"),
