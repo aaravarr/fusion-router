@@ -418,9 +418,9 @@ describe("gateway logging", () => {
   })
   it("processed free xAI responses do not inject server tools", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok")
-    let sent: any = null
+    let sent: Record<string, unknown> = {}
     const fetcher = vi.fn().mockImplementation(async (_url, init) => {
-      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array))
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
       return Response.json({ id: "ok", output: [], usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 } })
     })
     const req = new Request("http://localhost/v1/responses", {
@@ -431,7 +431,7 @@ describe("gateway logging", () => {
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
     expect(response.status).toBe(200)
     expect(sent.tools).toBeUndefined()
-    const row = db.prepare("SELECT inbound_endpoint,upstream_endpoint,process_mode,route_mode,converted,transform_summary,prompt_tokens,completion_tokens,total_tokens FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as any
+    const row = db.prepare("SELECT inbound_endpoint,upstream_endpoint,process_mode,route_mode,converted,transform_summary,prompt_tokens,completion_tokens,total_tokens FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
     expect(row.inbound_endpoint).toBe("v1/responses")
     expect(row.upstream_endpoint).toBe("responses")
     expect(row.process_mode).toBe("processed")
@@ -446,9 +446,9 @@ describe("gateway logging", () => {
 
   it("raw responses does not inject default server tools", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok")
-    let sent: any = null
+    let sent: Record<string, unknown> = {}
     const fetcher = vi.fn().mockImplementation(async (_url, init) => {
-      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array))
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
       return Response.json({ id: "ok", output: [] })
     })
     const req = new Request("http://localhost/raw/v1/responses", {
@@ -459,17 +459,52 @@ describe("gateway logging", () => {
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses", { raw: true })
     expect(response.status).toBe(200)
     expect(sent.tools).toBeUndefined()
-    const row = db.prepare("SELECT inbound_endpoint,upstream_endpoint,process_mode,route_mode,converted,transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as any
+    const row = db.prepare("SELECT inbound_endpoint,upstream_endpoint,process_mode,route_mode,converted,transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
     expect(row.inbound_endpoint).toBe("raw/v1/responses")
     expect(row.upstream_endpoint).toBe("responses")
     expect(row.process_mode).toBe("raw")
     expect(row.converted).toBe(0)
     expect(String(row.transform_summary || "")).toContain("raw")
   })
+  it("raw chat completions keeps original body and skips normalization", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    let sentUrl = ""
+    let sent: Record<string, unknown> = {}
+    const fetcher = vi.fn().mockImplementation(async (url, init) => {
+      sentUrl = String(url)
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({
+        id: "chatcmpl_raw",
+        object: "chat.completion",
+        model: "gpt-5.3-codex",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      })
+    })
+    const body = { model: "gpt-5.3-codex", messages: [{ role: "user", content: "hello" }], custom_flag: true }
+    const req = new Request("http://localhost/raw/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions", { raw: true })
+    expect(response.status).toBe(200)
+    expect(sentUrl).toContain("/chat/completions")
+    expect(sent).toEqual(body)
+    const row = db.prepare("SELECT inbound_endpoint,upstream_endpoint,process_mode,route_mode,converted,transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.inbound_endpoint).toBe("raw/v1/chat/completions")
+    expect(row.upstream_endpoint).toBe("chat/completions")
+    expect(row.process_mode).toBe("raw")
+    expect(row.route_mode).toBe("chat")
+    expect(row.converted).toBe(0)
+    expect(String(row.transform_summary || "")).toContain("raw")
+    expect(String(row.transform_summary || "")).not.toContain("chat-normalize")
+  })
+
   it("free Grok without client server tools may chat-fallback on foreign previous_response_id", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok")
     let sentUrl = ""
-    const fetcher = vi.fn().mockImplementation(async (url, init) => {
+    const fetcher = vi.fn().mockImplementation(async (url) => {
       sentUrl = String(url)
       return Response.json({
         id: "chatcmpl_1",

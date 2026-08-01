@@ -23,8 +23,9 @@ interface AccountsResponse { items?: { id: string; poolType?: string; poolLabel?
 function normalizeEndpointLabel(value?: string | null): string {
   if (!value) return "—"
   const v = value.replace(/^\/?v1\//, "").replace(/^raw\/v1\//, "raw/")
-  if (v.includes("chat/completions")) return "chat"
-  if (v.includes("responses")) return value.startsWith("raw/") || value.includes("raw/v1/") ? "raw/responses" : "responses"
+  const isRaw = value.startsWith("raw/") || value.includes("raw/v1/")
+  if (v.includes("chat/completions")) return isRaw ? "raw/chat" : "chat"
+  if (v.includes("responses")) return isRaw ? "raw/responses" : "responses"
   if (v.includes("messages")) return "messages"
   return v
 }

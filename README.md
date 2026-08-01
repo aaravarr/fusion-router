@@ -153,6 +153,12 @@ GET  /v1/models          — 聚合所有活跃 provider 的模型列表
 POST /v1/chat/completions
 POST /v1/responses
 POST /v1/messages
+
+前缀 /raw 的原生透传版本（不经过 Responses 管线，也不做协议转换）：
+POST /raw/v1/chat/completions
+POST /raw/v1/responses
+POST /raw/v1/messages
+GET  /raw/v1/models
 ```
 
 调用示例：
