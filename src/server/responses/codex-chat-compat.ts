@@ -320,8 +320,9 @@ export function buildCodexToolContextFromRequest(body: unknown): CodexToolContex
 }
 
 export function isCustomToolChatName(ctx: CodexToolContext | undefined, chatName: string): boolean {
-  if (!ctx) return chatName === 'apply_patch';
-  return ctx.customNames.has(chatName) || chatName === 'apply_patch';
+  // Decide from the tool shape the client actually declared; never assume
+  // apply_patch is custom when the request registered it as a function tool.
+  return ctx?.customNames.has(chatName) ?? false;
 }
 
 function parseToolSearchArgsObject(argumentsStr: string): Obj {

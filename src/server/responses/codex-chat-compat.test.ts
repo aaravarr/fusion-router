@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { chatCompletionToResponse, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex } from "./codex-chat-compat"
+import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex } from "./codex-chat-compat"
 
 describe("chat to Responses reasoning compatibility", () => {
   it("preserves reasoning in non-stream responses", () => {
@@ -14,6 +14,44 @@ describe("chat to Responses reasoning compatibility", () => {
     })
   })
 
+  it("keeps function apply_patch as function_call when declared as function", async () => {
+    const ctx = buildCodexToolContextFromRequest({
+      model: "deepseek-v4-flash",
+      input: "edit",
+      tools: [{ type: "function", name: "apply_patch", description: "patch", parameters: { type: "object", properties: {} } }],
+    })
+    const source = [
+      'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"apply_patch","status":"in_progress","arguments":""}}\n\n',
+      'event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":"{\"input\":\"diff\"}"}\n\n',
+      'event: response.output_item.done\ndata: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"apply_patch","status":"completed","arguments":"{\"input\":\"diff\"}"}}\n\n',
+      "data: [DONE]\n\n",
+    ]
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const value of source) controller.enqueue(new TextEncoder().encode(value))
+        controller.close()
+      },
+    })
+    const output = await new Response(transformXaiResponsesSseForCodex(stream, ctx)).text()
+    expect(output).toContain('"type":"function_call"')
+    expect(output).not.toContain('"type":"custom_tool_call"')
+    expect(output).toContain('"name":"apply_patch"')
+    expect(output).toContain('"type":"response.function_call_arguments.delta"')
+  })
+
+  it("converts custom apply_patch to custom_tool_call when declared as custom", async () => {
+    const ctx = buildCodexToolContextFromRequest({
+      model: "grok-4.5",
+      input: "edit",
+      tools: [{ type: "custom", name: "apply_patch", description: "patch" }],
+    })
+    expect(remapXaiResponsesJsonForCodex({
+      id: "resp_1",
+      output: [{ type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", status: "completed", arguments: "{\"input\":\"diff\"}" }],
+    }, ctx)).toMatchObject({
+      output: [{ type: "custom_tool_call", call_id: "call_1", name: "apply_patch", input: "diff" }],
+    })
+  })
   it("rewrites OpenCode reasoning_text stream events for Codex", async () => {
     const source = [
       'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"in_progress","summary":[]}}\n\n',
