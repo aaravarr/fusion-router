@@ -39,6 +39,7 @@ export interface Account {
   zenSubscriptionId?: string | null;
   hasManageSubscriptionButton?: boolean;
   useBalance?: boolean | null;
+  useChinaProviders?: boolean;
   workspaceId?: string | null;
   goKeyId?: string | null;
   credentialSource?: string | null;

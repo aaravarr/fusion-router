@@ -62,6 +62,7 @@ export interface AccountRecord {
   hasManageSubscriptionButton: boolean
   billingGuard: BillingGuard
   useBalance: boolean | null
+  useChinaProviders: boolean
   credentialVersion: number
   lastUsageCheckAt: string | null
   nextUsageCheckAt: string

@@ -22,6 +22,7 @@ export interface ParsedGoDashboard {
   zenSubscriptionId: string | null
   hasManageSubscriptionButton: boolean
   useBalance: boolean | null
+  useChinaProviders: boolean | null
   usage: ParsedUsage | null
 }
 
@@ -98,6 +99,7 @@ export function parseGoDashboard(html: string): ParsedGoDashboard {
   const goSubscriptionId = /liteSubscriptionID:"([^"]+)"/.exec(html)?.[1] ?? null
   const zenSubscriptionId = /subscriptionID:"([^"]+)"/.exec(html)?.[1] ?? null
   const subscribedText = html.includes("You are subscribed to OpenCode Go")
+  const chinaValue = /name="useChinaProviders"\s+value="(true|false)"/.exec(html)?.[1]
   return {
     subscriptionExists: subscribedText || Boolean(goSubscriptionId),
     goSubscriptionId,
@@ -105,6 +107,7 @@ export function parseGoDashboard(html: string): ParsedGoDashboard {
     zenSubscriptionId,
     hasManageSubscriptionButton: html.includes("Manage Subscription"),
     useBalance: balance === "true" || balance === "!0" ? true : balance === "false" || balance === "!1" ? false : null,
+    useChinaProviders: chinaValue === "true" ? true : chinaValue === "false" ? false : null,
     usage,
   }
 }

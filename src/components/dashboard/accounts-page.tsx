@@ -298,6 +298,28 @@ export function AccountsPage() {
       setBusyId(null);
     }
   }
+  async function setChinaProviders(account: Account, enabled: boolean) {
+    setBusyId(account.id);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const response = await adminFetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ chinaProviders: enabled }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "更新提供商路由失败");
+      if (payload?.account) setSelected(payload.account as Account);
+      setActionNotice(enabled ? "已启用部署在中国的模型" : "已关闭部署在中国的模型");
+      await resource.refresh();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "更新提供商路由失败");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+
 
   function toggleAccountSelection(accountId: string) {
     setSelectedIds((current) => {
@@ -667,6 +689,7 @@ export function AccountsPage() {
         onToggle={(account) => patchAccount(account, { adminState: account.adminState === "DISABLED" ? "ENABLED" : "DISABLED" })}
         onRefresh={refreshAccount}
         onDelete={deleteAccount}
+        onSetChinaProviders={setChinaProviders}
         busy={Boolean(selected && busyId === selected.id)}
       />
     </>
@@ -714,13 +737,14 @@ function ConnectorStep({ index, icon: Icon, title, description, children }: { in
   );
 }
 
-function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRefresh, onDelete, busy }: {
+function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRefresh, onDelete, onSetChinaProviders, busy }: {
   account: Account | null;
   onOpenChange: (open: boolean) => void;
   onPreferred: (account: Account) => Promise<void>;
   onToggle: (account: Account) => Promise<void>;
   onRefresh: (account: Account) => Promise<void>;
   onDelete: (account: Account) => Promise<void>;
+  onSetChinaProviders: (account: Account, enabled: boolean) => Promise<void>;
   busy: boolean;
 }) {
   const quotaKinds = account ? getPoolQuotaKinds(account.poolType) : ["fiveHour", "weekly", "monthly"];
@@ -763,6 +787,15 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                       <DetailRow label="订阅管理入口" value={account.hasManageSubscriptionButton ? "可用" : "未检测到"} />
                       <DetailRow label="Use balance" value={account.useBalance === false ? "已关闭" : account.useBalance === true ? "已开启（禁止路由）" : "未知（禁止路由）"} />
                     </div>
+                  </DetailSection>
+                  <DetailSection title="Provider 路由" description="控制 OpenCode Go 用于路由的提供商，是否启用部署在中国的模型。">
+                    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border bg-[#fafafa] px-3.5 py-3">
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium">启用部署在中国的模型</span>
+                        <span className="mt-1 block text-[11px] leading-4 text-muted-foreground">开启后模型路由可使用部署在中国的模型提供商。</span>
+                      </span>
+                      <input type="checkbox" className="size-4" checked={account.useChinaProviders === true} disabled={busy} onChange={(event) => void onSetChinaProviders(account, event.currentTarget.checked)} />
+                    </label>
                   </DetailSection>
                   <DetailSection title="连接信息">
                     <div className="divide-y rounded-md border">

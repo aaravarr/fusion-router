@@ -6,14 +6,14 @@ import { OpenCodeWebService } from "./service"
 import type { OpenCodeWebClient } from "./client"
 
 const encryptionKey = Buffer.alloc(32, 3).toString("base64")
-const dashboard = { subscriptionExists: true, goSubscriptionId: "sub_go_1", isZenSubscribed: false, zenSubscriptionId: null, hasManageSubscriptionButton: true, useBalance: false as boolean | null, usage: { FIVE_HOUR: { usagePercent: 10, resetInSeconds: 100 }, WEEKLY: { usagePercent: 20, resetInSeconds: 200 }, MONTHLY: { usagePercent: 30, resetInSeconds: 300 } } }
+const dashboard = { subscriptionExists: true, goSubscriptionId: "sub_go_1", isZenSubscribed: false, zenSubscriptionId: null, hasManageSubscriptionButton: true, useBalance: false as boolean | null, useChinaProviders: null, usage: { FIVE_HOUR: { usagePercent: 10, resetInSeconds: 100 }, WEEKLY: { usagePercent: 20, resetInSeconds: 200 }, MONTHLY: { usagePercent: 30, resetInSeconds: 300 } } }
 
 function setup() {
   const db = createDatabase(":memory:"); const now = new Date().toISOString()
   db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
     .run("owner", "owner", "owner", "Owner", "USER", "hash", now, now)
   const repository = new AccountRepository("owner", db, new SecretVault(encryptionKey))
-  const client = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_1", name: "OpenCode to API", key: "sk-go-secret", userId: "usr", email: "a@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard) } as unknown as OpenCodeWebClient
+  const client = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_1", name: "OpenCode to API", key: "sk-go-secret", userId: "usr", email: "a@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard), setChinaProviders: vi.fn().mockResolvedValue(undefined) } as unknown as OpenCodeWebClient
   return { db, repository, client, service: new OpenCodeWebService("owner", repository, client) }
 }
 
@@ -39,7 +39,7 @@ describe("OpenCodeWebService", () => {
     const { db, service } = setup(); await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_same" })
     const now = new Date().toISOString(); db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)").run("other", "other", "other", "Other", "USER", "hash", now, now)
     const otherRepo = new AccountRepository("other", db, new SecretVault(encryptionKey))
-    const otherClient = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_2", name: "OpenCode to API", key: "sk-other", userId: "u", email: "b@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard) } as unknown as OpenCodeWebClient
+    const otherClient = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_2", name: "OpenCode to API", key: "sk-other", userId: "u", email: "b@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard), setChinaProviders: vi.fn().mockResolvedValue(undefined) } as unknown as OpenCodeWebClient
     await expect(new OpenCodeWebService("other", otherRepo, otherClient).report({ authCookie: "another-browser-cookie", workspaceId: "wrk_same" })).rejects.toThrow(/already registered/)
   })
 

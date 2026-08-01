@@ -16,6 +16,7 @@ export interface OpenCodeWebClientOptions {
 }
 
 let cachedCreateAction: string | undefined
+let cachedProviderRoutingAction: string | undefined
 
 export class OpenCodeWebClient {
   private readonly fetcher: typeof globalThis.fetch
@@ -93,6 +94,37 @@ export class OpenCodeWebClient {
     })
     if (contentType) headers.set("Content-Type", contentType)
     return headers
+  }
+
+  async setChinaProviders(authCookie: string, workspaceId: string, enabled: boolean): Promise<void> {
+    const actionId = await this.discoverProviderRoutingAction()
+    const body = new URLSearchParams({ workspaceID: workspaceId, useChinaProviders: String(enabled) })
+    const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}`, {
+      method: "POST",
+      headers: this.headers(authCookie, `${BASE}/workspace/${workspaceId}/go`, "application/x-www-form-urlencoded"),
+      body,
+      redirect: "manual",
+      signal: AbortSignal.timeout(this.timeoutMs),
+    })
+    const flash = parseFlash(response.headers.get("set-cookie"))
+    const failed = response.status !== 302 || !flash || flash.error === true
+      || Boolean(flash.result && typeof flash.result === "object" && "error" in flash.result)
+    if (failed) throw new OpenCodeWebError(`OpenCode provider routing update failed (${response.status})`, response.status === 401 || response.status === 403 ? "AUTH" : "UPSTREAM")
+  }
+
+  private async discoverProviderRoutingAction(force = false): Promise<string> {
+    if (!force && cachedProviderRoutingAction) return cachedProviderRoutingAction
+    const home = await this.fetchText(`${BASE}/`)
+    const entry = /(?:src|href)="(\/_build\/assets\/entry-client-[^"]+\.js)"/.exec(home)?.[1]
+    if (!entry) throw new OpenCodeWebError("OpenCode client entry asset was not found", "PROTOCOL")
+    const manifest = await this.fetchText(`${BASE}${entry}`)
+    const route = /src\/routes\/workspace\/\[id\]\/go\/index\.tsx[\s\S]{0,700}?import\([\s\S]*?"(\.\/index-[^"]+\.js)"/.exec(manifest)?.[1]
+    if (!route) throw new OpenCodeWebError("OpenCode Go route asset was not found", "PROTOCOL")
+    const chunk = await this.fetchText(new URL(route, `${BASE}${entry}`).toString())
+    const action = /createServerReference\("([a-f0-9]{64})"\);\s*const\s+\w+\s*=\s*action\(\1,\s*"go\.providerRouting\.set"\)/.exec(chunk)?.[1]
+    if (!action) throw new OpenCodeWebError("OpenCode go.providerRouting.set action was not found", "PROTOCOL")
+    cachedProviderRoutingAction = action
+    return action
   }
 
   private async discoverCreateAction(force: boolean): Promise<string> {

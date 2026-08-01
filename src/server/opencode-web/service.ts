@@ -28,6 +28,8 @@ export class OpenCodeWebService {
       this.client.ensureManagedKey(input.authCookie, input.workspaceId),
       this.client.dashboard(input.authCookie, input.workspaceId),
     ])
+    // 账号录入时自动开启“部署在中国的模型”，失败不阻断录入主流程。
+    await this.client.setChinaProviders(input.authCookie, input.workspaceId, true).catch(() => undefined)
     const verified = dashboard.subscriptionExists && dashboard.useBalance === false
     const account = this.repository.upsertBrowserAccount({
       name: input.name,
@@ -44,6 +46,7 @@ export class OpenCodeWebService {
       hasManageSubscriptionButton: dashboard.hasManageSubscriptionButton,
       billingGuard: verified ? "VERIFIED_GO_ONLY" : dashboard.useBalance ? "PAYG_FALLBACK_ENABLED" : "UNVERIFIED",
       useBalance: dashboard.useBalance,
+      useChinaProviders: dashboard.useChinaProviders ?? true,
       usage: dashboard.usage,
     })
     if (verified) {
@@ -75,6 +78,7 @@ export class OpenCodeWebService {
         hasManageSubscriptionButton: dashboard.hasManageSubscriptionButton,
         billingGuard: verified ? "VERIFIED_GO_ONLY" : dashboard.useBalance ? "PAYG_FALLBACK_ENABLED" : "UNVERIFIED",
         useBalance: dashboard.useBalance,
+        ...(dashboard.useChinaProviders == null ? {} : { useChinaProviders: dashboard.useChinaProviders }),
         lastSyncedAt: syncedAt,
       })
       if (dashboard.usage) this.repository.updateUsage(accountId, dashboard.usage)
@@ -86,7 +90,21 @@ export class OpenCodeWebService {
       throw cause
     }
   }
+
+  async setChinaProviders(accountId: string, enabled: boolean) {
+    const account = this.repository.getCredential(accountId)
+    if (!account) throw new OpenCodeWebError("Account not found", "PROTOCOL")
+    try {
+      await this.client.setChinaProviders(account.authCookie, account.workspaceId, enabled)
+    } catch (cause) {
+      if (cause instanceof OpenCodeWebError && cause.code === "AUTH") this.repository.markAuthError(accountId, true)
+      throw cause
+    }
+    this.repository.updateState(accountId, { useChinaProviders: enabled })
+    return this.repository.get(accountId)
+  }
 }
+
 
 const services = new Map<string, OpenCodeWebService>()
 export function getOpenCodeWebService(ownerUserId: string): OpenCodeWebService {

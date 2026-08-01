@@ -22,7 +22,7 @@ function accountFromRow(row: Row): AccountRecord {
     subscriptionState: row.subscription_state as SubscriptionState, billingGuard: row.billing_guard as BillingGuard,
     goSubscriptionId: nullableString(row.go_subscription_id), isZenSubscribed: Boolean(row.is_zen_subscribed),
     zenSubscriptionId: nullableString(row.zen_subscription_id), hasManageSubscriptionButton: Boolean(row.has_manage_subscription_button),
-    useBalance: row.use_balance === null ? null : Boolean(row.use_balance), credentialVersion: Number(row.credential_version),
+    useBalance: row.use_balance === null ? null : Boolean(row.use_balance), useChinaProviders: Boolean(row.use_china_providers), credentialVersion: Number(row.credential_version),
     lastUsageCheckAt: nullableString(row.last_usage_check_at), nextUsageCheckAt: String(row.next_usage_check_at),
     lastSelectedAt: nullableString(row.last_selected_at), lastRequestAt: nullableString(row.last_request_at),
     lastSuccessAt: nullableString(row.last_success_at), lastLimitAt: nullableString(row.last_limit_at),
@@ -47,6 +47,7 @@ export interface UpsertBrowserAccountInput {
   hasManageSubscriptionButton?: boolean
   billingGuard: BillingGuard
   useBalance: boolean | null
+  useChinaProviders?: boolean | null
   usage: ParsedUsage | null
 }
 
@@ -423,24 +424,25 @@ export class AccountRepository {
         this.db.prepare(`UPDATE accounts SET name=COALESCE(?,name), email=?, auth_cookie_ciphertext=?, go_api_key_ciphertext=?, go_key_id=?,
           extension_version=COALESCE(?,extension_version), last_synced_at=?, auth_state='VALID', subscription_state=?,
           go_subscription_id=?, is_zen_subscribed=?, zen_subscription_id=?, has_manage_subscription_button=?, billing_guard=?, use_balance=?,
+          use_china_providers=?,
           credential_version=credential_version+1, last_usage_check_at=?, next_usage_check_at=?, updated_at=?
           WHERE id=? AND owner_user_id=?`).run(
           input.name ?? null, input.email ?? null, this.secretVault().encrypt(input.authCookie),
           this.secretVault().encrypt(input.goApiKey), input.goKeyId, input.extensionVersion ?? null, timestamp,
           input.subscriptionState, input.goSubscriptionId ?? null, Number(input.isZenSubscribed ?? false), input.zenSubscriptionId ?? null,
-          Number(input.hasManageSubscriptionButton ?? false), input.billingGuard, input.useBalance === null ? null : Number(input.useBalance),
+          Number(input.hasManageSubscriptionButton ?? false), input.billingGuard, input.useBalance === null ? null : Number(input.useBalance), Number(input.useChinaProviders ?? false),
           input.usage ? timestamp : null, nextUsage, timestamp, id, this.ownerUserId,
         )
       } else {
         const ordinal = Number((this.db.prepare("SELECT COALESCE(MAX(ordinal), -1) + 1 value FROM accounts WHERE owner_user_id=?").get(this.ownerUserId) as Row).value)
         this.db.prepare(`INSERT INTO accounts(id,owner_user_id,name,workspace_id,email,go_key_id,credential_source,extension_version,last_synced_at,
           auth_cookie_ciphertext,go_api_key_ciphertext,subscription_state,go_subscription_id,is_zen_subscribed,zen_subscription_id,
-          has_manage_subscription_button,billing_guard,use_balance,last_usage_check_at,next_usage_check_at,
-          ordinal,created_at,updated_at) VALUES(?,?,?,?,?,?,'BROWSER_EXTENSION',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          has_manage_subscription_button,billing_guard,use_balance,use_china_providers,last_usage_check_at,next_usage_check_at,
+          ordinal,created_at,updated_at) VALUES(?,?,?,?,?,?,'BROWSER_EXTENSION',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
           id, this.ownerUserId, input.name ?? input.email ?? input.workspaceId, input.workspaceId, input.email ?? null, input.goKeyId,
           input.extensionVersion ?? null, timestamp, this.secretVault().encrypt(input.authCookie), this.secretVault().encrypt(input.goApiKey),
           input.subscriptionState, input.goSubscriptionId ?? null, Number(input.isZenSubscribed ?? false), input.zenSubscriptionId ?? null,
-          Number(input.hasManageSubscriptionButton ?? false), input.billingGuard, input.useBalance === null ? null : Number(input.useBalance), input.usage ? timestamp : null,
+          Number(input.hasManageSubscriptionButton ?? false), input.billingGuard, input.useBalance === null ? null : Number(input.useBalance), Number(input.useChinaProviders ?? false), input.usage ? timestamp : null,
           nextUsage, ordinal, timestamp, timestamp,
         )
       }
@@ -457,7 +459,7 @@ export class AccountRepository {
     })()
   }
 
-  updateState(accountId: string, input: Partial<{ name: string; adminState: AdminState; authState: AuthState; subscriptionState: SubscriptionState; goSubscriptionId: string | null; isZenSubscribed: boolean; zenSubscriptionId: string | null; hasManageSubscriptionButton: boolean; billingGuard: BillingGuard; useBalance: boolean | null; maxConcurrency: number; lastSyncedAt: string; disabledReason: string | null; disabledAt: string | null; lastError: string | null }>): AccountRecord | null {
+  updateState(accountId: string, input: Partial<{ name: string; adminState: AdminState; authState: AuthState; subscriptionState: SubscriptionState; goSubscriptionId: string | null; isZenSubscribed: boolean; zenSubscriptionId: string | null; hasManageSubscriptionButton: boolean; billingGuard: BillingGuard; useBalance: boolean | null; useChinaProviders: boolean; maxConcurrency: number; lastSyncedAt: string; disabledReason: string | null; disabledAt: string | null; lastError: string | null }>): AccountRecord | null {
     const entries: [string, unknown][] = []
     if (input.name !== undefined) entries.push(["name", input.name])
     if (input.adminState !== undefined) entries.push(["admin_state", input.adminState])
@@ -469,6 +471,7 @@ export class AccountRepository {
     if (input.hasManageSubscriptionButton !== undefined) entries.push(["has_manage_subscription_button", Number(input.hasManageSubscriptionButton)])
     if (input.billingGuard !== undefined) entries.push(["billing_guard", input.billingGuard])
     if (input.useBalance !== undefined) entries.push(["use_balance", input.useBalance === null ? null : Number(input.useBalance)])
+    if (input.useChinaProviders !== undefined) entries.push(["use_china_providers", Number(input.useChinaProviders)])
     if (input.maxConcurrency !== undefined) entries.push(["max_concurrency", input.maxConcurrency])
     if (input.lastSyncedAt !== undefined) entries.push(["last_synced_at", input.lastSyncedAt])
     if (input.disabledReason !== undefined) entries.push(["disabled_reason", input.disabledReason])

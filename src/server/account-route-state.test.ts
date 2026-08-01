@@ -8,7 +8,7 @@ function account(overrides: Partial<AccountRecord> = {}): AccountRecord {
     email: null, goKeyId: "", credentialSource: "TEST", extensionVersion: null, lastSyncedAt: "2026-07-27T00:00:00.000Z",
     adminState: "ENABLED", authState: "VALID", subscriptionState: "ACTIVE", goSubscriptionId: null,
     isZenSubscribed: false, zenSubscriptionId: null, hasManageSubscriptionButton: false,
-    billingGuard: "UNVERIFIED", useBalance: null, credentialVersion: 1, lastUsageCheckAt: null,
+    billingGuard: "UNVERIFIED", useBalance: null, useChinaProviders: false, credentialVersion: 1, lastUsageCheckAt: null,
     nextUsageCheckAt: "2026-07-27T00:00:00.000Z", lastSelectedAt: null, lastRequestAt: null,
     lastSuccessAt: null, lastLimitAt: null, disabledReason: null, disabledAt: null, lastError: null,
     externalId: null, maxConcurrency: 1, ordinal: 0, createdAt: "2026-07-27T00:00:00.000Z",
