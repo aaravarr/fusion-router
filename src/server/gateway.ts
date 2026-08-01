@@ -488,11 +488,20 @@ export class GatewayService {
            attemptResponsesToChat = true
          }
        }
+       if (processResponses && selection.account.poolType === "opencode-go" && !attemptChatFallbackUsed) {
+         const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson)
+         attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(prepareChatRequestBody(convertedRequest.body)))
+         attemptToolContext = convertedRequest.toolContext
+         attemptEndpoint = "chat/completions"
+         attemptChatFallbackUsed = true
+         attemptResponsesRoute = "chat"
+         attemptResponsesRouteReason = "opencode_go_responses_to_chat"
+       }
        routeMeta.upstreamEndpoint = attemptEndpoint
        routeMeta.routeMode = processResponses ? attemptResponsesRoute : attemptResponsesToChat ? "responses" : routeMode
        routeMeta.routeReason = attemptResponsesRouteReason || (attemptResponsesToChat ? "custom_provider_responses_interface" : routeReason)
        routeMeta.converted = Number(attemptChatFallbackUsed || attemptResponsesToChat)
-       if (processResponses && attemptChatFallbackUsed && !chatFallbackUsed) routeMeta.transformSummary = "responses->chat | reason:custom_provider_chat_interface"
+       if (processResponses && attemptChatFallbackUsed && !chatFallbackUsed) routeMeta.transformSummary = "responses->chat | reason:" + (attemptResponsesRouteReason || "custom_provider_chat_interface")
        else if (processResponses && !attemptChatFallbackUsed && chatFallbackUsed) routeMeta.transformSummary = "responses-native | reason:custom_provider_responses_interface"
        else if (attemptResponsesToChat) routeMeta.transformSummary = "chat->responses | reason:custom_provider_responses_interface"
        let upstream: Response

@@ -501,12 +501,20 @@ describe("gateway logging", () => {
     expect(String(row.transform_summary || "")).not.toContain("chat-normalize")
   })
 
-  it("opencode-go strips responses server search tools before forwarding", async () => {
+  it("opencode-go responses routes through chat and keeps reasoning", async () => {
     const { db, apiKey, credentials, hasher } = setup()
+    let sentUrl = ""
     let sent: Record<string, unknown> = {}
-    const fetcher = vi.fn().mockImplementation(async (_url, init) => {
+    const chatChunks = [
+      'data: {"id":"chat_1","choices":[{"delta":{"reasoning_content":"step one"}}]}\n\n',
+      'data: {"id":"chat_1","choices":[{"delta":{"content":"answer"}}]}\n\n',
+      'data: {"id":"chat_1","choices":[{"delta":{"content":""},"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}]}\n\n',
+      "data: [DONE]\n\n",
+    ]
+    const fetcher = vi.fn().mockImplementation(async (url, init) => {
+      sentUrl = String(url)
       sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
-      return Response.json({ id: "ok", output: [] })
+      return new Response(chatChunks.join(""), { headers: { "content-type": "text/event-stream" } })
     })
     const req = new Request("http://localhost/v1/responses", {
       method: "POST",
@@ -523,35 +531,17 @@ describe("gateway logging", () => {
     })
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
     expect(response.status).toBe(200)
+    expect(sentUrl).toContain("/chat/completions")
     const tools = sent.tools as Array<{ type?: string; name?: string }>
     expect(tools.map((t) => t.type)).toEqual(["function"])
-    expect(tools[0].name).toBe("read_file")
-    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
-    expect(String(row.transform_summary || "")).toContain("strip:web_search+x_search")
-  })
-
-  it("opencode-go incomplete responses stream is wrapped with full lifecycle", async () => {
-    const { db, apiKey, credentials, hasher } = setup()
-    const blocks = [
-      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hello","response":{"id":"resp_1","model":"gpt-5.3-codex"}}\n\n',
-      'data: {"choices":[],"x-opencode-type":"inference-cost","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
-      "data: [DONE]\n\n",
-    ]
-    const fetcher = vi.fn().mockResolvedValue(new Response(blocks.join(""), { headers: { "content-type": "text/event-stream" } }))
-    const req = new Request("http://localhost/v1/responses", {
-      method: "POST",
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-5.3-codex", input: "hello", stream: true }),
-    })
-    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
-    expect(response.status).toBe(200)
+    expect(String(tools[0].name || "")).toBe("")
     const text = await response.text()
-    expect(text).toContain('"type":"response.created"')
-    expect(text).toContain('"type":"response.in_progress"')
-    expect(text).toContain('"type":"response.output_item.added"')
+    expect(text).toContain('"type":"response.reasoning_summary_text.delta"')
+    expect(text).toContain('"delta":"step one"')
     expect(text).toContain('"type":"response.completed"')
-    expect(text).toContain('"delta":"hello"')
-    expect(text).toContain('data: [DONE]')
+    expect(text).toContain('"type":"reasoning"')
+    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(row.transform_summary || "")).toContain("opencode_go_responses_to_chat")
   })
 
   it("xai-grok keeps client-declared server search tools", async () => {
