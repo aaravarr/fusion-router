@@ -530,6 +530,30 @@ describe("gateway logging", () => {
     expect(String(row.transform_summary || "")).toContain("strip:web_search+x_search")
   })
 
+  it("opencode-go incomplete responses stream is wrapped with full lifecycle", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const blocks = [
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hello","response":{"id":"resp_1","model":"gpt-5.3-codex"}}\n\n',
+      'data: {"choices":[],"x-opencode-type":"inference-cost","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+      "data: [DONE]\n\n",
+    ]
+    const fetcher = vi.fn().mockResolvedValue(new Response(blocks.join(""), { headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.3-codex", input: "hello", stream: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    const text = await response.text()
+    expect(text).toContain('"type":"response.created"')
+    expect(text).toContain('"type":"response.in_progress"')
+    expect(text).toContain('"type":"response.output_item.added"')
+    expect(text).toContain('"type":"response.completed"')
+    expect(text).toContain('"delta":"hello"')
+    expect(text).toContain('data: [DONE]')
+  })
+
   it("xai-grok keeps client-declared server search tools", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok")
     let sent: Record<string, unknown> = {}

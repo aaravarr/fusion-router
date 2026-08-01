@@ -18,6 +18,7 @@ import { resolveMirrorUrlForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
+import { normalizeOpenCodeGoResponsesSse } from "./responses/opencode-go-compat"
 
 export interface AccessCredential { accountId: string; goApiKey: string; credentialVersion: number }
 export interface CredentialProvider { get(ownerUserId: string, accountId: string): Promise<AccessCredential> }
@@ -703,7 +704,10 @@ export class GatewayService {
             }
           }
           let outStream: ReadableStream<Uint8Array> = teeAndCapture(rebuilt, onComplete)
-          if (attemptChatFallbackUsed) outStream = convertChatStreamToResponses(outStream, responsesModelHint, attemptToolContext)
+          if (selection.account.poolType === "opencode-go" && processResponses && !attemptChatFallbackUsed && !attemptResponsesToChat) {
+            outStream = normalizeOpenCodeGoResponsesSse(outStream)
+            if (attemptToolContext) outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
+          } else if (attemptChatFallbackUsed) outStream = convertChatStreamToResponses(outStream, responsesModelHint, attemptToolContext)
           else if (attemptResponsesToChat) outStream = responsesSseToChatStream(outStream)
           else if (processResponses && attemptToolContext) outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
           const headers = responseHeaders(upstream.headers)
