@@ -133,7 +133,6 @@ export function AccountsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [downloadInfo, setDownloadInfo] = useState<{ version: string | null; downloadUrl: string } | null>(null);
 
   useEffect(() => {
@@ -143,12 +142,6 @@ export function AccountsPage() {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [query]);
-
-  useEffect(() => {
-    if (!copiedKeyId) return;
-    const timer = window.setTimeout(() => setCopiedKeyId(null), 2000);
-    return () => window.clearTimeout(timer);
-  }, [copiedKeyId]);
 
   const listPath = useMemo(() => {
     const params = new URLSearchParams({
@@ -274,8 +267,7 @@ export function AccountsPage() {
       if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "获取原始 API Key 失败");
       const ok = await copyToClipboard(payload?.key);
       if (!ok) throw new Error("复制失败，请重试");
-      setCopiedKeyId(account.id);
-      setActionNotice("已复制原始 API Key");
+      setActionNotice("已复制原密钥");
       return true;
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : "获取原始 API Key 失败");
@@ -669,13 +661,7 @@ export function AccountsPage() {
                     </TableCell>
                     <TableCell className="font-mono text-[11px] text-muted-foreground">{formatDate(account.lastSyncedAt || account.lastUsageCheckAt)}</TableCell>
                     <TableCell className="px-4 text-right">
-                      <div className="flex items-center justify-end gap-0.5">
-                        {poolOf(account) !== "opencode-go" ? (
-                          <Button type="button" variant="ghost" size="icon-sm" onClick={() => void copyAccountCredential(account)} disabled={busyId === account.id} aria-label="复制原始 API Key" title="复制原始 API Key">
-                            {copiedKeyId === account.id ? <Check /> : <Copy />}
-                          </Button>
-                        ) : null}
-                        <DropdownMenu>
+                      <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon-sm" disabled={busyId === account.id} aria-label={`操作 ${account.name || account.id}`}>
                             <MoreHorizontal aria-hidden="true" />
@@ -683,11 +669,6 @@ export function AccountsPage() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onSelect={() => setSelected(account)}><Eye />查看详情</DropdownMenuItem>
-                          {poolOf(account) !== "opencode-go" ? (
-                            <DropdownMenuItem onSelect={() => void copyAccountCredential(account)} disabled={busyId === account.id}>
-                              {copiedKeyId === account.id ? <Check /> : <Copy />}复制原始 API Key
-                            </DropdownMenuItem>
-                          ) : null}
                           <DropdownMenuItem onSelect={() => void setPreferred(account)}><Star />设为优先账号</DropdownMenuItem>
                           <DropdownMenuSeparator />
                           {account.routeState !== "UPSTREAM_BANNED" && account.routeState !== "CREDENTIAL_INVALID" ? <DropdownMenuItem onSelect={() => void patchAccount(account, { adminState: account.adminState === "DISABLED" ? "ENABLED" : "DISABLED" })}>
@@ -699,7 +680,6 @@ export function AccountsPage() {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      </div>
                     </TableCell>
                   </TableRow>
                 );
@@ -877,12 +857,12 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                 <DetailSection title="连接信息">
                   <div className="mb-2.5 flex items-center justify-between gap-3 rounded-md border bg-[#fafafa] px-3.5 py-2.5">
                     <span className="min-w-0">
-                      <span className="block text-sm font-medium">原始 API Key</span>
-                      <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">复制账号导入时使用的原始 api_key。</span>
+                      <span className="block text-sm font-medium">原始密钥</span>
+                      <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">复制账号导入时使用的原始密钥。</span>
                       {copyState === "error" && copyError ? <span className="mt-1 block text-[11px] leading-4 text-destructive">{copyError}</span> : null}
                     </span>
                     <Button type="button" variant="outline" size="sm" onClick={() => void handleCopyCredential()} disabled={busy || copyState === "busy"} className="shrink-0">
-                      {copyState === "copied" ? <Check /> : <Copy />}{copyState === "copied" ? "已复制" : "复制"}
+                      {copyState === "copied" ? <Check /> : <Copy />}{copyState === "copied" ? "已复制" : "复制原密钥"}
                     </Button>
                   </div>
                   <div className="divide-y rounded-md border">
