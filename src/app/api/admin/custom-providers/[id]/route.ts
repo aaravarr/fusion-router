@@ -43,7 +43,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     }
     return provider ? Response.json({ provider, warnings }) : Response.json({ error: { type: "not_found" } }, { status: 404 })
   } catch (cause) {
-    return Response.json({ error: { type: "custom_provider_update_failed", message: cause instanceof Error ? cause.message : "更新失败" } }, { status: 400 })
+    const message = cause instanceof Error ? cause.message : "更新失败"
+    const status = message.startsWith("slug_conflict") ? 409 : 400
+    const friendly = message.startsWith("slug_conflict") ? message.slice("slug_conflict: ".length) : message
+    return Response.json({ error: { type: "custom_provider_update_failed", message: friendly } }, { status })
   }
 }
 

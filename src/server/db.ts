@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { ensureMasterKey, getDatabasePath } from "./bootstrap"
 import { initializeSystemSettings } from "./settings"
+import { slugifyProviderName } from "./slug"
 
 export type AppDatabase = Database.Database
 
@@ -287,6 +288,7 @@ CREATE TABLE IF NOT EXISTS custom_providers (
   id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  slug TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   base_url TEXT NOT NULL,
   interface_type TEXT NOT NULL CHECK(interface_type IN ('chat', 'responses')),
@@ -295,7 +297,8 @@ CREATE TABLE IF NOT EXISTS custom_providers (
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(owner_user_id, name)
+  UNIQUE(owner_user_id, name),
+  UNIQUE(owner_user_id, slug)
 );
 CREATE INDEX IF NOT EXISTS custom_providers_owner_idx ON custom_providers(owner_user_id, created_at);
 
@@ -312,6 +315,7 @@ CREATE TABLE IF NOT EXISTS response_conversations (
   continuity_key TEXT NOT NULL UNIQUE,
   opaque_items_json TEXT NOT NULL DEFAULT '[]',
   messages_json TEXT NOT NULL DEFAULT '[]',
+  reasoning_items_json TEXT NOT NULL DEFAULT '[]',
   preferred_mode TEXT,
   updated_at TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -333,8 +337,26 @@ export function createDatabase(filename: string): AppDatabase {
   ensureCurrentQuotaColumns(db)
   ensureResponseConversationColumns(db)
   ensureCurrentImportJobColumns(db)
+  ensureCustomProviderSlugColumn(db)
   db.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
   return db
+}
+
+function ensureCustomProviderSlugColumn(db: AppDatabase): void {
+  const cols = new Set((db.prepare("PRAGMA table_info(custom_providers)").all() as { name: string }[]).map((column) => column.name))
+  if (!cols.has("slug")) db.exec("ALTER TABLE custom_providers ADD COLUMN slug TEXT NOT NULL DEFAULT ''")
+  // Backfill older rows that were created before the slug column existed.
+  const rows = db.prepare("SELECT id, owner_user_id, name FROM custom_providers WHERE slug = ''").all() as Array<{ id: string; owner_user_id: string; name: string }>
+  for (const row of rows) {
+    const base = slugifyProviderName(row.name)
+    let slug = base
+    let suffix = 2
+    while (db.prepare("SELECT 1 FROM custom_providers WHERE owner_user_id=? AND slug=? AND id<>?").get(row.owner_user_id, slug, row.id)) {
+      slug = `${base}-${suffix++}`
+    }
+    db.prepare("UPDATE custom_providers SET slug=? WHERE id=?").run(slug, row.id)
+  }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS custom_providers_slug_idx ON custom_providers(owner_user_id, slug)")
 }
 
 function ensurePoolTypeColumn(db: AppDatabase): void {
@@ -384,6 +406,7 @@ function ensureResponseConversationColumns(db: AppDatabase): void {
     continuity_key TEXT NOT NULL UNIQUE,
     opaque_items_json TEXT NOT NULL DEFAULT '[]',
     messages_json TEXT NOT NULL DEFAULT '[]',
+    reasoning_items_json TEXT NOT NULL DEFAULT '[]',
     preferred_mode TEXT,
     updated_at TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -392,6 +415,7 @@ function ensureResponseConversationColumns(db: AppDatabase): void {
   if (!cols.has("messages_json")) db.exec("ALTER TABLE response_conversations ADD COLUMN messages_json TEXT NOT NULL DEFAULT '[]'")
   if (!cols.has("opaque_items_json")) db.exec("ALTER TABLE response_conversations ADD COLUMN opaque_items_json TEXT NOT NULL DEFAULT '[]'")
   if (!cols.has("preferred_mode")) db.exec("ALTER TABLE response_conversations ADD COLUMN preferred_mode TEXT")
+  if (!cols.has("reasoning_items_json")) db.exec("ALTER TABLE response_conversations ADD COLUMN reasoning_items_json TEXT NOT NULL DEFAULT '[]'")
   db.exec("CREATE INDEX IF NOT EXISTS response_conversations_updated_idx ON response_conversations(updated_at DESC)")
 }
 function ensureCurrentGatewayRequestColumns(db: AppDatabase): void {

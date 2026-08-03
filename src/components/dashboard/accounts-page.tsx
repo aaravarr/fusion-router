@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, PaginationBar, StatsStrip, formatDate } from "./page-kit";
 import { QuotaForecastPanel } from "./quota-forecast-panel";
-import { AccountBadges, BillingSafetyBadge, getPoolLabel, getPoolQuotaKinds, getQuota, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
+import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
 import type { Account } from "./types";
@@ -108,29 +108,6 @@ type TokenImportSpec = {
 
 function poolOf(account: Account) {
   return account.poolType || "opencode-go";
-}
-
-/** Slugify a provider display name into a short unique key, e.g. "DeepSeek Official" -> "deepseek-official". */
-function slugifyName(name: string): string {
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return slug || name;
-}
-
-/**
- * Compact a workspace id for display: custom pools render the provider slug
- * instead of the long `custom:<uuid>` segment and the trailing ids are
- * shortened, while non-custom ids stay untouched. The full raw value is kept
- * in the title attribute for copy/debugging.
- */
-function displayWorkspaceId(account: Account): string {
-  const workspaceId = account.workspaceId;
-  if (!workspaceId) return account.id || "";
-  const segments = workspaceId.split("_");
-  if (segments.length < 3 || !segments[0].startsWith("custom:")) return workspaceId;
-  const ownerId = segments[1].slice(0, 8);
-  const accountId = segments[2].slice(0, 8);
-  const poolSegment = slugifyName(account.poolLabel || account.poolType || "custom");
-  return `${poolSegment}_${ownerId}_${accountId}`;
 }
 
 export function AccountsPage() {
@@ -654,7 +631,7 @@ export function AccountsPage() {
                           {account.name || account.email || "未命名账号"}
                           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                         </span>
-                        <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground" title={account.workspaceId || account.id}>{displayWorkspaceId(account)}</span>
+                        <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground" title={account.workspaceId || account.id}>{displayWorkspaceId(account.poolType, account.poolLabel, account.workspaceId, account.id)}</span>
                       </Button>
                     </TableCell>
                     <TableCell><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /></TableCell>
@@ -826,7 +803,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
         {account ? (
           <>
             <DialogHeader className="border-b px-5 py-4">
-              <div className="min-w-0 pr-8"><DialogTitle className="truncate" title={account.name || account.email || "未命名账号"}>{account.name || account.email || "未命名账号"}</DialogTitle><DialogDescription className="mt-1 truncate font-mono text-[11px]" title={account.workspaceId || account.id}>{displayWorkspaceId(account)}</DialogDescription></div>
+              <div className="min-w-0 pr-8"><DialogTitle className="truncate" title={account.name || account.email || "未命名账号"}>{account.name || account.email || "未命名账号"}</DialogTitle><DialogDescription className="mt-1 truncate font-mono text-[11px]" title={account.workspaceId || account.id}>{displayWorkspaceId(account.poolType, account.poolLabel, account.workspaceId, account.id)}</DialogDescription></div>
             </DialogHeader>
             <div className="scrollbar-thin max-h-[calc(88dvh-160px)] space-y-5 overflow-y-auto px-5 py-5">
               <div className="flex flex-wrap gap-2"><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /><AccountBadges account={account} /><BillingSafetyBadge account={account} /></div>
@@ -870,7 +847,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                   </DetailSection>
                   <DetailSection title="连接信息">
                     <div className="divide-y rounded-md border">
-                      <DetailRow label="Workspace" value={displayWorkspaceId(account)} mono title={account.workspaceId || account.id} />
+                      <DetailRow label="Workspace" value={displayWorkspaceId(account.poolType, account.poolLabel, account.workspaceId, account.id)} mono title={account.workspaceId || account.id} />
                       <DetailRow label="Go Key ID" value={account.goKeyId || "未知"} mono />
                       <DetailRow label="插件版本" value={account.extensionVersion || "未记录"} mono />
                       <DetailRow label="最近同步" value={formatDate(account.lastSyncedAt)} mono />
@@ -881,7 +858,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
               ) : (
                 <DetailSection title="连接信息">
                   <div className="divide-y rounded-md border">
-                    <DetailRow label="号池类型" value={getPoolLabel(account.poolType)} />
+                    <DetailRow label="号池类型" value={getPoolLabel(account.poolType, account.poolLabel)} title={account.poolLabel || account.poolType || undefined} />
                     <DetailRow label="凭据状态" value={account.authState === "VALID" ? "有效" : account.authState || "未知"} />
                     <DetailRow label="路由状态" value={account.routeState || "未知"} />
                     {account.routeReason ? <DetailRow label="状态原因" value={account.routeReason} /> : null}

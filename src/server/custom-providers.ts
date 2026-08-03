@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { slugifyProviderName } from "./slug"
 import type { AppDatabase } from "./db"
 import { getDatabase } from "./db"
 import type { PoolType } from "./types"
@@ -22,6 +23,7 @@ export interface CustomProviderRecord {
   ownerUserId: string
   poolType: PoolType
   name: string
+  slug: string
   description: string
   baseUrl: string
   interfaceType: CustomProviderInterface
@@ -33,7 +35,7 @@ export interface CustomProviderRecord {
 }
 
 type ProviderRow = {
-  id: string; owner_user_id: string; name: string; description: string; base_url: string
+  id: string; owner_user_id: string; name: string; slug: string; description: string; base_url: string
   interface_type: CustomProviderInterface; models_json: string | null; balance_config_json: string | null
   enabled: number; created_at: string; updated_at: string
 }
@@ -60,6 +62,7 @@ function fromRow(row: ProviderRow): CustomProviderRecord {
     ownerUserId: row.owner_user_id,
     poolType: customPoolType(row.id),
     name: row.name,
+    slug: row.slug,
     description: row.description,
     baseUrl: row.base_url,
     interfaceType: row.interface_type,
@@ -102,9 +105,11 @@ export class CustomProviderRepository {
   create(input: { name: string; description?: string; baseUrl: string; interfaceType: CustomProviderInterface; models?: string[] | null; balanceConfig?: CustomProviderBalanceConfig | null; enabled?: boolean }): CustomProviderRecord {
     const id = randomUUID()
     const timestamp = nowIso()
-    this.db.prepare(`INSERT INTO custom_providers(id,owner_user_id,name,description,base_url,interface_type,models_json,balance_config_json,enabled,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(
-      id, this.ownerUserId, input.name.trim(), input.description?.trim() ?? "", normalizeBaseUrl(input.baseUrl), input.interfaceType,
+    const name = input.name.trim()
+    const slug = this.uniqueSlug(name)
+    this.db.prepare(`INSERT INTO custom_providers(id,owner_user_id,name,slug,description,base_url,interface_type,models_json,balance_config_json,enabled,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, this.ownerUserId, name, slug, input.description?.trim() ?? "", normalizeBaseUrl(input.baseUrl), input.interfaceType,
       JSON.stringify(normalizeModels(input.models)), input.balanceConfig ? JSON.stringify(input.balanceConfig) : null,
       Number(input.enabled ?? true), timestamp, timestamp,
     )
@@ -112,9 +117,24 @@ export class CustomProviderRepository {
     return this.get(id)!
   }
 
+  /** Resolve a unique slug for a provider name under this owner, throwing on conflict. */
+  private uniqueSlug(name: string, excludeId?: string): string {
+    const slug = slugifyProviderName(name)
+    const conflict = this.db.prepare("SELECT 1 FROM custom_providers WHERE owner_user_id=? AND slug=? AND (? IS NULL OR id<>?)")
+      .get(this.ownerUserId, slug, excludeId ?? null, excludeId ?? null)
+    if (conflict) {
+      throw new Error(`slug_conflict: 名称 "${name}" 生成的唯一键 "${slug}" 已被其他 Provider 使用，请更换名称`)
+    }
+    return slug
+  }
+
   update(id: string, input: Partial<{ name: string; description: string; baseUrl: string; interfaceType: CustomProviderInterface; models: string[] | null; balanceConfig: CustomProviderBalanceConfig | null; enabled: boolean }>): CustomProviderRecord | null {
     const entries: Array<[string, unknown]> = []
-    if (input.name !== undefined) entries.push(["name", input.name.trim()])
+    if (input.name !== undefined) {
+      const name = input.name.trim()
+      entries.push(["name", name])
+      entries.push(["slug", this.uniqueSlug(name, id)])
+    }
     if (input.description !== undefined) entries.push(["description", input.description.trim()])
     if (input.baseUrl !== undefined) entries.push(["base_url", normalizeBaseUrl(input.baseUrl)])
     if (input.interfaceType !== undefined) entries.push(["interface_type", input.interfaceType])

@@ -9,13 +9,39 @@ export const POOL_TYPE_META: Record<string, { label: string; description: string
   "kimi-code": { label: "Kimi Code", description: "Kimi Code 设备码 OAuth，5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
 };
 
-export function getPoolLabel(poolType?: string | null) {
-  return POOL_TYPE_META[poolType || "opencode-go"]?.label ?? poolType ?? "OpenCode Go";
-}
-
 export function getPoolQuotaKinds(poolType?: string | null) {
   if (poolType?.startsWith("custom:")) return ["permanent", "fiveHour", "weekly", "monthly", "customPeriod"];
   return POOL_TYPE_META[poolType || "opencode-go"]?.quotaKinds ?? ["fiveHour", "weekly", "monthly"];
+}
+
+/** Slugify a provider display name into a stable unique key, e.g. "DeepSeek Official" -> "deepseek-official". */
+export function slugifyName(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || "custom";
+}
+
+/** Short fallback for a custom:<uuid> pool type with no label available. */
+function shortCustomId(poolType: string): string {
+  const id = poolType.startsWith("custom:") ? poolType.slice(7) : poolType;
+  return `custom-${(id || "x").slice(0, 8)}`;
+}
+
+/**
+ * Display label for a pool type. Custom pools always resolve to a readable
+ * value: the provider label when known (slugified), otherwise a short
+ * custom-<id> fallback — never the raw custom:<uuid> string.
+ */
+export function poolDisplayLabel(poolType?: string | null, label?: string | null): { text: string; title?: string } {
+  const type = poolType || "opencode-go";
+  if (type.startsWith("custom:")) {
+    if (label) return { text: slugifyName(label), title: label };
+    return { text: shortCustomId(type), title: type };
+  }
+  return { text: label ?? POOL_TYPE_META[type]?.label ?? type };
+}
+
+export function getPoolLabel(poolType?: string | null, label?: string | null) {
+  return poolDisplayLabel(poolType, label).text;
 }
 
 export function PoolTypeBadge({ poolType, label }: { poolType?: string | null; label?: string | null }) {
@@ -37,7 +63,7 @@ export function PoolTypeBadge({ poolType, label }: { poolType?: string | null; l
               : "border-info/20 bg-info-soft text-info"
       }`}
     >
-      {label ?? meta?.label ?? type}
+      {poolDisplayLabel(poolType, label).text}
     </Badge>
   );
 }
@@ -172,6 +198,21 @@ export function getQuota(account: Account, key: "permanent" | "fiveHour" | "week
   const legacyKey = key === "rolling24h" || key === "permanent" || key === "customPeriod" ? "fiveHour" : key;
   const legacy = account.quotaWindows?.[legacyKey] ?? account.quotas?.[legacyKey] ?? account[legacyKey];
   return legacy ?? null;
+}
+
+/**
+ * Compact a workspace id for display: custom pools render the provider slug
+ * instead of the long `custom:<uuid>` segment and trailing ids are shortened,
+ * while non-custom ids stay untouched.
+ */
+export function displayWorkspaceId(poolType: string | null | undefined, poolLabel: string | null | undefined, workspaceId: string | null | undefined, accountId?: string): string {
+  if (!workspaceId) return accountId || "";
+  const segments = workspaceId.split("_");
+  if (segments.length < 3 || !segments[0].startsWith("custom:")) return workspaceId;
+  const ownerId = segments[1].slice(0, 8);
+  const id = segments[2].slice(0, 8);
+  const poolSegment = poolLabel ? slugifyName(poolLabel) : shortCustomId(segments[0]);
+  return `${poolSegment}_${ownerId}_${id}`;
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {

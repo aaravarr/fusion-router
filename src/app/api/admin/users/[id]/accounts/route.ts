@@ -23,6 +23,6 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const providerUnavailableReason = account.poolType.startsWith("custom:") && !customEnabled
       ? "自定义 Provider 已停用"
       : provider ? "Provider 规则判定该账号不可参与路由" : "未找到对应的 Provider";
-    return { ...account, ...deriveAccountRouteStatus(account, accountWindows, Date.now(), { providerReady, providerUnavailableReason }), quotaWindows: accountWindows };
+    return { ...account, poolLabel: provider?.displayName ?? account.poolType, ...deriveAccountRouteStatus(account, accountWindows, Date.now(), { providerReady, providerUnavailableReason }), quotaWindows: accountWindows };
   }) });
 }

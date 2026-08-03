@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/chart";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
-import { PoolTypeBadge } from "./status-ui";
+import { getPoolLabel, PoolTypeBadge } from "./status-ui";
 import type { Bucket, UsageStats } from "./types";
 
 const palette = ["#0070f3", "#7928ca", "#0a7a3e", "#ab570a", "#ee0000", "#00a0a0", "#333", "#888"];
@@ -120,7 +120,7 @@ export function UsagePage() {
       ? [{ value: "all", label: "全部号池" }, ...apiPoolTypes.map((pool) => ({ value: pool.type, label: pool.label }))]
       : fallbackPoolTypeOptions;
     return poolType !== "all" && !base.some((option) => option.value === poolType)
-      ? [...base, { value: poolType, label: poolType }]
+      ? [...base, { value: poolType, label: getPoolLabel(poolType) }]
       : base;
   }, [apiPoolTypes, poolType]);
   const modelOptions = useMemo(() => {

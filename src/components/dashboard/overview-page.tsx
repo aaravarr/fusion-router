@@ -7,7 +7,7 @@ import { Bar, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts"
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, formatDate } from "./page-kit";
-import { StatusBadge } from "./status-ui";
+import { getPoolLabel, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import type { OverviewPayload, UsageStats } from "./types";
 
@@ -146,8 +146,7 @@ function Metric({ icon: Icon, label, value, note, tone }: { icon: typeof UsersRo
 }
 
 function PoolTypeStatCard({ poolType, counts }: { poolType: string; counts: { total: number; ready: number; blocked: number; inactive: number } }) {
-  const labels: Record<string, string> = { "opencode-go": "OpenCode Go", "openai": "OpenAI", "xai-grok": "xAI Grok", "kimi-code": "Kimi Code" };
-  const label = labels[poolType] ?? poolType;
+  const label = getPoolLabel(poolType);
   return (
     <div className="space-y-3 bg-white p-4">
       <div className="flex items-center justify-between">

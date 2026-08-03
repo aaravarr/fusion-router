@@ -46,6 +46,8 @@ export async function POST(request: Request) {
     return Response.json({ provider, keyCount: new AccountRepository(user.id, db).listByPoolType(provider.poolType).length, warnings }, { status: 201 })
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "创建 Provider 失败"
-    return Response.json({ error: { type: "custom_provider_create_failed", message } }, { status: message.includes("UNIQUE") ? 409 : 400 })
+    const status = message.includes("UNIQUE") || message.startsWith("slug_conflict") ? 409 : 400
+    const friendly = message.startsWith("slug_conflict") ? message.slice("slug_conflict: ".length) : message
+    return Response.json({ error: { type: "custom_provider_create_failed", message: friendly } }, { status })
   }
 }
