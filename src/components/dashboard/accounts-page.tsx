@@ -826,7 +826,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
         {account ? (
           <>
             <DialogHeader className="border-b px-5 py-4">
-              <div className="min-w-0 pr-8"><DialogTitle className="truncate" title={account.name || account.email || "未命名账号"}>{account.name || account.email || "未命名账号"}</DialogTitle><DialogDescription className="mt-1 truncate font-mono text-[11px]" title={account.workspaceId || account.id}>{account.workspaceId || account.id}</DialogDescription></div>
+              <div className="min-w-0 pr-8"><DialogTitle className="truncate" title={account.name || account.email || "未命名账号"}>{account.name || account.email || "未命名账号"}</DialogTitle><DialogDescription className="mt-1 truncate font-mono text-[11px]" title={account.workspaceId || account.id}>{displayWorkspaceId(account)}</DialogDescription></div>
             </DialogHeader>
             <div className="scrollbar-thin max-h-[calc(88dvh-160px)] space-y-5 overflow-y-auto px-5 py-5">
               <div className="flex flex-wrap gap-2"><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /><AccountBadges account={account} /><BillingSafetyBadge account={account} /></div>
@@ -870,7 +870,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                   </DetailSection>
                   <DetailSection title="连接信息">
                     <div className="divide-y rounded-md border">
-                      <DetailRow label="Workspace" value={account.workspaceId || "未知"} mono />
+                      <DetailRow label="Workspace" value={displayWorkspaceId(account)} mono title={account.workspaceId || account.id} />
                       <DetailRow label="Go Key ID" value={account.goKeyId || "未知"} mono />
                       <DetailRow label="插件版本" value={account.extensionVersion || "未记录"} mono />
                       <DetailRow label="最近同步" value={formatDate(account.lastSyncedAt)} mono />
@@ -912,8 +912,8 @@ function DetailSection({ title, description, children }: { title: string; descri
   return <section><div className="mb-2.5"><h3 className="text-xs font-medium text-foreground">{title}</h3>{description ? <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{description}</p> : null}</div>{children}</section>;
 }
 
-function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return <div className="grid gap-1 px-3 py-2.5 sm:grid-cols-[150px_minmax(0,1fr)]"><span className="text-xs text-muted-foreground">{label}</span><span className={`min-w-0 break-all text-sm sm:text-right ${mono ? "font-mono text-xs" : ""}`}>{value}</span></div>;
+function DetailRow({ label, value, mono, title }: { label: string; value: string; mono?: boolean; title?: string }) {
+  return <div className="grid gap-1 px-3 py-2.5 sm:grid-cols-[150px_minmax(0,1fr)]"><span className="text-xs text-muted-foreground">{label}</span><span className={`min-w-0 break-all text-sm sm:text-right ${mono ? "font-mono text-xs" : ""}`} title={title}>{value}</span></div>;
 }
 
 function Sub2ApiImportDialog({ open, poolType, onOpenChange, onCreated }: { open: boolean; poolType: string; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
