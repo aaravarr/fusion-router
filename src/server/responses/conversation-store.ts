@@ -17,11 +17,18 @@ export interface ConversationMessage {
   ts?: number
 }
 
+export interface ConversationReasoningItem {
+  reasoning_content: string
+  ts?: number
+  responseId?: string
+}
+
 export interface ConversationRecord {
   id: string
   continuityKey: string
   opaqueItems: unknown[]
   messages: ConversationMessage[]
+  reasoningItems: ConversationReasoningItem[]
   preferredMode: "responses" | "chat" | null
   updatedAt: string
   createdAt: string
@@ -172,7 +179,7 @@ function requestHasOpaqueItems(body: unknown): boolean {
 function loadConversation(db: AppDatabase, keys: string[]): ConversationRecord | null {
   if (!keys.length) return null
   const stmt = db.prepare(
-    "SELECT id, continuity_key, opaque_items_json, messages_json, preferred_mode, updated_at, created_at FROM response_conversations WHERE continuity_key = ?",
+    "SELECT id, continuity_key, opaque_items_json, messages_json, reasoning_items_json, preferred_mode, updated_at, created_at FROM response_conversations WHERE continuity_key = ?",
   )
   for (const key of keys) {
     const row = stmt.get(key) as
@@ -181,6 +188,7 @@ function loadConversation(db: AppDatabase, keys: string[]): ConversationRecord |
           continuity_key: string
           opaque_items_json: string
           messages_json: string | null
+          reasoning_items_json: string | null
           preferred_mode: string | null
           updated_at: string
           created_at: string
@@ -205,11 +213,27 @@ function loadConversation(db: AppDatabase, keys: string[]): ConversationRecord |
     } catch {
       messages = []
     }
+    let reasoningItems: ConversationReasoningItem[] = []
+    try {
+      const parsed = JSON.parse(row.reasoning_items_json || "[]")
+      if (Array.isArray(parsed)) {
+        reasoningItems = parsed
+          .filter((item): item is ConversationReasoningItem => !!item && typeof item === "object" && typeof (item as ConversationReasoningItem).reasoning_content === "string")
+          .map((item) => ({
+            reasoning_content: item.reasoning_content,
+            ts: typeof item.ts === "number" ? item.ts : undefined,
+            responseId: typeof item.responseId === "string" ? item.responseId : undefined,
+          }))
+      }
+    } catch {
+      reasoningItems = []
+    }
     return {
       id: row.id,
       continuityKey: row.continuity_key,
       opaqueItems,
       messages,
+      reasoningItems,
       preferredMode: row.preferred_mode === "chat" || row.preferred_mode === "responses" ? row.preferred_mode : null,
       updatedAt: row.updated_at,
       createdAt: row.created_at,
@@ -578,6 +602,74 @@ export function extractOpaqueItemsFromResponsePayload(payload: unknown): unknown
   return capOpaqueItems(out)
 }
 
+export function extractToolTurnReasoningFromResponsePayload(
+  payload: unknown,
+  responseId?: string,
+): ConversationReasoningItem[] {
+  if (!isObj(payload)) return []
+  const now = Date.now()
+  const out: ConversationReasoningItem[] = []
+
+  const isToolCallItem = (node: unknown): boolean => {
+    if (!isObj(node)) return false
+    const type = String(node.type || "").toLowerCase()
+    return (
+      type === "function_call" ||
+      type === "custom_tool_call" ||
+      type === "tool_search_call" ||
+      type.includes("tool_call")
+    )
+  }
+
+  const reasoningText = (node: unknown): string => {
+    if (!isObj(node)) return ""
+    let text = ""
+    if (Array.isArray(node.summary)) {
+      for (const part of node.summary) {
+        if (typeof part === "string") text += part
+        else if (isObj(part) && typeof part.text === "string") text += part.text
+      }
+    }
+    if (Array.isArray(node.content)) {
+      for (const part of node.content) {
+        if (typeof part === "string") text += part
+        else if (isObj(part) && typeof part.text === "string") text += part.text
+      }
+    }
+    if (typeof node.text === "string") text += node.text
+    return text
+  }
+
+  const walkOutput = (node: unknown): void => {
+    if (!node) return
+    if (Array.isArray(node)) {
+      for (const it of node) walkOutput(it)
+      return
+    }
+    if (!isObj(node)) return
+    if (Array.isArray(node.output)) {
+      const output = node.output
+      let hasToolCall = false
+      const found: ConversationReasoningItem[] = []
+      for (const item of output) {
+        if (!isObj(item)) continue
+        const type = String(item.type || "").toLowerCase()
+        if (isToolCallItem(item)) hasToolCall = true
+        if (type.includes("reasoning")) {
+          const text = reasoningText(item).trim()
+          if (text) found.push({ reasoning_content: text, ts: now, responseId })
+        }
+      }
+      if (hasToolCall && found.length) out.push(...found)
+      walkOutput(output)
+    }
+    if (isObj(node.response)) walkOutput(node.response)
+  }
+
+  walkOutput(payload)
+  return out
+}
+
 export function extractPlainMessagesFromInput(input: unknown): ConversationMessage[] {
   const items = Array.isArray(input) ? input : input != null ? [input] : []
   const out: ConversationMessage[] = []
@@ -616,6 +708,17 @@ export async function loadConversationMessages(
   return rec?.messages ? rec.messages.slice() : []
 }
 
+export async function loadConversationReasoning(
+  keys: string[],
+  db: AppDatabase = getDatabase(),
+): Promise<string[]> {
+  const rec = loadConversation(db, keys)
+  if (!rec) return []
+  return (rec.reasoningItems ?? [])
+    .map((item) => item.reasoning_content)
+    .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
+}
+
 export async function getConversationLineage(
   keys: string[],
   db: AppDatabase = getDatabase(),
@@ -640,6 +743,7 @@ export async function rememberConversationTurn(opts: {
   previousKeys?: string[]
   opaqueItems?: unknown[]
   messages?: ConversationMessage[]
+  reasoningItems?: ConversationReasoningItem[]
   preferredMode?: "responses" | "chat"
   db?: AppDatabase
 }): Promise<void> {
@@ -655,6 +759,24 @@ export async function rememberConversationTurn(opts: {
   const nextMessages = Array.isArray(opts.messages) && opts.messages.length
     ? [...prevMessages, ...opts.messages].slice(-40)
     : prevMessages
+  const mergedReasoning: ConversationReasoningItem[] = [
+    ...(existing?.reasoningItems ?? []),
+    ...(Array.isArray(opts.reasoningItems) ? opts.reasoningItems : []),
+  ]
+  const seenResponseIds = new Set<string>()
+  const nextReasoning: ConversationReasoningItem[] = []
+  for (const item of mergedReasoning) {
+    if (!item || typeof item.reasoning_content !== "string" || !item.reasoning_content.trim()) continue
+    const rid = item.responseId || ""
+    if (rid && seenResponseIds.has(rid)) continue
+    if (rid) seenResponseIds.add(rid)
+    nextReasoning.push({
+      reasoning_content: item.reasoning_content,
+      ts: typeof item.ts === "number" ? item.ts : undefined,
+      responseId: item.responseId,
+    })
+  }
+  const cappedReasoning = nextReasoning.slice(-40)
 
   let preferredMode: "responses" | "chat" | null = existing?.preferredMode ?? null
   if (opts.preferredMode === "chat" || preferredMode === "chat") preferredMode = "chat"
@@ -662,30 +784,33 @@ export async function rememberConversationTurn(opts: {
   else if (!preferredMode) preferredMode = "responses"
 
   const now = new Date().toISOString()
-  const id = existing?.id ?? randomUUID()
   const continuityKey = unique[0]
+  const id = existing && existing.continuityKey === continuityKey ? existing.id : randomUUID()
   const opaqueJson = JSON.stringify(opaque)
   const messagesJson = JSON.stringify(nextMessages)
+  const reasoningJson = JSON.stringify(cappedReasoning)
 
   db.prepare(
-    `INSERT INTO response_conversations(id, continuity_key, opaque_items_json, messages_json, preferred_mode, updated_at, created_at)
-     VALUES(?,?,?,?,?,?,?)
+    `INSERT INTO response_conversations(id, continuity_key, opaque_items_json, messages_json, reasoning_items_json, preferred_mode, updated_at, created_at)
+     VALUES(?,?,?,?,?,?,?,?)
      ON CONFLICT(continuity_key) DO UPDATE SET
        opaque_items_json=excluded.opaque_items_json,
        messages_json=excluded.messages_json,
+       reasoning_items_json=excluded.reasoning_items_json,
        preferred_mode=excluded.preferred_mode,
        updated_at=excluded.updated_at`,
-  ).run(id, continuityKey, opaqueJson, messagesJson, preferredMode, now, existing?.createdAt ?? now)
+  ).run(id, continuityKey, opaqueJson, messagesJson, reasoningJson, preferredMode, now, existing?.createdAt ?? now)
 
   for (const key of unique.slice(1, 6)) {
     db.prepare(
-      `INSERT INTO response_conversations(id, continuity_key, opaque_items_json, messages_json, preferred_mode, updated_at, created_at)
-       VALUES(?,?,?,?,?,?,?)
+      `INSERT INTO response_conversations(id, continuity_key, opaque_items_json, messages_json, reasoning_items_json, preferred_mode, updated_at, created_at)
+       VALUES(?,?,?,?,?,?,?,?)
        ON CONFLICT(continuity_key) DO UPDATE SET
          opaque_items_json=excluded.opaque_items_json,
          messages_json=excluded.messages_json,
+         reasoning_items_json=excluded.reasoning_items_json,
          preferred_mode=excluded.preferred_mode,
          updated_at=excluded.updated_at`,
-    ).run(randomUUID(), key, opaqueJson, messagesJson, preferredMode, now, now)
+    ).run(randomUUID(), key, opaqueJson, messagesJson, reasoningJson, preferredMode, now, now)
   }
 }

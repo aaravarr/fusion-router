@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex } from "./codex-chat-compat"
+import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex, responsesToChatCompletions } from "./codex-chat-compat"
 
 describe("chat to Responses reasoning compatibility", () => {
   it("preserves reasoning in non-stream responses", () => {
@@ -105,5 +105,52 @@ describe("chat to Responses reasoning compatibility", () => {
     expect(output).toContain('"delta":"step one"')
     expect(output).toContain('"type":"reasoning"')
     expect(output).toContain('"delta":"answer"')
+  })
+})
+
+
+describe("responses to chat reasoning replay", () => {
+  it("injects opts.reasoningItems onto the tool-call assistant message", () => {
+    const { body } = responsesToChatCompletions(
+      {
+        model: "deepseek-v4-flash",
+        input: [
+          { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
+          { type: "function_call_output", call_id: "call_1", output: "ok" },
+          { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+        ],
+      },
+      [],
+      { reasoningItems: [{ reasoning_content: "saved reasoning" }] },
+    )
+    const messages = body.messages as Array<Record<string, unknown>>
+    const assistant = messages.find((m) => m.role === "assistant" && Array.isArray(m.tool_calls))
+    expect(assistant).toBeTruthy()
+    expect(assistant?.reasoning_content).toBe("saved reasoning")
+  })
+
+  it("replays client-supplied reasoning items before tool calls", () => {
+    const { body } = responsesToChatCompletions({
+      model: "deepseek-v4-flash",
+      input: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "client reasoning" }] },
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: "ok" },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+      ],
+    })
+    const messages = body.messages as Array<Record<string, unknown>>
+    const assistant = messages.find((m) => m.role === "assistant" && Array.isArray(m.tool_calls))
+    expect(assistant?.reasoning_content).toBe("client reasoning")
+  })
+
+  it("does not consume reasoning queue when no tool call flushes", () => {
+    const { body } = responsesToChatCompletions(
+      { model: "deepseek-v4-flash", input: "hello" },
+      [],
+      { reasoningItems: [{ reasoning_content: "stale" }] },
+    )
+    const messages = body.messages as Array<Record<string, unknown>>
+    expect(messages.some((m) => typeof m.reasoning_content === "string")).toBe(false)
   })
 })

@@ -16,8 +16,10 @@ import {
 import {
   extractContinuityKeysFromRequest,
   extractPlainMessagesFromInput,
+  extractToolTurnReasoningFromResponsePayload,
   getConversationLineage,
   loadConversationMessages,
+  loadConversationReasoning,
   rememberConversationTurn,
   rewriteResponsesBodyForContinuity,
   sanitizeResponsesInputItems,
@@ -47,6 +49,7 @@ export interface PrepareResponsesMeta {
   convertedCustomCalls?: number
   droppedItems?: number
   historyCount?: number
+  reasoningItems: string[]
   route: ResponsesRouteMode
   routeReason?: string
   continuityKeys: string[]
@@ -115,6 +118,7 @@ export async function prepareResponsesRequestBody(
   const continuityKeys = extractContinuityKeysFromRequest(body)
   const userMessages = extractPlainMessagesFromInput(isObj(body) ? body.input : undefined)
   const lineage = await getConversationLineage(continuityKeys, db)
+  const reasoningItems = await loadConversationReasoning(continuityKeys, db)
 
   // PHASE 1: decide route on (possibly) tool-injected body, before heavy sanitize.
   let bodyForRoute: unknown = body
@@ -170,6 +174,7 @@ export async function prepareResponsesRequestBody(
         injectedTools,
         sanitized: false,
         rewritten: false,
+        reasoningItems,
         route: "chat",
         routeReason,
         continuityKeys,
@@ -201,7 +206,7 @@ export async function prepareResponsesRequestBody(
   const toolContext = buildCodexToolContextFromRequest(body)
   return {
     body: work,
-    responsesBody: work,
+    responsesBody: bodyForRoute,
     toolContext,
     route: "responses",
     routeReason,
@@ -214,6 +219,7 @@ export async function prepareResponsesRequestBody(
       convertedCustomCalls: sanitized.convertedCustomCalls,
       droppedItems: sanitized.droppedItems,
       historyCount: rewritten.historyCount,
+      reasoningItems,
       route: "responses",
       routeReason,
       continuityKeys,
@@ -274,11 +280,15 @@ export async function rememberResponsesTurn(opts: {
   const opaqueItems = opts.responsePayload
     ? extractOpaqueItemsFromResponsePayload(opts.responsePayload)
     : []
+  const reasoningItems = opts.responsePayload
+    ? extractToolTurnReasoningFromResponsePayload(opts.responsePayload, opts.responseId)
+    : []
   await rememberConversationTurn({
     responseId: opts.responseId,
     previousKeys: opts.continuityKeys,
     opaqueItems,
     messages: opts.userMessages,
+    reasoningItems,
     preferredMode: opts.preferredMode,
     db: opts.db,
   })

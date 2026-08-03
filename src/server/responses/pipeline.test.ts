@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { createDatabase } from "../db"
 import { injectDefaultServerTools, normalizeToolsInBody } from "./tool-schema"
-import { prepareResponsesRequestBody } from "./pipeline"
-import { sanitizeResponsesInputItems, rememberConversationTurn, extractContinuityKeysFromRequest } from "./conversation-store"
+import { prepareResponsesRequestBody, rememberResponsesTurn } from "./pipeline"
+import { buildChatFallbackFromResponsesWithContext } from "./responses-fallback"
+import { responseToolCallItemFromChatName } from "./codex-chat-compat"
+import { sanitizeResponsesInputItems, rememberConversationTurn, extractContinuityKeysFromRequest, loadConversationReasoning } from "./conversation-store"
 import { shouldEagerFallbackResponses } from "./responses-fallback"
 
 describe("responses tool-schema", () => {
@@ -175,5 +177,88 @@ describe("continuity keys", () => {
       previous_response_id: "resp_1",
     })
     expect(keys[0]).toBe("thread:abc")
+  })
+})
+
+
+describe("reasoning persistence", () => {
+  it("remembers tool-turn reasoning and loads it back in order", async () => {
+    const db = createDatabase(":memory:")
+    await rememberConversationTurn({
+      responseId: "resp_tool_1",
+      previousKeys: ["thread:t2"],
+      reasoningItems: [
+        { reasoning_content: "first", responseId: "resp_tool_1" },
+        { reasoning_content: "dup", responseId: "resp_tool_1" },
+      ],
+      db,
+    })
+    await rememberConversationTurn({
+      responseId: "resp_tool_2",
+      previousKeys: ["thread:t2"],
+      reasoningItems: [{ reasoning_content: "second", responseId: "resp_tool_2" }],
+      db,
+    })
+    expect(await loadConversationReasoning(["thread:t2"], db)).toEqual(["first", "second"])
+  })
+
+  it("only saves reasoning when the response output also has tool calls", async () => {
+    const db = createDatabase(":memory:")
+    await rememberResponsesTurn({
+      responsePayload: {
+        id: "resp_1",
+        output: [
+          { type: "reasoning", summary: [{ type: "summary_text", text: "tool reasoning" }] },
+          { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
+          { type: "function_call_output", call_id: "call_1", output: "ok" },
+        ],
+      },
+      responseId: "resp_1",
+      continuityKeys: ["thread:t3"],
+      db,
+    })
+    await rememberResponsesTurn({
+      responsePayload: {
+        id: "resp_2",
+        output: [{ type: "reasoning", summary: [{ type: "summary_text", text: "plain reasoning" }] }],
+      },
+      responseId: "resp_2",
+      continuityKeys: ["thread:t3"],
+      db,
+    })
+    expect(await loadConversationReasoning(["thread:t3"], db)).toEqual(["tool reasoning"])
+  })
+})
+describe("namespace tools survive chat fallback", () => {
+  it("keeps namespace declarations and restores short names for function_call", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "deepseek-v4-flash",
+      input: "hi",
+      tools: [
+        {
+          type: "namespace",
+          name: "multi_agent_v1",
+          tools: [
+            { type: "function", name: "spawn_agent", description: "spawn", parameters: { type: "object", properties: { message: { type: "string" } } } },
+          ],
+        },
+      ],
+    }, { db })
+    expect(prepared.route).toBe("responses")
+    const rawTools = (prepared.responsesBody as any).tools as Array<{ type: string }>
+    expect(rawTools[0].type).toBe("namespace")
+
+    const converted = buildChatFallbackFromResponsesWithContext(prepared.responsesBody)
+    const chatTools = (converted.body as any).tools as Array<{ function?: { name?: string } }>
+    expect(chatTools[0].function?.name).toBe("multi_agent_v1__spawn_agent")
+
+    const item = responseToolCallItemFromChatName({
+      callId: "call_1",
+      chatName: "multi_agent_v1__spawn_agent",
+      argumentsStr: '{"message":"hi"}',
+      ctx: converted.toolContext,
+    })
+    expect(item).toMatchObject({ type: "function_call", name: "spawn_agent", namespace: "multi_agent_v1" })
   })
 })

@@ -135,9 +135,10 @@ export function buildChatFallbackFromResponses(
 export function buildChatFallbackFromResponsesWithContext(
   responsesBody: unknown,
   storedMessages: ConversationMessage[] = [],
+  opts?: { reasoningItems?: Array<{ reasoning_content: string }> },
 ): { body: Obj; toolContext: CodexToolContext } {
   const stored = (storedMessages || []).map((m) => ({ role: m.role, content: m.content }));
-  return responsesToChatCompletions(responsesBody, stored);
+  return responsesToChatCompletions(responsesBody, stored, opts);
 }
 
 export function chatJsonToResponsesJson(

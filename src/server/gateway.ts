@@ -469,7 +469,7 @@ export class GatewayService {
        if (provider && selection.account.poolType.startsWith("custom:")) {
          const interfaceType = (provider as typeof provider & { interfaceType?: "chat" | "responses" }).interfaceType
          if (processResponses && interfaceType === "chat" && !attemptChatFallbackUsed) {
-           const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson)
+           const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson, [], { reasoningItems: (responsesProcessMeta?.reasoningItems ?? []).map((reasoning_content) => ({ reasoning_content })) })
            attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(prepareChatRequestBody(convertedRequest.body)))
            attemptToolContext = convertedRequest.toolContext
            attemptEndpoint = "chat/completions"
@@ -489,7 +489,7 @@ export class GatewayService {
          }
        }
        if (processResponses && selection.account.poolType === "opencode-go" && !attemptChatFallbackUsed) {
-         const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson)
+         const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson, [], { reasoningItems: (responsesProcessMeta?.reasoningItems ?? []).map((reasoning_content) => ({ reasoning_content })) })
          attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(prepareChatRequestBody(convertedRequest.body)))
          attemptToolContext = convertedRequest.toolContext
          attemptEndpoint = "chat/completions"

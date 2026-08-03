@@ -464,13 +464,20 @@ function contentPartsToChat(content: unknown): unknown {
 
 type PendingToolCall = Obj;
 
-function flushPendingToolCalls(messages: Obj[], pending: PendingToolCall[]) {
+type ReasoningQueue = Array<{ reasoning_content: string }>;
+
+function flushPendingToolCalls(messages: Obj[], pending: PendingToolCall[], reasoningQueue: ReasoningQueue = []) {
   if (!pending.length) return;
-  messages.push({
+  const message: Obj = {
     role: 'assistant',
     content: null,
     tool_calls: pending.map((tc) => clone(tc)),
-  });
+  };
+  const reasoning = reasoningQueue.shift();
+  if (reasoning && typeof reasoning.reasoning_content === 'string' && reasoning.reasoning_content.trim()) {
+    message.reasoning_content = reasoning.reasoning_content;
+  }
+  messages.push(message);
   pending.length = 0;
 }
 
@@ -540,12 +547,30 @@ function toolOutputContent(item: Obj): string {
   return canonicalJsonString(copy);
 }
 
-function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToolCall[], ctx: CodexToolContext) {
+function reasoningItemText(item: Obj): string {
+  let text = '';
+  if (Array.isArray(item.summary)) {
+    for (const part of item.summary) {
+      if (typeof part === 'string') text += part;
+      else if (isObj(part) && typeof part.text === 'string') text += part.text;
+    }
+  }
+  if (Array.isArray(item.content)) {
+    for (const part of item.content) {
+      if (typeof part === 'string') text += part;
+      else if (isObj(part) && typeof part.text === 'string') text += part.text;
+    }
+  }
+  if (typeof item.text === 'string') text += item.text;
+  return text;
+}
+
+function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToolCall[], ctx: CodexToolContext, reasoningQueue: ReasoningQueue = []) {
   if (!isObj(item)) return;
   const type = String(item.type || '').toLowerCase();
 
   if (type === 'message' || item.role) {
-    flushPendingToolCalls(messages, pending);
+    flushPendingToolCalls(messages, pending, reasoningQueue);
     const role = responsesRoleToChat(String(item.role || 'user'));
     const content = contentPartsToChat(item.content ?? item.text ?? '');
     if (role === 'assistant' && (content === '' || content == null)) return;
@@ -566,7 +591,7 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
     return;
   }
   if (type === 'function_call_output' || type === 'custom_tool_call_output' || type === 'tool_search_output') {
-    flushPendingToolCalls(messages, pending);
+    flushPendingToolCalls(messages, pending, reasoningQueue);
     messages.push({
       role: 'tool',
       tool_call_id: String(item.call_id || item.id || 'tool_call'),
@@ -575,7 +600,13 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
     return;
   }
 
-  if (type.includes('reasoning') || type.includes('compaction') || item.encrypted_content != null) return;
+  if (type.includes('reasoning') || type.includes('compaction') || item.encrypted_content != null) {
+    if (type.includes('reasoning')) {
+      const text = reasoningItemText(item).trim();
+      if (text) reasoningQueue.push({ reasoning_content: text });
+    }
+    return;
+  }
   // Server-side search / MCP items are executed by the provider; do not replay as chat tool turns.
   if (
     type.includes('web_search') ||
@@ -589,16 +620,16 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
   }
 
   if (typeof item.text === 'string' && item.text.trim()) {
-    flushPendingToolCalls(messages, pending);
+    flushPendingToolCalls(messages, pending, reasoningQueue);
     messages.push({ role: 'user', content: item.text });
   }
 }
 
-function appendResponsesInput(input: unknown, messages: Obj[], ctx: CodexToolContext) {
+function appendResponsesInput(input: unknown, messages: Obj[], ctx: CodexToolContext, reasoningQueue: ReasoningQueue = []) {
   const pending: PendingToolCall[] = [];
   const items = Array.isArray(input) ? input : input != null ? [input] : [];
-  for (const item of items) appendResponsesItem(item, messages, pending, ctx);
-  flushPendingToolCalls(messages, pending);
+  for (const item of items) appendResponsesItem(item, messages, pending, ctx, reasoningQueue);
+  flushPendingToolCalls(messages, pending, reasoningQueue);
 }
 
 function mapToolChoice(toolChoice: unknown, _ctx: CodexToolContext): unknown {
@@ -628,10 +659,14 @@ export type StoredMessage = { role: string; content: string };
 export function responsesToChatCompletions(
   responsesBody: unknown,
   storedMessages: StoredMessage[] = [],
+  opts?: { reasoningItems?: Array<{ reasoning_content: string }> },
 ): { body: Obj; toolContext: CodexToolContext } {
   const src = isObj(responsesBody) ? responsesBody : {};
   const toolContext = buildCodexToolContextFromRequest(src);
   const messages: Obj[] = [];
+  const reasoningQueue: ReasoningQueue = Array.isArray(opts?.reasoningItems)
+    ? opts.reasoningItems.map((item) => ({ reasoning_content: item.reasoning_content }))
+    : [];
 
   if (typeof src.instructions === 'string' && src.instructions.trim()) {
     messages.push({ role: 'system', content: src.instructions });
@@ -651,7 +686,7 @@ export function responsesToChatCompletions(
     }
   }
 
-  appendResponsesInput(src.input, messages, toolContext);
+  appendResponsesInput(src.input, messages, toolContext, reasoningQueue);
 
   if (!messages.some((m) => m.role === 'user')) {
     messages.push({ role: 'user', content: 'Continue.' });
