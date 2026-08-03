@@ -855,16 +855,6 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                 </>
               ) : (
                 <DetailSection title="连接信息">
-                  <div className="mb-2.5 flex items-center justify-between gap-3 rounded-md border bg-[#fafafa] px-3.5 py-2.5">
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium">原始密钥</span>
-                      <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">复制账号导入时使用的原始密钥。</span>
-                      {copyState === "error" && copyError ? <span className="mt-1 block text-[11px] leading-4 text-destructive">{copyError}</span> : null}
-                    </span>
-                    <Button type="button" variant="outline" size="sm" onClick={() => void handleCopyCredential()} disabled={busy || copyState === "busy"} className="shrink-0">
-                      {copyState === "copied" ? <Check /> : <Copy />}{copyState === "copied" ? "已复制" : "复制原密钥"}
-                    </Button>
-                  </div>
                   <div className="divide-y rounded-md border">
                     <DetailRow label="号池类型" value={getPoolLabel(account.poolType)} />
                     <DetailRow label="凭据状态" value={account.authState === "VALID" ? "有效" : account.authState || "未知"} />
@@ -880,9 +870,13 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
             </div>
             <DialogFooter className="mb-0 flex-row flex-wrap border-t bg-[#fafafa] px-5 py-4 sm:mx-0 sm:justify-start">
               <Button variant="outline" onClick={() => void onRefresh(account)} disabled={busy}><RefreshCw className={busy ? "animate-spin" : undefined} data-icon="inline-start" />{busy ? "同步中" : "立即同步"}</Button>
+              {!isGo ? (
+                <Button variant="outline" onClick={() => void handleCopyCredential()} disabled={busy || copyState === "busy"}>{copyState === "copied" ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}{copyState === "copied" ? "已复制" : "复制原密钥"}</Button>
+              ) : null}
               <Button variant="outline" onClick={() => void onToggle(account)} disabled={busy || account.routeState === "UPSTREAM_BANNED" || account.routeState === "CREDENTIAL_INVALID"}>{account.routeState === "UPSTREAM_BANNED" ? "账号已永久封禁" : account.routeState === "CREDENTIAL_INVALID" ? "请先重新认证" : account.adminState === "DISABLED" ? "启用账号" : "停用账号"}</Button>
               <Button onClick={() => void onPreferred(account)} disabled={busy}><Star data-icon="inline-start" />设为优先</Button>
               <Button variant="outline" className="text-destructive" onClick={() => void onDelete(account)} disabled={busy}><Trash2 data-icon="inline-start" />删除账号</Button>
+              {copyState === "error" && copyError ? <span className="w-full text-[11px] text-destructive">{copyError}</span> : null}
             </DialogFooter>
           </>
         ) : null}
