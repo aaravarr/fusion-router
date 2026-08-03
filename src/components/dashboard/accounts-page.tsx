@@ -643,8 +643,8 @@ export function AccountsPage() {
                       </>
                     ) : (account.poolType || "").startsWith("custom:") ? (
                       <>
-                        <TableCell><QuotaStatus label="余额" quota={getQuota(account, "permanent") ?? getQuota(account, "fiveHour")} /></TableCell>
-                        <TableCell><QuotaStatus label="周期" quota={getQuota(account, "customPeriod") ?? getQuota(account, "weekly")} /></TableCell>
+                        <TableCell>{(() => { const quota = getQuota(account, "permanent") ?? getQuota(account, "fiveHour"); return quota ? <QuotaStatus label="余额" quota={quota} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>; })()}</TableCell>
+                        <TableCell>{(() => { const quota = getQuota(account, "customPeriod") ?? getQuota(account, "weekly"); return quota ? <QuotaStatus label="周期" quota={quota} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>; })()}</TableCell>
                       </>
                     ) : (
                       <>
@@ -776,6 +776,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
   const [copyError, setCopyError] = useState<string | null>(null);
   const quotaKinds = account ? getPoolQuotaKinds(account.poolType) : ["fiveHour", "weekly", "monthly"];
   const isGo = account ? poolOf(account) === "opencode-go" : false;
+  const isCustomPool = account ? poolOf(account).startsWith("custom:") : false;
 
   useEffect(() => {
     if (copyState !== "copied") return;
@@ -815,12 +816,13 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
               ) : null}
               <DetailSection title="额度窗口" description={isGo ? "来自最近一次 Console 同步。" : "来自真实上游响应头；立即同步会发送一次最小额度探测。"}>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(148px,1fr))] gap-2.5">
-                  {quotaKinds.includes("fiveHour") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="5 小时" quota={getQuota(account, "fiveHour")} variant="card" /></div> : null}
-                  {quotaKinds.includes("weekly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每周" quota={getQuota(account, "weekly")} variant="card" /></div> : null}
-                  {quotaKinds.includes("monthly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每月" quota={getQuota(account, "monthly")} variant="card" /></div> : null}
-                  {quotaKinds.includes("rolling24h") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="滚动 24 小时" quota={getQuota(account, "rolling24h")} variant="card" /></div> : null}
+                  {!isCustomPool && quotaKinds.includes("fiveHour") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="5 小时" quota={getQuota(account, "fiveHour")} variant="card" /></div> : null}
+                  {!isCustomPool && quotaKinds.includes("weekly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每周" quota={getQuota(account, "weekly")} variant="card" /></div> : null}
+                  {!isCustomPool && quotaKinds.includes("monthly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每月" quota={getQuota(account, "monthly")} variant="card" /></div> : null}
+                  {!isCustomPool && quotaKinds.includes("rolling24h") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="滚动 24 小时" quota={getQuota(account, "rolling24h")} variant="card" /></div> : null}
                   {quotaKinds.includes("permanent") && getQuota(account, "permanent") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="永久余额" quota={getQuota(account, "permanent")} variant="card" /></div> : null}
                   {quotaKinds.includes("customPeriod") && getQuota(account, "customPeriod") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="自定义周期" quota={getQuota(account, "customPeriod")} variant="card" /></div> : null}
+                  {isCustomPool && !getQuota(account, "permanent") && !getQuota(account, "customPeriod") ? <div className="rounded-md border bg-[#fafafa] px-3.5 py-3 text-xs leading-5 text-muted-foreground">尚未探测到余额，点击下方「立即同步」获取。</div> : null}
                 </div>
               </DetailSection>
               {isGo ? (
