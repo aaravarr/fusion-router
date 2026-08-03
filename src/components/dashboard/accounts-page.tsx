@@ -110,6 +110,29 @@ function poolOf(account: Account) {
   return account.poolType || "opencode-go";
 }
 
+/** Slugify a provider display name into a short unique key, e.g. "DeepSeek Official" -> "deepseek-official". */
+function slugifyName(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || name;
+}
+
+/**
+ * Compact a workspace id for display: custom pools render the provider slug
+ * instead of the long `custom:<uuid>` segment and the trailing ids are
+ * shortened, while non-custom ids stay untouched. The full raw value is kept
+ * in the title attribute for copy/debugging.
+ */
+function displayWorkspaceId(account: Account): string {
+  const workspaceId = account.workspaceId;
+  if (!workspaceId) return account.id || "";
+  const segments = workspaceId.split("_");
+  if (segments.length < 3 || !segments[0].startsWith("custom:")) return workspaceId;
+  const ownerId = segments[1].slice(0, 8);
+  const accountId = segments[2].slice(0, 8);
+  const poolSegment = slugifyName(account.poolLabel || account.poolType || "custom");
+  return `${poolSegment}_${ownerId}_${accountId}`;
+}
+
 export function AccountsPage() {
   const { adminFetch } = useAdmin();
   const confirm = useConfirm();
@@ -631,7 +654,7 @@ export function AccountsPage() {
                           {account.name || account.email || "未命名账号"}
                           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                         </span>
-                        <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground">{account.workspaceId || account.id}</span>
+                        <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground" title={account.workspaceId || account.id}>{displayWorkspaceId(account)}</span>
                       </Button>
                     </TableCell>
                     <TableCell><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /></TableCell>
