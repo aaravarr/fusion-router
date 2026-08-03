@@ -174,6 +174,18 @@ export function getQuota(account: Account, key: "permanent" | "fiveHour" | "week
   return legacy ?? null;
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  CNY: "¥", RMB: "¥", CNH: "¥", USD: "$", EUR: "€", GBP: "£", JPY: "¥", HKD: "HK$", TWD: "NT$", KRW: "₩", SGD: "S$",
+};
+
+/** Format a balance amount with its currency symbol (e.g. ¥123.45). */
+function formatBalance(value: number | null | undefined, unit?: string | null): string {
+  if (value == null) return "—";
+  const amount = Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const symbol = unit ? CURRENCY_SYMBOLS[String(unit).toUpperCase()] : undefined;
+  return symbol ? `${symbol}${amount}` : `${amount} ${unit ?? ""}`.trim();
+}
+
 export function QuotaStatus({
   label,
   quota,
@@ -184,6 +196,9 @@ export function QuotaStatus({
   variant?: "compact" | "card";
 }) {
   const state = quota?.status || "unknown";
+  // Balance-style windows (custom providers like DeepSeek expose remaining CNY/USD)
+  // should show the remaining amount as the primary figure instead of a percentage.
+  const isBalance = quota?.unit != null && quota?.remainingValue != null;
   // Keep real over-limit percentages (can exceed 100%) so free-tier overspend is visible.
   const used = quota?.usagePercent == null ? null : Math.round(Math.max(0, Number(quota.usagePercent)) * 100) / 100;
   const usedTokens = quota?.limitValue != null && quota?.remainingValue != null
@@ -204,7 +219,7 @@ export function QuotaStatus({
   const resetLabel = state === "blocked" ? "预计恢复" : "下次重置";
 
   if (variant === "card") {
-    const primary = used != null ? used.toFixed(2) : state === "blocked" ? "100.00" : "—";
+    const primary = isBalance ? formatBalance(quota?.remainingValue, quota?.unit) : used != null ? used.toFixed(2) : state === "blocked" ? "100.00" : "—";
     return (
       <div className="min-w-0">
         <div className="flex min-w-0 items-center justify-between gap-2">
@@ -216,7 +231,7 @@ export function QuotaStatus({
         </div>
         <div className="mt-3 flex min-w-0 items-baseline gap-1">
           <span className="font-mono text-2xl font-medium tracking-[-0.04em] tabular-nums">{primary}</span>
-          <span className="text-[11px] text-muted-foreground">{used != null || state === "blocked" ? "% 已用" : "暂无数据"}</span>
+          <span className="text-[11px] text-muted-foreground">{isBalance ? "余额" : used != null || state === "blocked" ? "% 已用" : "暂无数据"}</span>
         </div>
         <div
           className="mt-2 h-1 overflow-hidden rounded-full bg-black/5"
@@ -228,14 +243,14 @@ export function QuotaStatus({
         >
           <div className={`h-full rounded-full ${used != null && used >= 100 ? "bg-warning" : "bg-foreground/70"}`} style={{ width: `${Math.min(100, used ?? 0)}%` }} />
         </div>
-        {usedTokens != null && limitTokens != null ? (
+        {!isBalance && usedTokens != null && limitTokens != null ? (
           <p className="mt-2 font-mono text-[10px] text-muted-foreground">
             {quota?.unit
               ? `剩余 ${Number(quota.remainingValue).toLocaleString()} / ${Number(quota.limitValue).toLocaleString()} ${quota.unit}`
               : `${compactNumber(usedTokens)} / ${compactNumber(limitTokens)} tokens${overLimit ? ` · 超 ${compactNumber(usedTokens - limitTokens)}` : ""}`}
           </p>
         ) : null}
-        {quota?.remainingValue != null && quota?.unit && (usedTokens == null || limitTokens == null) ? (
+        {!isBalance && quota?.remainingValue != null && quota?.unit && (usedTokens == null || limitTokens == null) ? (
           <p className="mt-2 font-mono text-[10px] text-muted-foreground">剩余 {Number(quota.remainingValue).toLocaleString()} {quota.unit}</p>
         ) : null}
         <div className="mt-3 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 border-t pt-2.5 text-[10px]">
@@ -253,7 +268,7 @@ export function QuotaStatus({
         <span className={`size-1.5 shrink-0 rounded-full ${overLimit || state === "blocked" || (used != null && used >= 100) ? "bg-warning" : state === "available" ? "bg-success" : "bg-muted-foreground/40"}`} aria-hidden="true" />
         <span className="truncate text-xs font-medium">{label}</span>
         </div>
-        {used != null ? <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{used.toFixed(2)}%</span> : null}
+        {isBalance ? <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-foreground" title={formatBalance(quota?.remainingValue, quota?.unit)}>{formatBalance(quota?.remainingValue, quota?.unit)}</span> : used != null ? <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{used.toFixed(2)}%</span> : null}
       </div>
       <div
         className="mt-1.5 h-1 overflow-hidden rounded-full bg-black/5"
@@ -279,7 +294,7 @@ export function QuotaStatus({
             : "等待首次请求或手动同步"}
       </p>
       )}
-      {quota?.unit && quota.remainingValue != null ? (
+      {!isBalance && quota?.unit && quota.remainingValue != null ? (
         <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={`剩余 ${Number(quota.remainingValue).toLocaleString()} ${quota.unit}`}>
           {`剩余 ${Number(quota.remainingValue).toLocaleString()} ${quota.unit}`}
         </p>

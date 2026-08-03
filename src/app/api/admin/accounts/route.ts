@@ -77,6 +77,7 @@ export async function GET(request: Request) {
         lastObservedAt: window.lastObservedAt,
         limitValue: window.limitValue,
         remainingValue: window.remainingValue,
+        unit: window.unit,
       })),
     }
   })
