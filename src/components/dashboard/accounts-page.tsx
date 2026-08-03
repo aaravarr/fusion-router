@@ -870,9 +870,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
             </div>
             <DialogFooter className="mb-0 flex-row flex-wrap border-t bg-[#fafafa] px-5 py-4 sm:mx-0 sm:justify-start">
               <Button variant="outline" onClick={() => void onRefresh(account)} disabled={busy}><RefreshCw className={busy ? "animate-spin" : undefined} data-icon="inline-start" />{busy ? "同步中" : "立即同步"}</Button>
-              {!isGo ? (
-                <Button variant="outline" onClick={() => void handleCopyCredential()} disabled={busy || copyState === "busy"}>{copyState === "copied" ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}{copyState === "copied" ? "已复制" : "复制原密钥"}</Button>
-              ) : null}
+              <Button variant="outline" onClick={() => void handleCopyCredential()} disabled={busy || copyState === "busy"}>{copyState === "copied" ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}{copyState === "copied" ? "已复制" : "复制原密钥"}</Button>
               <Button variant="outline" onClick={() => void onToggle(account)} disabled={busy || account.routeState === "UPSTREAM_BANNED" || account.routeState === "CREDENTIAL_INVALID"}>{account.routeState === "UPSTREAM_BANNED" ? "账号已永久封禁" : account.routeState === "CREDENTIAL_INVALID" ? "请先重新认证" : account.adminState === "DISABLED" ? "启用账号" : "停用账号"}</Button>
               <Button onClick={() => void onPreferred(account)} disabled={busy}><Star data-icon="inline-start" />设为优先</Button>
               <Button variant="outline" className="text-destructive" onClick={() => void onDelete(account)} disabled={busy}><Trash2 data-icon="inline-start" />删除账号</Button>
