@@ -669,7 +669,13 @@ export function AccountsPage() {
                     </TableCell>
                     <TableCell className="font-mono text-[11px] text-muted-foreground">{formatDate(account.lastSyncedAt || account.lastUsageCheckAt)}</TableCell>
                     <TableCell className="px-4 text-right">
-                      <DropdownMenu>
+                      <div className="flex items-center justify-end gap-0.5">
+                        {poolOf(account) !== "opencode-go" ? (
+                          <Button type="button" variant="ghost" size="icon-sm" onClick={() => void copyAccountCredential(account)} disabled={busyId === account.id} aria-label="复制原始 API Key" title="复制原始 API Key">
+                            {copiedKeyId === account.id ? <Check /> : <Copy />}
+                          </Button>
+                        ) : null}
+                        <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon-sm" disabled={busyId === account.id} aria-label={`操作 ${account.name || account.id}`}>
                             <MoreHorizontal aria-hidden="true" />
@@ -693,6 +699,7 @@ export function AccountsPage() {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
