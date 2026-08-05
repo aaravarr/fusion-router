@@ -47,7 +47,33 @@ $env:OPENCODE_MCP_API_KEY  = "ocg_xxx"   # 管理后台「API 密钥」页创建
 node mcp-bridge/index.mjs --base-url http://49.233.103.93:13600 --api-key ocg_xxx
 ```
 
+## 通过 npm 安装（无需本地项目，推荐给外部用户）
+
+包已发布到 npm（`fusionrouter-mcp`），任何机器只需 npx 即可运行，无需 clone 仓库：
+
+```json
+{
+  "mcpServers": {
+    "opencode-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "fusionrouter-mcp",
+        "--base-url", "http://49.233.103.93:13600",
+        "--api-key", "ocg_xxx"
+      ]
+    }
+  }
+}
+```
+
+> Windows 下若 Claude Desktop / Cursor 不识别 `npx`，改用：
+> `"command": "cmd", "args": ["/c", "npx", "-y", "fusionrouter-mcp", "--base-url", "http://49.233.103.93:13600", "--api-key", "ocg_xxx"]`
+
+发布流程：推送到 `mcp-bridge/` 或手动触发 GitHub Actions `Publish fusionrouter-mcp` workflow，自动 `npm publish`。
+
 ## 快速安装（推荐）
+
 
 一条命令自动写入 Claude Desktop / Cursor / Codex CLI 的配置，不用手动编辑 JSON：
 

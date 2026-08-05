@@ -1,16 +1,31 @@
 {
-  "name": "opencode-mcp-bridge",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "本地 stdio MCP 桥：让 Claude Desktop / Cursor / Codex 通过本地路径调用远程 opencode-api 识图",
-  "bin": {
-    "opencode-mcp-bridge": "index.mjs"
-  },
-  "scripts": {
-    "test": "node --test ./mcp-bridge/lib.test.mjs"
-  },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "type": "module",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "vision",
+    "image",
+    "describe",
+    "stdio",
+    "opencode"
+  ],
+  "description": "本地 stdio MCP 桥：让 Claude Desktop / Cursor / Codex 通过本地图片路径或 URL 调用远程 opencode-api 识图",
+  "bin": {
+    "fusionrouter-mcp": "index.mjs"
+  },
+  "name": "fusionrouter-mcp",
+  "files": [
+    "index.mjs",
+    "lib.mjs",
+    "install.mjs",
+    "README.md"
+  ],
+  "version": "0.1.0",
+  "scripts": {
+    "test": "node --test ./install.test.mjs ./lib.test.mjs"
+  },
+  "license": "MIT"
 }

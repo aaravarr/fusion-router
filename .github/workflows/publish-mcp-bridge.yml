@@ -1,0 +1,75 @@
+name: Publish fusionrouter-mcp
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本号（如 0.2.0）；留空则自动 patch 自增"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - "mcp-bridge/index.mjs"
+      - "mcp-bridge/lib.mjs"
+      - "mcp-bridge/install.mjs"
+      - "mcp-bridge/package.json"
+      - ".github/workflows/publish-mcp-bridge.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: 计算并写入版本号
+        id: version
+        working-directory: mcp-bridge
+        run: |
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          node - "$INPUT_VERSION" <<'NODE'
+          const fs = require("fs");
+          const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const input = process.argv[2];
+          if (input && /^v?\d+\.\d+\.\d+$/.test(input)) {
+            p.version = input.replace(/^v/, "");
+          } else {
+            const parts = p.version.split(".").map(Number);
+            parts[2] += 1;
+            p.version = parts.join(".");
+          }
+          fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+          NODE
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: 校验待发布内容
+        working-directory: mcp-bridge
+        run: npm pack --dry-run
+
+      - name: 发布到 npm
+        working-directory: mcp-bridge
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: 回写版本号到 main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp-bridge/package.json
+          if git diff --cached --quiet; then
+            echo "版本号无变化，跳过回写"
+          else
+            git commit -m "chore: bump fusionrouter-mcp to ${{ steps.version.outputs.version }} [skip ci]"
+            git push
+          fi
