@@ -1263,6 +1263,13 @@ function extractServerSearchQuery(item: Obj): string {
   if (isObj(item.action)) {
     if (typeof item.action.query === 'string' && item.action.query.trim()) return item.action.query.trim();
     if (typeof item.action.q === 'string' && item.action.q.trim()) return item.action.q.trim();
+    // DeepSeek responses API returns action.queries as a string array that may
+    // include noise entries like `ws_call_id=call_xx`; use the first real query.
+    if (Array.isArray(item.action.queries)) {
+      for (const q of item.action.queries) {
+        if (typeof q === 'string' && q.trim() && !q.includes('ws_call_id=')) return q.trim();
+      }
+    }
   }
   const argsRaw = item.arguments ?? item.input ?? item.parameters;
   if (typeof argsRaw === 'string' && argsRaw.trim()) {

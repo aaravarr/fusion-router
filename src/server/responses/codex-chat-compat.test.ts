@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex, responsesToChatCompletions } from "./codex-chat-compat"
+import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapServerToolItemForCodex, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex, responsesToChatCompletions } from "./codex-chat-compat"
 
 describe("chat to Responses reasoning compatibility", () => {
   it("preserves reasoning in non-stream responses", () => {
@@ -108,6 +108,29 @@ describe("chat to Responses reasoning compatibility", () => {
   })
 })
 
+
+
+describe("server search item remap", () => {
+  it("normalizes DeepSeek web_search_call action.queries array into standard action.query", () => {
+    const result = remapServerToolItemForCodex({
+      type: "web_search_call",
+      id: "call_xx",
+      status: "completed",
+      action: {
+        type: "search",
+        queries: ["北京 今天 天气", "Beijing weather today", "ws_call_id=call_xx"],
+      },
+    }) as Record<string, any>
+
+    expect(result.type).toBe("web_search_call")
+    expect(result.action.type).toBe("search")
+    // Gateway prefixes the display query; the value must come from the first
+    // real query (skipping ws_call_id noise), not the fallback label.
+    expect(result.action.query).toBe("web_search: 北京 今天 天气")
+    expect(result.action.query).not.toContain("ws_call_id=")
+    expect(Array.isArray(result.action.sources)).toBe(true)
+  })
+})
 
 describe("responses to chat reasoning replay", () => {
   it("injects opts.reasoningItems onto the tool-call assistant message", () => {

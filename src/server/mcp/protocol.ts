@@ -1,6 +1,7 @@
 import type { AppDatabase } from "@/server/db"
 import { authenticateApiKey } from "@/server/repository"
 import { describeImage, describeImageStream } from "./describe-image"
+import { webSearch, webSearchStream } from "./web-search"
 import { MCP_TOOL_DEFINITIONS } from "./mcp-tools"
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -75,7 +76,8 @@ export async function handleMcpRequest(
         capabilities: { tools: {} },
         serverInfo: MCP_SERVER_INFO,
         instructions:
-          "调用 describe_image 并传入 image（单图字符串或多图字符串数组，URL 或 data URI）与可选 prompt；使用调用者自己的 API Key 鉴权，识图消耗调用者账号池额度。prompt 不传时模型直接看图回答。",
+          "调用 describe_image 并传入 image（单图字符串或多图字符串数组，URL 或 data URI）与可选 prompt；使用调用者自己的 API Key 鉴权，识图消耗调用者账号池额度。prompt 不传时模型直接看图回答。\n" +
+          "调用 web_search 并传入 query（搜索问题或关键词）与可选 prompt；服务端使用配置的 Provider+模型通过 responses API 执行实时联网搜索并返回模型回答，消耗调用者账号池额度。",
       })
     }
     case "ping":
@@ -122,6 +124,26 @@ export async function handleMcpRequest(
             return new Response(stream, { status: 200, headers: STREAM_HEADERS })
           }
           const result = await describeImage({ images, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
+          return rpcResult(id, { content: [{ type: "text", text: result.text }] })
+        }
+        if (definition.toolType === "web_search") {
+          const query = typeof args.query === "string" ? args.query.trim() : ""
+          if (!query) {
+            return rpcResult(id, { content: [{ type: "text", text: "请提供搜索问题" }], isError: true })
+          }
+          const prompt = typeof args.prompt === "string" ? args.prompt : undefined
+          const wantStream = options?.acceptEventStream === true && args.stream !== false
+          if (wantStream) {
+            const stream = await webSearchStream(
+              { query, prompt },
+              db,
+              { ownerUserId: ctx.ownerUserId },
+              id,
+              callGateway,
+            )
+            return new Response(stream, { status: 200, headers: STREAM_HEADERS })
+          }
+          const result = await webSearch({ query, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
           return rpcResult(id, { content: [{ type: "text", text: result.text }] })
         }
         return rpcError(id, -32601, "Method not found")
