@@ -113,7 +113,7 @@ describe("MCP protocol", () => {
     expect(body.error).toBeUndefined()
     expect(body.result.content).toEqual([{ type: "text", text: "图片描述" }])
     expect(mockedDescribeImage).toHaveBeenCalledWith(
-      { image: "https://example.com/a.png", prompt: undefined },
+      { images: ["https://example.com/a.png"], prompt: undefined },
       db,
       { ownerUserId: "user-1" },
       undefined,
@@ -144,7 +144,7 @@ describe("MCP protocol", () => {
     expect(response.headers.get("content-type")).toContain("text/event-stream")
     expect(mockedDescribeImage).not.toHaveBeenCalled()
     expect(mockedDescribeImageStream).toHaveBeenCalledWith(
-      { image: "https://example.com/a.png", prompt: undefined },
+      { images: ["https://example.com/a.png"], prompt: undefined },
       db,
       { ownerUserId: "user-1" },
       4,

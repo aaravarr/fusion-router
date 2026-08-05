@@ -8,6 +8,8 @@ import {
   Pencil,
   RefreshCw,
   Sparkles,
+  Upload,
+  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -139,10 +141,10 @@ export function McpPage() {
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaError, setMetaError] = useState<string | null>(null);
 
-  // 测试对话框状态
+  // 测试对话框状态：支持多图（URL / data URI 混合），可粘贴、可上传
   const [testing, setTesting] = useState<MCPTool | null>(null);
-  const [imageUrl, setImageUrl] = useState("");
-  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [testImages, setTestImages] = useState<string[]>([]);
+  const [testUrlInput, setTestUrlInput] = useState("");
   const [testPrompt, setTestPrompt] = useState("");
   const [testLoading, setTestLoading] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
@@ -253,38 +255,92 @@ export function McpPage() {
 
   function openTest(tool: MCPTool) {
     setTesting(tool);
-    setImageUrl("");
-    setImageDataUrl(null);
+    setTestImages([]);
+    setTestUrlInput("");
     setTestPrompt("");
     setTestError(null);
     setTestResult(null);
   }
 
-  function onFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImageDataUrl(typeof reader.result === "string" ? reader.result : null);
-      setTestError(null);
-    };
-    reader.onerror = () => setTestError("图片读取失败，请重新选择");
-    reader.readAsDataURL(file);
+  function addTestImages(sources: string[]) {
+    if (!sources.length) return;
+    setTestImages((prev) => [...prev, ...sources]);
+    setTestError(null);
+  }
+
+  function onTestFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    if (!files.length) return;
+    let pending = files.length;
+    const results: string[] = [];
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") results.push(reader.result);
+        pending -= 1;
+        if (pending === 0) addTestImages(results);
+      };
+      reader.onerror = () => {
+        pending -= 1;
+        if (pending === 0) addTestImages(results);
+        setTestError("部分图片读取失败，请重新选择");
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function onTestPaste(event: React.ClipboardEvent<HTMLInputElement>) {
+    const items = Array.from(event.clipboardData?.items ?? []);
+    const images = items
+      .filter((item) => item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (!images.length) return;
+    event.preventDefault();
+    let pending = images.length;
+    const results: string[] = [];
+    images.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") results.push(reader.result);
+        pending -= 1;
+        if (pending === 0) addTestImages(results);
+      };
+      reader.onerror = () => {
+        pending -= 1;
+        if (pending === 0) addTestImages(results);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function addTestUrl() {
+    const url = testUrlInput.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) {
+      setTestError("图片 URL 必须以 http(s):// 开头");
+      return;
+    }
+    addTestImages([url]);
+    setTestUrlInput("");
+  }
+
+  function removeTestImage(index: number) {
+    setTestImages((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function runTest(event: FormEvent) {
     event.preventDefault();
     if (!testing) return;
-    const image = imageUrl.trim() || imageDataUrl || "";
-    if (!image) {
-      setTestError("请填写图片 URL 或上传本地图片");
+    if (!testImages.length) {
+      setTestError("请至少添加一张图片（URL、上传或粘贴）");
       return;
     }
     setTestLoading(true);
     setTestError(null);
     setTestResult(null);
     try {
-      const body: Record<string, string> = { image };
+      const body: Record<string, unknown> = { images: testImages };
       if (testPrompt.trim()) body.prompt = testPrompt.trim();
       const response = await adminFetch("/api/admin/mcp/tools/describe_image/test", {
         method: "POST",
@@ -516,23 +572,54 @@ export function McpPage() {
           </DialogHeader>
           <form id="mcp-test-form" onSubmit={(event) => void runTest(event)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="mcp-test-url">图片 URL</Label>
-              <Input id="mcp-test-url" className="font-mono text-xs" value={imageUrl} onChange={(event) => setImageUrl(event.target.value)} placeholder="https://example.com/photo.png" />
-              <p className="text-[11px] leading-5 text-muted-foreground">填写公开可访问的图片地址，或直接上传本地图片（二选一）。</p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="mcp-test-file">上传本地图片</Label>
-              <Input id="mcp-test-file" type="file" accept="image/*" onChange={onFileChange} className="h-auto py-1.5" />
-              {imageDataUrl ? (
-                <>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={imageDataUrl} alt="图片预览" className="max-h-64 w-full rounded-md border object-contain" />
-                </>
+              <Label>图片（可多张）</Label>
+              <div className="flex gap-2">
+                <Input
+                  className="font-mono text-xs"
+                  value={testUrlInput}
+                  onChange={(event) => setTestUrlInput(event.target.value)}
+                  onPaste={onTestPaste}
+                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addTestUrl(); } }}
+                  placeholder="粘贴图片或输入 URL，回车添加；也支持 Ctrl+V 直接粘贴剪贴板截图"
+                />
+                <Button type="button" variant="outline" size="icon" className="shrink-0" onClick={addTestUrl} aria-label="添加图片 URL">
+                  <Upload />
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  id="mcp-test-file"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={onTestFileChange}
+                  className="h-auto w-auto py-1.5 text-xs"
+                />
+                <span className="text-[11px] leading-5 text-muted-foreground">可多选上传；在输入框内 Ctrl+V 粘贴截图，支持一次粘贴多张。</span>
+              </div>
+              {testImages.length ? (
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                  {testImages.map((src, index) => (
+                    <div key={`${index}-${src.slice(0, 24)}`} className="group relative aspect-square overflow-hidden rounded-md border bg-muted/30">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={src} alt={`图片 ${index + 1}`} className="h-full w-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => removeTestImage(index)}
+                        className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-label={`移除图片 ${index + 1}`}
+                      >
+                        <X className="size-3" />
+                      </button>
+                      <span className="absolute bottom-1 left-1 rounded-sm bg-black/50 px-1 text-[10px] text-white">{index + 1}</span>
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </div>
             <div className="space-y-2">
               <Label htmlFor="mcp-test-prompt">提示词（可选）</Label>
-              <Textarea id="mcp-test-prompt" rows={2} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} placeholder="留空则不附带提示词，模型直接看图回答" />
+              <Textarea id="mcp-test-prompt" rows={2} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} placeholder="留空则不附带提示词，模型直接看图回答；多图时可在这里说明对比/分析要求" />
             </div>
             {testError ? <p className="text-sm text-destructive" role="alert">{testError}</p> : null}
             {testResult ? (

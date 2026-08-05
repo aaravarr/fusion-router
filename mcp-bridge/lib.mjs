@@ -39,6 +39,19 @@ export function resolveImageSource(image, deps) {
   return `data:${mime};base64,${buf.toString("base64")}`;
 }
 
+/**
+ * 解析图片参数为 data URI / URL 数组：
+ * - 字符串：单图
+ * - 数组：多图，逐张解析
+ */
+export function resolveImageSources(image, deps) {
+  if (Array.isArray(image)) {
+    if (image.length === 0) throw new Error("请至少提供一张图片");
+    return image.map((item) => resolveImageSource(item, deps));
+  }
+  return [resolveImageSource(image, deps)];
+}
+
 export function buildToolsCallPayload({ image, prompt, id }) {
   const args = { image };
   if (prompt) {

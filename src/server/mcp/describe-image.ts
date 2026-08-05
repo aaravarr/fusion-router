@@ -70,7 +70,7 @@ function applyReasoningParams(
 }
 
 function buildDescribeRequestBody(
-  input: { image: string; prompt?: string },
+  input: { images: string[]; prompt?: string },
   db: AppDatabase,
   ctx: { ownerUserId: string },
   stream: boolean,
@@ -99,13 +99,14 @@ function buildDescribeRequestBody(
   if (!config.model) throw new Error("尚未配置识图模型，请先在管理后台 MCP 页面选择模型")
 
   const promptText = (input.prompt ?? config.prompt ?? "").trim()
-  const imageUrl = normalizeImageInput(input.image)
+  if (!input.images.length) throw new Error("请至少提供一张图片")
+  const imageParts = input.images.map((image) => ({
+    type: "image_url",
+    image_url: { url: normalizeImageInput(image) },
+  }))
   const content = promptText
-    ? [
-        { type: "text", text: promptText },
-        { type: "image_url", image_url: { url: imageUrl } },
-      ]
-    : [{ type: "image_url", image_url: { url: imageUrl } }]
+    ? [{ type: "text", text: promptText }, ...imageParts]
+    : imageParts
 
   const body: DescribeRequestBody["body"] = {
     model: config.model,
@@ -143,7 +144,7 @@ async function extractUpstreamErrorMessage(response: Response, fallback: string)
 }
 
 export async function describeImage(
-  input: { image: string; prompt?: string },
+  input: { images: string[]; prompt?: string },
   db: AppDatabase,
   ctx: { ownerUserId: string },
   callGateway?: (request: Request, endpoint: string) => Promise<Response>,
@@ -188,7 +189,7 @@ function contentBlockDelta(text: string): unknown {
  * notifications, fed from the upstream chat-completions SSE stream.
  */
 export async function describeImageStream(
-  input: { image: string; prompt?: string },
+  input: { images: string[]; prompt?: string },
   db: AppDatabase,
   ctx: { ownerUserId: string },
   id: unknown,

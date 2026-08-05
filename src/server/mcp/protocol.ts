@@ -75,7 +75,7 @@ export async function handleMcpRequest(
         capabilities: { tools: {} },
         serverInfo: MCP_SERVER_INFO,
         instructions:
-          "调用 describe_image 并传入 image（URL 或 data URI）与可选 prompt；使用调用者自己的 API Key 鉴权，识图消耗调用者账号池额度。prompt 不传时模型直接看图回答。",
+          "调用 describe_image 并传入 image（单图字符串或多图字符串数组，URL 或 data URI）与可选 prompt；使用调用者自己的 API Key 鉴权，识图消耗调用者账号池额度。prompt 不传时模型直接看图回答。",
       })
     }
     case "ping":
@@ -100,12 +100,20 @@ export async function handleMcpRequest(
       const args = asRecord(paramsRecord.arguments)
       try {
         if (definition.toolType === "describe_image") {
-          const image = typeof args.image === "string" ? args.image : ""
+          // image 兼容单图字符串与多图数组；统一归一化为 images 数组。
+          const images = Array.isArray(args.image)
+            ? args.image.filter((item): item is string => typeof item === "string")
+            : typeof args.image === "string"
+              ? [args.image]
+              : []
+          if (images.length === 0) {
+            return rpcResult(id, { content: [{ type: "text", text: "请至少提供一张图片" }], isError: true })
+          }
           const prompt = typeof args.prompt === "string" ? args.prompt : undefined
           const wantStream = options?.acceptEventStream === true && args.stream !== false
           if (wantStream) {
             const stream = await describeImageStream(
-              { image, prompt },
+              { images, prompt },
               db,
               { ownerUserId: ctx.ownerUserId },
               id,
@@ -113,7 +121,7 @@ export async function handleMcpRequest(
             )
             return new Response(stream, { status: 200, headers: STREAM_HEADERS })
           }
-          const result = await describeImage({ image, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
+          const result = await describeImage({ images, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
           return rpcResult(id, { content: [{ type: "text", text: result.text }] })
         }
         return rpcError(id, -32601, "Method not found")

@@ -41,8 +41,11 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       type: "object",
       properties: {
         image: {
-          type: "string",
-          description: "图片地址（https/http URL 或 data:image/...;base64, 数据 URI）",
+          oneOf: [
+            { type: "string", description: "图片地址（https/http URL 或 data:image/...;base64, 数据 URI）" },
+            { type: "array", items: { type: "string" }, description: "多张图片地址，一次提问同时分析" },
+          ],
+          description: "图片地址：单张传字符串，多张传字符串数组（https/http URL 或 data:image/...;base64, 数据 URI）",
         },
         prompt: {
           type: "string",

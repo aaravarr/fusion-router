@@ -6,7 +6,8 @@ import { requireAdministrator } from "../../../../_auth"
 export const runtime = "nodejs"
 
 const testSchema = z.object({
-  image: z.string().min(1),
+  image: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
+  images: z.array(z.string().min(1)).min(1).optional(),
   prompt: z.string().optional(),
 })
 
@@ -18,7 +19,11 @@ export async function POST(request: Request, context: { params: Promise<{ toolTy
     return Response.json({ error: { type: "validation_error", details: parsed.error.flatten() } }, { status: 400 })
   }
   try {
-    const result = await describeImage(parsed.data, getDatabase(), { ownerUserId: user.id })
+    const images = parsed.data.images ?? (parsed.data.image ? (Array.isArray(parsed.data.image) ? parsed.data.image : [parsed.data.image]) : [])
+    if (images.length === 0) {
+      return Response.json({ error: { type: "validation_error", message: "请至少提供一张图片" } }, { status: 400 })
+    }
+    const result = await describeImage({ images, prompt: parsed.data.prompt }, getDatabase(), { ownerUserId: user.id })
     return Response.json({ result: { text: result.text, model: result.model } })
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "识图调用失败"

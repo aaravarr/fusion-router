@@ -176,6 +176,7 @@ describe_image({ image: "https://example.com/photo.jpg" })   // URL 直接透传
 
 - 本地绝对/相对路径：`C:\Users\xx\Desktop\截图.png`、`/home/u/a.png`、`./screenshot.png`
 - http(s) URL：原样透传给远程，不经过本地读取
+- **多图**：传字符串数组 `["C:\\xx\\1.png", "https://example.com/2.png"]`，一次提问同时分析多张（可对比/多图综合）
 
 `prompt` 可选：不传则由模型直接看图回答。
 

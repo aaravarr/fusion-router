@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveImageSource,
+  resolveImageSources,
   buildToolsCallPayload,
   callRemoteDescribe,
 } from "./lib.mjs";
@@ -160,4 +161,45 @@ test("callRemoteDescribe: 空 text 时 rejects 模型未返回内容", async () 
     callRemoteDescribe({ baseUrl: "http://x", apiKey: "k", image: "a.png", fetchImpl }),
     /模型未返回内容/
   );
+});
+
+
+test("resolveImageSources: 数组逐张解析为 data URI / URL", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mcp-bridge-multi-"));
+  const png = join(dir, "a.png");
+  const jpg = join(dir, "b.jpg");
+  writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  writeFileSync(jpg, Buffer.from([0xff, 0xd8, 0xff]));
+  try {
+    const out = resolveImageSources([png, "https://example.com/x.png"]);
+    assert.equal(out.length, 2);
+    assert.ok(out[0].startsWith("data:image/png;base64,"));
+    assert.equal(out[1], "https://example.com/x.png");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveImageSources: 单字符串返回单元素数组", () => {
+  assert.deepEqual(resolveImageSources("https://example.com/x.png"), ["https://example.com/x.png"]);
+});
+
+test("resolveImageSources: 空数组报错", () => {
+  assert.throws(() => resolveImageSources([]), /请至少提供一张图片/);
+});
+
+test("callRemoteDescribe: 多图数组转发到远程", async () => {
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    assert.ok(Array.isArray(body.params.arguments.image));
+    assert.equal(body.params.arguments.image.length, 2);
+    return {
+      status: 200,
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "对比结果" }] } }),
+    };
+  };
+  const text = await callRemoteDescribe({
+    baseUrl: "http://x", apiKey: "k", image: ["https://a.com/1.png", "https://a.com/2.png"], fetchImpl,
+  });
+  assert.equal(text, "对比结果");
 });

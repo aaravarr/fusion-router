@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { resolveImageSource, callRemoteDescribe, DEFAULT_BASE_URL } from "./lib.mjs";
+import { resolveImageSources, callRemoteDescribe, DEFAULT_BASE_URL } from "./lib.mjs";
 
 const HELP_TEXT = `opencode-mcp-bridge - 本地 stdio MCP 桥
 
@@ -68,7 +68,13 @@ const TOOLS_LIST = {
       inputSchema: {
         type: "object",
         properties: {
-          image: { type: "string", description: "本地图片路径或 http(s) URL" },
+          image: {
+            oneOf: [
+              { type: "string", description: "本地图片路径或 http(s) URL" },
+              { type: "array", items: { type: "string" }, description: "多张图片（本地路径或 URL 数组）" },
+            ],
+            description: "单张传字符串，多张传数组；支持本地图片路径或 http(s) URL",
+          },
           prompt: {
             type: "string",
             description: "可选：本次调用的提问/提示词，不传则由模型直接看图回答",
@@ -109,11 +115,11 @@ async function handleMessage(msg, config) {
         if (!config.apiKey) {
           throw new Error("未配置 API Key，请设置 OPENCODE_MCP_API_KEY 或 --api-key");
         }
-        const image = resolveImageSource(args?.image);
+        const images = resolveImageSources(args?.image);
         const text = await callRemoteDescribe({
           baseUrl: config.baseUrl,
           apiKey: config.apiKey,
-          image,
+          image: images,
           prompt: args?.prompt,
           id: msg.id,
         });

@@ -64,7 +64,7 @@ describe("describeImage", () => {
     })
 
     const result = await describeImage(
-      { image: "https://example.com/a.png", prompt: "请描述这张图片的内容" },
+      { images: ["https://example.com/a.png"], prompt: "请描述这张图片的内容" },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -86,7 +86,7 @@ describe("describeImage", () => {
       })
     })
     const result = await describeImage(
-      { image: "https://example.com/a.png" },
+      { images: ["https://example.com/a.png"] },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -104,7 +104,7 @@ describe("describeImage", () => {
       })
     })
     const result = await describeImage(
-      { image: "https://example.com/a.png" },
+      { images: ["https://example.com/a.png"] },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -123,7 +123,7 @@ describe("describeImage", () => {
       })
     })
     const result = await describeImage(
-      { image: "https://example.com/a.png" },
+      { images: ["https://example.com/a.png"] },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -146,7 +146,7 @@ describe("describeImage", () => {
       })
     })
     const result = await describeImage(
-      { image: "https://example.com/a.png" },
+      { images: ["https://example.com/a.png"] },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -164,7 +164,7 @@ describe("describeImage", () => {
       })
     })
     const result = await describeImage(
-      { image: "https://example.com/a.png" },
+      { images: ["https://example.com/a.png"] },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -172,10 +172,34 @@ describe("describeImage", () => {
     expect(result.text).toBe("画面中有一只橘猫")
   })
 
+  it("多图同时输入时生成多个 image_url part", async () => {
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as {
+        messages: Array<{ content: Array<{ type: string; text?: string; image_url?: { url: string } }> }>
+      }
+      expect(body.messages[0].content).toHaveLength(3)
+      expect(body.messages[0].content[0]).toEqual({ type: "text", text: "对比这两张图" })
+      expect(body.messages[0].content[1]).toEqual({ type: "image_url", image_url: { url: "https://example.com/a.png" } })
+      expect(body.messages[0].content[2]).toEqual({ type: "image_url", image_url: { url: "https://example.com/b.png" } })
+      return new Response(JSON.stringify({ choices: [{ message: { content: "图 A 是猫，图 B 是狗" } }] }), {
+        status: 200,
+      })
+    })
+    const result = await describeImage(
+      { images: ["https://example.com/a.png", "https://example.com/b.png"], prompt: "对比这两张图" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
+    expect(result.text).toBe("图 A 是猫，图 B 是狗")
+  })
+
   it("未配置模型时报错", async () => {
     updateMcpTool("describe_image", { config: { model: "" } }, db)
     await expect(
-      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, vi.fn()),
+      describeImage({
+      images: ["https://example.com/a.png"],
+    }, db, { ownerUserId: "user-1" }, vi.fn()),
     ).rejects.toThrow("尚未配置识图模型")
   })
 
@@ -195,7 +219,7 @@ describe("describeImage", () => {
     })
 
     const result = await describeImage(
-      { image: "https://example.com/a.png" },
+      { images: ["https://example.com/a.png"] },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -220,7 +244,7 @@ describe("describeImage", () => {
     })
 
     const result = await describeImage(
-      { image: "https://example.com/a.png", prompt: "这只猫在做什么？" },
+      { images: ["https://example.com/a.png"], prompt: "这只猫在做什么？" },
       db,
       { ownerUserId: "user-1" },
       callGateway,
@@ -233,7 +257,9 @@ describe("describeImage", () => {
       new Response(JSON.stringify({ error: { message: "余额不足" } }), { status: 402 }),
     )
     await expect(
-      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, callGateway),
+      describeImage({
+      images: ["https://example.com/a.png"],
+    }, db, { ownerUserId: "user-1" }, callGateway),
     ).rejects.toThrow("余额不足")
   })
 
@@ -242,13 +268,17 @@ describe("describeImage", () => {
       new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }),
     )
     await expect(
-      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, callGateway),
+      describeImage({
+      images: ["https://example.com/a.png"],
+    }, db, { ownerUserId: "user-1" }, callGateway),
     ).rejects.toThrow("模型未返回内容")
   })
 
   it("未指定调用用户时报错", async () => {
     await expect(
-      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "" }, vi.fn()),
+      describeImage({
+      images: ["https://example.com/a.png"],
+    }, db, { ownerUserId: "" }, vi.fn()),
     ).rejects.toThrow("未指定调用用户")
   })
 })
@@ -278,7 +308,7 @@ describe("describeImageStream", () => {
     })
 
     const stream = await describeImageStream(
-      { image: "https://example.com/a.png", prompt: "描述一下" },
+      { images: ["https://example.com/a.png"], prompt: "描述一下" },
       db,
       { ownerUserId: "user-1" },
       42,
@@ -303,7 +333,7 @@ describe("describeImageStream", () => {
       }),
     )
     const stream = await describeImageStream(
-      { image: "https://example.com/a.png" },
+      { images: ["https://example.com/a.png"] },
       db,
       { ownerUserId: "user-1" },
       "req-1",
@@ -319,14 +349,18 @@ describe("describeImageStream", () => {
       new Response(JSON.stringify({ error: { message: "余额不足" } }), { status: 402 }),
     )
     await expect(
-      describeImageStream({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, 1, callGateway),
+      describeImageStream({
+      images: ["https://example.com/a.png"],
+    }, db, { ownerUserId: "user-1" }, 1, callGateway),
     ).rejects.toThrow("余额不足")
   })
 
   it("未配置模型时报错", async () => {
     updateMcpTool("describe_image", { config: { model: "" } }, db)
     await expect(
-      describeImageStream({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, 1, vi.fn()),
+      describeImageStream({
+      images: ["https://example.com/a.png"],
+    }, db, { ownerUserId: "user-1" }, 1, vi.fn()),
     ).rejects.toThrow("尚未配置识图模型")
   })
 })
