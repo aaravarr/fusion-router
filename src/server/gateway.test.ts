@@ -541,8 +541,10 @@ describe("gateway logging", () => {
     expect(response.status).toBe(200)
     expect(sentUrl).toContain("/chat/completions")
     const tools = sent.tools as Array<{ type?: string; name?: string }>
-    expect(tools.map((t) => t.type)).toEqual(["function"])
+    // opencode-go 请求带 web_search/x_search 时：转为 function 工具声明注入（模型自主决定是否调用）
+    expect(tools.map((t) => t.type)).toEqual(["function", "function"])
     expect(String(tools[0].name || "")).toBe("")
+    expect(String((tools[1] as { function?: { name?: string } })?.function?.name || "")).toBe("web_search")
     const text = await response.text()
     expect(text).toContain('"type":"response.reasoning_summary_text.delta"')
     expect(text).toContain('"delta":"step one"')
@@ -603,40 +605,30 @@ describe("gateway logging", () => {
     expect(response.headers.get("x-grok-fallback")).toBe("chat_completions")
   })
 
-  it("opencode-go 不支持 web_search 时自动委托 DeepSeek 搜索并注入结果，响应带原生 web_search_call", async () => {
+  it("opencode-go 带 web_search 时注入 function 工具声明；模型调用后两轮委托搜索并回填结果", async () => {
     const { db, apiKey, credentials, hasher } = setup()
-    extractSearchQueryMock.mockImplementation((body: unknown) => {
-      const input = (body as { input?: unknown })?.input
-      if (typeof input === "string") return input
-      if (Array.isArray(input)) {
-        for (let i = input.length - 1; i >= 0; i--) {
-          const content = (input[i] as { content?: unknown } | undefined)?.content
-          if (Array.isArray(content)) {
-            for (let j = content.length - 1; j >= 0; j--) {
-              const text = (content[j] as { text?: unknown } | undefined)?.text
-              if (typeof text === "string" && text) return text
-            }
-          }
-        }
-      }
-      return ""
-    })
     delegateWebSearchMock.mockResolvedValue({
       query: "2026年冬奥会主办城市",
       text: "根据搜索结果，2026冬奥会由意大利米兰和科尔蒂纳丹佩佐联合主办。",
       model: "deepseek-v4-flash",
     })
-    let sentUrl = ""
-    let sentBody: { messages?: Array<{ role?: string; content?: unknown }>; tools?: unknown } = {}
-    const fetcher = vi.fn().mockImplementation(async (url: unknown, init?: { body?: unknown }) => {
-      sentUrl = String(url)
-      sentBody = JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)) as typeof sentBody
+    const bodies: Array<{ messages?: unknown; tools?: unknown; stream?: unknown }> = []
+    const fetcher = vi.fn().mockImplementation(async (_url: unknown, init?: { body?: unknown }) => {
+      const index = bodies.length
+      bodies.push(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)))
+      if (index === 0) {
+        // 第一轮：模型决定调用 web_search
+        return Response.json({
+          id: "chatcmpl_1", object: "chat.completion", model: "deepseek-v4-flash",
+          choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "web_search", arguments: "{\"query\": \"2026年冬奥会主办城市\"}" } }] }, finish_reason: "tool_calls" }],
+          usage: {},
+        })
+      }
+      // 第二轮：基于搜索结果作答
       return Response.json({
-        id: "chatcmpl_1",
-        object: "chat.completion",
-        model: "deepseek-v4-flash",
-        choices: [{ index: 0, message: { role: "assistant", content: "基于搜索结果：米兰和科尔蒂纳丹佩佐。" }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        id: "chatcmpl_2", object: "chat.completion", model: "deepseek-v4-flash",
+        choices: [{ index: 0, message: { role: "assistant", content: "2026冬奥会由米兰和科尔蒂纳丹佩佐联合主办。" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
       })
     })
     const req = new Request("http://localhost/v1/responses", {
@@ -650,33 +642,34 @@ describe("gateway logging", () => {
     })
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
     expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    // 第一轮：tools 含 web_search function 声明，且强制非流式
+    const first = bodies[0] as { tools?: Array<{ function?: { name?: string } }>; stream?: unknown; messages?: unknown }
+    const toolNames = (first.tools ?? []).map((t) => t.function?.name)
+    expect(toolNames).toContain("web_search")
+    expect(first.stream).toBe(false)
+    // 第二轮：回填 tool 消息
+    const second = bodies[1] as { messages?: Array<{ role?: string; content?: unknown; tool_call_id?: unknown }> }
+    const toolMsg = second.messages?.find((m) => m.role === "tool")
+    expect(toolMsg).toBeTruthy()
+    expect(String(toolMsg?.content)).toContain("米兰和科尔蒂纳丹佩佐")
     expect(delegateWebSearchMock).toHaveBeenCalledTimes(1)
-    expect(delegateWebSearchMock).toHaveBeenCalledWith(expect.objectContaining({ query: "2026年冬奥会主办城市是哪里？", fallbackModel: "deepseek-v4-flash" }))
-    expect(sentUrl).toContain("/chat/completions")
-    const systemMsg = sentBody.messages?.find((m) => m.role === "system")
-    expect(systemMsg).toBeTruthy()
-    expect(String(systemMsg?.content)).toContain("以下是针对本次对话的实时网络搜索结果")
-    expect(String(systemMsg?.content)).toContain("米兰和科尔蒂纳丹佩佐")
-    const toolTypes = Array.isArray(sentBody.tools) ? (sentBody.tools as Array<{ type?: string }>).map((t) => t.type) : []
-    expect(toolTypes).not.toContain("web_search")
+    expect(delegateWebSearchMock).toHaveBeenCalledWith(expect.objectContaining({ query: "2026年冬奥会主办城市", fallbackModel: "deepseek-v4-flash" }))
     const json = (await response.json()) as { output: Array<{ type?: string; action?: { query?: string } }> }
     expect(json.output[0]?.type).toBe("web_search_call")
     expect(json.output[0]?.action?.query).toBe("2026年冬奥会主办城市")
     expect(response.headers.get("x-responses-route")).toBe("chat")
   })
 
-  it("搜索委托失败时降级：请求仍成功，不带搜索结果，响应无 web_search_call", async () => {
+  it("opencode-go 带 web_search 但模型判断无需搜索时，只请求一次且响应无搜索痕迹", async () => {
     const { db, apiKey, credentials, hasher } = setup()
-    extractSearchQueryMock.mockReturnValue("搜索问题")
-    delegateWebSearchMock.mockRejectedValue(new Error("deepseek 池无可用账号"))
-    let sentBody: { messages?: Array<{ role?: string }> } = {}
     const fetcher = vi.fn().mockImplementation(async (_url: unknown, init?: { body?: unknown }) => {
-      sentBody = JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)) as typeof sentBody
+      void init
       return Response.json({
         id: "chatcmpl_1",
         object: "chat.completion",
         model: "deepseek-v4-flash",
-        choices: [{ index: 0, message: { role: "assistant", content: "抱歉无法回答" }, finish_reason: "stop" }],
+        choices: [{ index: 0, message: { role: "assistant", content: "1+1等于2。" }, finish_reason: "stop" }],
         usage: {},
       })
     })
@@ -685,28 +678,75 @@ describe("gateway logging", () => {
       headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
       body: JSON.stringify({
         model: "deepseek-v4-flash",
-        input: "搜索问题",
+        input: "1+1等于几？",
         tools: [{ type: "web_search" }],
       }),
     })
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
     expect(response.status).toBe(200)
-    expect(sentBody.messages?.some((m) => m.role === "system")).toBe(false)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(delegateWebSearchMock).not.toHaveBeenCalled()
     const json = (await response.json()) as { output: Array<{ type?: string }> }
     expect(json.output.some((o) => o.type === "web_search_call")).toBe(false)
   })
 
-  it("流式委托：SSE 前置 web_search_call 生命周期事件", async () => {
+  it("模型调用 web_search 但搜索委托失败时，回填降级提示并正常作答", async () => {
     const { db, apiKey, credentials, hasher } = setup()
-    extractSearchQueryMock.mockReturnValue("搜索问题")
+    delegateWebSearchMock.mockRejectedValue(new Error("deepseek 池无可用账号"))
+    const bodies: Array<{ messages?: Array<{ role?: string; content?: unknown; tool_call_id?: unknown }> }> = []
+    const fetcher = vi.fn().mockImplementation(async (_url: unknown, init?: { body?: unknown }) => {
+      const index = bodies.length
+      bodies.push(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)))
+      if (index === 0) {
+        return Response.json({
+          id: "chatcmpl_1", object: "chat.completion", model: "deepseek-v4-flash",
+          choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "web_search", arguments: "{\"query\": \"今日新闻\"}" } }] }, finish_reason: "tool_calls" }],
+          usage: {},
+        })
+      }
+      return Response.json({
+        id: "chatcmpl_2", object: "chat.completion", model: "deepseek-v4-flash",
+        choices: [{ index: 0, message: { role: "assistant", content: "抱歉，搜索暂时不可用。" }, finish_reason: "stop" }],
+        usage: {},
+      })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "deepseek-v4-flash",
+        input: "今天有什么新闻？",
+        tools: [{ type: "web_search" }],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    const toolMsg = bodies[1]?.messages?.find((m) => m.role === "tool")
+    expect(String(toolMsg?.content)).toContain("搜索暂时不可用")
+    const json = (await response.json()) as { output: Array<{ type?: string }> }
+    expect(json.output.some((o) => o.type === "web_search_call")).toBe(true)
+  })
+
+  it("客户端 stream=true 时，委托场景把最终结果以 SSE 流返回", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
     delegateWebSearchMock.mockResolvedValue({ query: "q1", text: "搜索文本", model: "deepseek-v4-flash" })
-    const sse = [
-      "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"你好\"}}]}",
-      "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}",
-      "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}",
-      "data: [DONE]",
-    ].join("\n\n") + "\n\n"
-    const fetcher = vi.fn().mockResolvedValue(new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }))
+    const fetcher = vi.fn().mockImplementation(async (_url: unknown, init?: { body?: unknown }) => {
+      const index = fetcher.mock.calls.length - 1
+      void init
+      if (index === 0) {
+        return Response.json({
+          id: "chatcmpl_1", object: "chat.completion", model: "deepseek-v4-flash",
+          choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "web_search", arguments: "{\"query\": \"q1\"}" } }] }, finish_reason: "tool_calls" }],
+          usage: {},
+        })
+      }
+      return Response.json({
+        id: "chatcmpl_2", object: "chat.completion", model: "deepseek-v4-flash",
+        choices: [{ index: 0, message: { role: "assistant", content: "搜索到了结果。" }, finish_reason: "stop" }],
+        usage: {},
+      })
+    })
     const req = new Request("http://localhost/v1/responses", {
       method: "POST",
       headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
@@ -719,9 +759,11 @@ describe("gateway logging", () => {
     })
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
     expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toContain("text/event-stream")
     const text = await response.text()
     expect(text).toContain("response.web_search_call.searching")
     expect(text).toContain("\"query\":\"q1\"")
     expect(text).toContain("response.web_search_call.completed")
+    expect(text).toContain("response.completed")
   })
 })
