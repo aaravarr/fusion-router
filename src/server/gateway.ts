@@ -13,13 +13,14 @@ import { convertChatJsonToResponses, convertChatStreamToResponses, prepareChatRe
 import type { CodexToolContext } from "./responses/codex-chat-compat"
 import { tryGetProvider, getProviderRegistry, type UpstreamErrorClassification } from "./providers"
 import { isXaiPaidAccount } from "./providers/xai-grok"
-import { injectDefaultServerTools, normalizeToolsInBody } from "./responses/tool-schema"
+import { bodyHasServerSearchTool, injectDefaultServerTools, normalizeToolsInBody } from "./responses/tool-schema"
 import { resolveMirrorUrlForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
 import { normalizeOpenCodeGoResponsesSse } from "./responses/opencode-go-compat"
 import { hasImageInBody, modelSupportsImage, rewriteImagesToText } from "./mcp/openrouter-models"
+import { delegateWebSearch, extractSearchQueryFromResponsesBody, type DelegateSearchResult } from "./web-search-delegate"
 
 export interface AccessCredential { accountId: string; goApiKey: string; credentialVersion: number }
 export interface CredentialProvider { get(ownerUserId: string, accountId: string): Promise<AccessCredential> }
@@ -406,6 +407,10 @@ export class GatewayService {
     let lastAttemptAccountId: string | undefined
     let lastAttemptAccountName: string | undefined
     let retryAfterSeconds: number | undefined
+    // web_search 委托：主 Provider（如 opencode-go）不支持 web_search 时，
+    // 自动用配置的搜索 Provider（DeepSeek 官方池）完成搜索，并把结果注入主请求。
+    let delegatedSearch: DelegateSearchResult | undefined
+    let delegateMarked = false
 
     while (true) {
       if (attemptNumber >= maxFailoverAttempts) {
@@ -506,7 +511,40 @@ export class GatewayService {
          }
        }
        if (processResponses && selection.account.poolType === "opencode-go" && !attemptChatFallbackUsed) {
-         const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson, [], { reasoningItems: (responsesProcessMeta?.reasoningItems ?? []).map((reasoning_content) => ({ reasoning_content })) })
+         // OpenCode Go 不支持 responses server search tools（web_search/x_search）。
+         // 请求带 web_search 时：委托配置的搜索 Provider（DeepSeek 官方池）执行搜索，
+         // 把搜索总结注入主请求上下文，再由 opencode-go 基于结果作答，客户端无感知。
+         let delegateBody: unknown = responsesNativeBody ?? requestBodyJson
+         if (bodyHasServerSearchTool(delegateBody)) {
+           if (!delegatedSearch) {
+             try {
+               const searchQuery = extractSearchQueryFromResponsesBody(delegateBody) || ""
+               if (searchQuery) {
+                 delegatedSearch = await delegateWebSearch({
+                   query: searchQuery,
+                   ownerUserId: apiKey.ownerUserId,
+                   db: this.db,
+                   fallbackModel: model || undefined,
+                 })
+               }
+             } catch (cause) {
+               console.warn("[gateway] web_search delegate failed: " + (cause instanceof Error ? cause.message : String(cause)))
+               delegatedSearch = undefined
+             }
+           }
+           if (delegatedSearch?.text) {
+             delegateBody = injectSearchContext(delegateBody, delegatedSearch.text)
+             if (!delegateMarked) {
+               delegateMarked = true
+               const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+               if (!parts.some((p) => p.startsWith("delegate-search:"))) parts.splice(1, 0, "delegate-search:" + delegatedSearch.model)
+               routeMeta.transformSummary = parts.join(" | ")
+               this.db.prepare("UPDATE gateway_requests SET transform_summary=?, process_mode=process_mode WHERE id=?")
+                 .run(routeMeta.transformSummary, requestId)
+             }
+           }
+         }
+         const convertedRequest = buildChatFallbackFromResponsesWithContext(delegateBody, [], { reasoningItems: (responsesProcessMeta?.reasoningItems ?? []).map((reasoning_content) => ({ reasoning_content })) })
          attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(prepareChatRequestBody(convertedRequest.body)))
          attemptToolContext = convertedRequest.toolContext
          attemptEndpoint = "chat/completions"
@@ -747,6 +785,7 @@ export class GatewayService {
             headers.set("x-grok-fallback-to", "/v1/chat/completions")
             if (attemptResponsesRouteReason) headers.set("x-grok-fallback-reason", attemptResponsesRouteReason)
           }
+          if (delegatedSearch) outStream = prependWebSearchCallStream(outStream, delegatedSearch.query)
           return new Response(outStream, { status, headers })
         }
         routing.markSuccess(selection.account.id)
@@ -776,6 +815,7 @@ export class GatewayService {
             if (attemptChatFallbackUsed) remappedJson = convertChatJsonToResponses(json, responsesModelHint, attemptToolContext)
             else if (attemptToolContext) remappedJson = remapResponsesSuccessBody(json, attemptToolContext)
             else remappedJson = json
+            if (delegatedSearch) remappedJson = prependWebSearchCallItem(remappedJson, delegatedSearch.query)
             outBytes = new TextEncoder().encode(JSON.stringify(remappedJson))
           } catch { /* keep original bytes */ }
 
@@ -950,4 +990,145 @@ export class GatewayService {
         .run(ownerUserId, accountId, w.kind, w.usagePercent, resetAt, timestamp, w.limitValue ?? null, w.remainingValue ?? null)
     }
   }
+}
+// ---------------- web_search 委托辅助函数 ----------------
+const SEARCH_CONTEXT_PREAMBLE =
+  "以下是针对本次对话的实时网络搜索结果，请优先基于这些信息回答用户的问题，并可在回答中注明信息来源：\n\n"
+
+function injectSearchContext(body: unknown, searchText: string): unknown {
+  const current = body && typeof body === "object" ? { ...(body as Record<string, unknown>) } : {}
+  const systemItem = {
+    role: "system",
+    content: [{ type: "input_text", text: SEARCH_CONTEXT_PREAMBLE + searchText }],
+  }
+  const input = current.input
+  let injected: unknown
+  if (typeof input === "string") {
+    injected = [
+      { role: "user", content: [{ type: "input_text", text: input }] },
+      systemItem,
+    ]
+  } else if (Array.isArray(input)) {
+    injected = [...input, systemItem]
+  } else {
+    injected = [systemItem]
+  }
+  return { ...current, input: injected }
+}
+
+/** 非流式：在 responses JSON 的 output 头部插入一个已完成的 web_search_call item。 */
+function prependWebSearchCallItem(body: unknown, query: string): unknown {
+  if (!body || typeof body !== "object") return body
+  const record = body as { output?: unknown }
+  const id = "ws_" + randomUUID().replace(/-/g, "").slice(0, 16)
+  const item = {
+    type: "web_search_call",
+    id,
+    status: "completed",
+    action: { type: "search", query, sources: [] },
+    xai_tool: "web_search",
+  }
+  const output = Array.isArray(record.output) ? [item, ...record.output] : [item]
+  return { ...record, output }
+}
+
+/**
+ * 流式：在 responses SSE 流前面插入 web_search_call 生命周期事件，
+ * 并把上游后续事件的 output_index 整体 +1（web_search_call 占 index 0），
+ * 保证客户端 UI 按顺序展示"已搜索 -> 模型回答"。
+ */
+function prependWebSearchCallStream(
+  stream: ReadableStream<Uint8Array>,
+  query: string,
+): ReadableStream<Uint8Array> {
+  const id = "ws_" + randomUUID().replace(/-/g, "").slice(0, 16)
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  const events: string[] = []
+  const push = (type: string, data: unknown): void => {
+    events.push("event: " + type + "\ndata: " + JSON.stringify(data) + "\n\n")
+  }
+  push("response.output_item.added", {
+    type: "response.output_item.added",
+    output_index: 0,
+    item: { type: "web_search_call", id, status: "in_progress" },
+  })
+  push("response.web_search_call.in_progress", {
+    type: "response.web_search_call.in_progress",
+    item_id: id,
+    output_index: 0,
+  })
+  push("response.web_search_call.searching", {
+    type: "response.web_search_call.searching",
+    item_id: id,
+    output_index: 0,
+  })
+  push("response.web_search_call.completed", {
+    type: "response.web_search_call.completed",
+    item_id: id,
+    output_index: 0,
+  })
+  push("response.output_item.done", {
+    type: "response.output_item.done",
+    output_index: 0,
+    item: {
+      type: "web_search_call",
+      id,
+      status: "completed",
+      action: { type: "search", query, sources: [] },
+    },
+  })
+  const prelude = encoder.encode(events.join(""))
+  const reader = stream.getReader()
+  let buffer = ""
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(prelude)
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let nl: number
+          while ((nl = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, nl).replace(/\r$/, "")
+            buffer = buffer.slice(nl + 1)
+            let out = line
+            if (line.startsWith("data:")) {
+              const payload = line.slice(5).trimStart()
+              if (payload && payload !== "[DONE]") {
+                try {
+                  const parsed = JSON.parse(payload) as { output_index?: unknown }
+                  if (parsed && typeof parsed === "object" && typeof parsed.output_index === "number") {
+                    parsed.output_index = parsed.output_index + 1
+                  }
+                  out = "data: " + JSON.stringify(parsed)
+                } catch {
+                  // 保留原始行
+                }
+              }
+            }
+            controller.enqueue(encoder.encode(out + "\n"))
+          }
+        }
+        if (buffer) controller.enqueue(encoder.encode(buffer))
+      } catch (cause) {
+        controller.error(cause)
+      } finally {
+        try {
+          await reader.cancel()
+        } catch {
+          // 已关闭
+        }
+        controller.close()
+      }
+    },
+    cancel(reason) {
+      try {
+        void reader.cancel(reason)
+      } catch {
+        // 已关闭
+      }
+    },
+  })
 }
