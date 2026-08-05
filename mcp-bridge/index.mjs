@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolveImageSources, callRemoteDescribe, DEFAULT_BASE_URL } from "./lib.mjs";
 
@@ -162,7 +163,25 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
+/**
+ * 判断当前模块是否作为入口脚本被直接运行。
+ *
+ * npm 在 macOS/Linux 上通过 .bin 符号链接启动 bin，此时 process.argv[1] 是链接路径，
+ * 而 import.meta.url 是 Node 解析符号链接后的真实路径，直接比较会不相等，
+ * 导致 main() 不执行、进程静默退出（MCP 客户端报 Connection closed）。
+ * 这里先用 realpathSync 解析符号链接后再比较。
+ */
+export function isDirectRun(argv1, metaUrl = import.meta.url) {
+  if (!argv1) return false;
+  try {
+    return metaUrl === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    // 路径解析失败时退化为原样比较，保持旧行为
+    return metaUrl === pathToFileURL(argv1).href;
+  }
+}
+
 // 直接作为脚本运行时启动；被 import（如测试）时不自动启动
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectRun(process.argv[1])) {
   main();
 }

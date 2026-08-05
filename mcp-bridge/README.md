@@ -79,9 +79,10 @@ node mcp-bridge/index.mjs --base-url http://49.233.103.93:13600 --api-key ocg_xx
    ```json
    { "command": "cmd", "args": ["/c", "npx", "-y", "fusionrouter-mcp", "--base-url", "http://49.233.103.93:13600", "--api-key", "ocg_xxx"] }
    ```
-3. **连接超时（MCP error -32000: Connection closed）**：多为 npx 首次下载包太慢、客户端启动超时杀掉进程。两种解决：
-   - 先手动执行一次 `npx -y fusionrouter-mcp`（或 `npm install -g fusionrouter-mcp --registry=https://registry.npmjs.org` 全局安装），建立缓存/全局 bin，之后启动就是秒开；
-   - 全局安装后直接用全局命令：`"command": "fusionrouter-mcp", "args": ["--base-url", "http://49.233.103.93:13600", "--api-key", "ocg_xxx"]`（Windows 上若仍不识别，套 `cmd /c`）。
+3. **连接超时（MCP error -32000: Connection closed）**：早期版本（≤0.1.4）在 macOS/Linux 上通过 npx 启动时可能静默退出，原因是入口守卫未解析符号链接（已修复，0.1.5+ 无此问题）。若仍遇到：
+   - 升级到最新版：`npx -y fusionrouter-mcp@latest`；
+   - 或先手动执行一次 `npx -y fusionrouter-mcp`（或 `npm install -g fusionrouter-mcp --registry=https://registry.npmjs.org` 全局安装），建立缓存/全局 bin；
+   - 全局安装后可直接用全局命令：`"command": "fusionrouter-mcp", "args": ["--base-url", "http://49.233.103.93:13600", "--api-key", "ocg_xxx"]`（Windows 上若仍不识别，套 `cmd /c`）。
 4. 国内网络访问 npmjs 慢：全局安装时加 `--registry=https://registry.npmjs.org`，或等腾讯云镜像同步后使用镜像源。
 
 ## 快速安装（推荐）

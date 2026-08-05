@@ -25,7 +25,7 @@
   ],
   "version": "0.1.4",
   "scripts": {
-    "test": "node --test ./install.test.mjs ./lib.test.mjs"
+    "test": "node --test ./install.test.mjs ./lib.test.mjs ./index.test.mjs"
   },
   "license": "MIT"
 }
