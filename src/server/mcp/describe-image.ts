@@ -46,6 +46,8 @@ export async function describeImage(
       prompt: "",
       maxTokens: 1024,
       temperature: 0.3,
+      reasoningEnabled: false,
+      reasoningEffort: null,
     }
   const config: DescribeImageConfig = { ...defaultConfig, ...tool.config }
   if (!config.model) throw new Error("尚未配置识图模型，请先在管理后台 MCP 页面选择模型")
@@ -59,7 +61,17 @@ export async function describeImage(
       ]
     : [{ type: "image_url", image_url: { url: imageUrl } }]
 
-  const body = {
+  const body: {
+    model: string
+    stream: boolean
+    messages: Array<{
+      role: string
+      content: Array<{ type: string; text?: string; image_url?: { url: string } }>
+    }>
+    max_tokens: number
+    temperature: number
+    reasoning_effort?: "low" | "medium" | "high"
+  } = {
     model: config.model,
     stream: false,
     messages: [
@@ -70,6 +82,9 @@ export async function describeImage(
     ],
     max_tokens: config.maxTokens,
     temperature: config.temperature,
+  }
+  if (config.reasoningEnabled && config.reasoningEffort) {
+    body.reasoning_effort = config.reasoningEffort
   }
 
   const request = new Request("http://internal/mcp/describe_image", {

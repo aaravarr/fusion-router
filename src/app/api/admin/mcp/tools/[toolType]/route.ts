@@ -11,6 +11,8 @@ const configSchema = z.object({
   prompt: z.string().optional(),
   maxTokens: z.number().int().min(1).max(32768).optional(),
   temperature: z.number().min(0).max(2).optional(),
+  reasoningEnabled: z.boolean().optional(),
+  reasoningEffort: z.enum(["low", "medium", "high"]).nullable().optional(),
 })
 
 const updateSchema = z.object({

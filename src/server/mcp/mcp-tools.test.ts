@@ -37,6 +37,8 @@ describe("mcp tools", () => {
       prompt: DEFAULT_DESCRIBE_IMAGE_PROMPT,
       maxTokens: 1024,
       temperature: 0.3,
+      reasoningEnabled: false,
+      reasoningEffort: null,
     })
     expect(DEFAULT_DESCRIBE_IMAGE_PROMPT).toBe("")
 
@@ -78,6 +80,8 @@ describe("mcp tools", () => {
     expect(() => updateMcpTool("describe_image", { config: { temperature: 3 } }, db)).toThrow(/0 到 2/)
     expect(() => updateMcpTool("describe_image", { config: { temperature: -1 } }, db)).toThrow(/0 到 2/)
     expect(() => updateMcpTool("describe_image", { config: { model: 123 as unknown as string } }, db)).toThrow(/字符串/)
+    expect(() => updateMcpTool("describe_image", { config: { reasoningEnabled: "yes" as unknown as boolean } }, db)).toThrow(/布尔值/)
+    expect(() => updateMcpTool("describe_image", { config: { reasoningEffort: "extreme" as unknown as "low" } }, db)).toThrow(/low、medium、high/)
     expect(() => updateMcpTool("unknown_tool", {}, db)).toThrow(/not found/)
   })
 })

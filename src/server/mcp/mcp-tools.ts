@@ -9,6 +9,8 @@ export interface DescribeImageConfig {
   prompt: string
   maxTokens: number
   temperature: number
+  reasoningEnabled: boolean
+  reasoningEffort: "low" | "medium" | "high" | null
 }
 
 export interface McpToolRecord {
@@ -56,6 +58,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       prompt: DEFAULT_DESCRIBE_IMAGE_PROMPT,
       maxTokens: 1024,
       temperature: 0.3,
+      reasoningEnabled: false,
+      reasoningEffort: null,
     },
   },
 ]
@@ -79,6 +83,8 @@ function defaultConfigFor(toolType: string): DescribeImageConfig {
       prompt: DEFAULT_DESCRIBE_IMAGE_PROMPT,
       maxTokens: 1024,
       temperature: 0.3,
+      reasoningEnabled: false,
+      reasoningEffort: null,
     }
   )
 }
@@ -156,6 +162,15 @@ export function updateMcpTool(
       const value = input.config.temperature
       if (typeof value !== "number" || Number.isNaN(value) || value < 0 || value > 2) {
         throw new Error("temperature 必须是 0 到 2 之间的数字")
+      }
+    }
+    if ("reasoningEnabled" in input.config && typeof input.config.reasoningEnabled !== "boolean") {
+      throw new Error("reasoningEnabled 必须是布尔值")
+    }
+    if ("reasoningEffort" in input.config) {
+      const value = input.config.reasoningEffort
+      if (value !== null && value !== "low" && value !== "medium" && value !== "high") {
+        throw new Error("reasoningEffort 必须是 low、medium、high 之一或 null")
       }
     }
   }

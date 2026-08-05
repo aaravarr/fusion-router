@@ -72,6 +72,63 @@ describe("describeImage", () => {
     expect(result).toEqual({ text: "画面中有一只橘猫", model: "grok-4", accountName: null })
   })
 
+  it("开启思考并选择 low 时透传 reasoning_effort", async () => {
+    updateMcpTool(
+      "describe_image",
+      { config: { reasoningEnabled: true, reasoningEffort: "low" } },
+      db,
+    )
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as { reasoning_effort?: string }
+      expect(body.reasoning_effort).toBe("low")
+      return new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
+        status: 200,
+      })
+    })
+    const result = await describeImage(
+      { image: "https://example.com/a.png" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
+    expect(result.text).toBe("画面中有一只橘猫")
+  })
+
+  it("未开启思考时不透传 reasoning_effort", async () => {
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as { reasoning_effort?: string }
+      expect(body.reasoning_effort).toBeUndefined()
+      return new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
+        status: 200,
+      })
+    })
+    const result = await describeImage(
+      { image: "https://example.com/a.png" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
+    expect(result.text).toBe("画面中有一只橘猫")
+  })
+
+  it("开启思考但未指定等级时不透传 reasoning_effort", async () => {
+    updateMcpTool("describe_image", { config: { reasoningEnabled: true, reasoningEffort: null } }, db)
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as { reasoning_effort?: string }
+      expect(body.reasoning_effort).toBeUndefined()
+      return new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
+        status: 200,
+      })
+    })
+    const result = await describeImage(
+      { image: "https://example.com/a.png" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
+    expect(result.text).toBe("画面中有一只橘猫")
+  })
+
   it("未配置模型时报错", async () => {
     updateMcpTool("describe_image", { config: { model: "" } }, db)
     await expect(

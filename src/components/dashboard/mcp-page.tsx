@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
 import {
-  Info,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -10,7 +9,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +26,8 @@ interface MCPToolConfig {
   prompt?: string;
   maxTokens?: number;
   temperature?: number;
+  reasoningEnabled?: boolean;
+  reasoningEffort?: "low" | "medium" | "high" | null;
 }
 interface MCPTool {
   toolType: string;
@@ -98,6 +99,8 @@ export function McpPage() {
   const [prompt, setPrompt] = useState("");
   const [maxTokens, setMaxTokens] = useState("1024");
   const [temperature, setTemperature] = useState("0.3");
+  const [reasoningEnabled, setReasoningEnabled] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState<string>("");
   const [catalogs, setCatalogs] = useState<ModelCatalog[]>([]);
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaError, setMetaError] = useState<string | null>(null);
@@ -144,6 +147,8 @@ export function McpPage() {
     setPrompt(config.prompt ?? "");
     setMaxTokens(config.maxTokens != null ? String(config.maxTokens) : "1024");
     setTemperature(config.temperature != null ? String(config.temperature) : "0.3");
+    setReasoningEnabled(config.reasoningEnabled === true);
+    setReasoningEffort(config.reasoningEffort ?? "");
     setFormError(null);
   }
 
@@ -189,6 +194,8 @@ export function McpPage() {
             prompt: prompt || undefined,
             maxTokens: maxTokensValue,
             temperature: temperatureValue,
+            reasoningEnabled,
+            reasoningEffort: reasoningEnabled && reasoningEffort ? reasoningEffort : null,
           },
         }),
       });
@@ -276,38 +283,26 @@ export function McpPage() {
       ) : (
         <div className="space-y-4">
           <Panel title="MCP 服务信息" description="MCP 客户端连接地址与鉴权方式。">
-            <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-4">
-              <InfoCell label="服务端点" mono>{endpoint}</InfoCell>
-              <InfoCell label="协议版本" mono>{server?.protocolVersion || "—"}</InfoCell>
-              <InfoCell label="工具数量">{server?.toolCount ?? tools.length}</InfoCell>
-              <div className="min-w-0">
-                <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;</InfoCell>
-                <p className="mt-2 px-1 text-[11px] leading-5 text-muted-foreground">使用用户在「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</p>
+            <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-[3fr_2fr]">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <InfoCell label="服务端点" mono>{endpoint}</InfoCell>
+                <InfoCell label="协议版本" mono>{server?.protocolVersion || "—"}</InfoCell>
+                <InfoCell label="工具数量">{server?.toolCount ?? tools.length}</InfoCell>
+                <div className="min-w-0">
+                  <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;</InfoCell>
+                  <p className="mt-2 px-1 text-[11px] leading-5 text-muted-foreground">使用用户在「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</p>
+                </div>
+              </div>
+              <div className="min-w-0 rounded-lg border bg-white p-4">
+                <p className="text-xs font-medium text-foreground">describe_image 接入示例（JSON-RPC）</p>
+                <pre className="mt-2 overflow-x-auto rounded-md bg-[#fafafa] p-3 font-mono text-[11px] leading-5">{MCP_JSON_EXAMPLE}</pre>
+                <div className="mt-3 space-y-1.5 text-[11px] leading-5 text-muted-foreground">
+                  <p>连接地址：<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code></p>
+                  <p>鉴权方式：<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Authorization: Bearer &lt;你的 API Key&gt;</code></p>
+                  <p>在「API 密钥」页创建 Key；识图请求使用该 Key 归属用户的账号池。支持 MCP 的客户端（如 Claude Desktop、Cursor）可直接接入。</p>
+                </div>
               </div>
             </div>
-            <Collapsible className="border-t px-4 py-2.5 sm:px-5">
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="-ml-2 h-7 text-xs text-muted-foreground">
-                  <Info data-icon="inline-start" />
-                  连接说明
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="mt-3 grid gap-4 pb-3 lg:grid-cols-2">
-                  <div className="space-y-2.5 text-xs leading-6 text-muted-foreground">
-                    <p className="font-medium text-foreground">MCP 客户端连接</p>
-                    <p><span>连接地址：</span><code className="rounded-md border bg-white px-1.5 py-0.5 font-mono text-[11px] text-foreground">{endpoint}</code></p>
-                    <p><span>鉴权方式：</span><code className="rounded-md border bg-white px-1.5 py-0.5 font-mono text-[11px] text-foreground">Authorization: Bearer &lt;你的 API Key&gt;</code></p>
-                    <p>在「API 密钥」页创建；识图请求使用该 Key 归属用户的账号池。</p>
-                    <p>在支持 MCP 的客户端（如 Claude Desktop、Cursor）中配置以上连接地址与鉴权头，即可调用本服务暴露的工具。</p>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="mb-2 text-xs font-medium text-foreground">describe_image 调用示例（JSON-RPC）</p>
-                    <pre className="overflow-x-auto rounded-lg border bg-white p-3 font-mono text-[11px] leading-5">{MCP_JSON_EXAMPLE}</pre>
-                  </div>
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
           </Panel>
 
           <Panel title="工具列表" description={`${tools.length} 个工具；停用后外部客户端无法调用。`}>
@@ -332,11 +327,16 @@ export function McpPage() {
                       <TableCell><Badge variant="outline" className="font-mono text-[11px]">{tool.toolType}</Badge></TableCell>
                       <TableCell className="max-w-72 whitespace-normal text-xs text-muted-foreground">{tool.description || "—"}</TableCell>
                       <TableCell>
-                        {tool.config?.model ? (
-                          <span className="font-mono text-xs">{tool.config.model}</span>
-                        ) : (
-                          <Badge variant="outline" className="border-warning/20 bg-warning-soft text-warning">未配置</Badge>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {tool.config?.model ? (
+                            <span className="font-mono text-xs">{tool.config.model}</span>
+                          ) : (
+                            <Badge variant="outline" className="border-warning/20 bg-warning-soft text-warning">未配置</Badge>
+                          )}
+                          {tool.config?.reasoningEnabled ? (
+                            <Badge variant="outline" className="text-[10px]">思考 {tool.config.reasoningEffort || "默认"}</Badge>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <button
@@ -426,6 +426,25 @@ export function McpPage() {
                 <Label htmlFor="mcp-temperature">温度</Label>
                 <Input id="mcp-temperature" type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(event.target.value)} />
               </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Checkbox id="mcp-reasoning" checked={reasoningEnabled} onCheckedChange={(value) => setReasoningEnabled(value === true)} />
+              <Label htmlFor="mcp-reasoning">开启思考</Label>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mcp-reasoning-effort">思考等级（可选）</Label>
+              <Select value={reasoningEffort} onValueChange={setReasoningEffort}>
+                <SelectTrigger id="mcp-reasoning-effort" className="w-full bg-white" disabled={!reasoningEnabled}>
+                  <SelectValue placeholder="不指定（默认）" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">不指定（默认）</SelectItem>
+                  <SelectItem value="low">低 (low)</SelectItem>
+                  <SelectItem value="medium">中 (medium)</SelectItem>
+                  <SelectItem value="high">高 (high)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] leading-5 text-muted-foreground">开启思考后透传 reasoning_effort 给模型；部分模型不支持该参数时请保持不指定。</p>
             </div>
             {metaLoading ? <p className="text-xs text-muted-foreground">正在加载 Provider 选项…</p> : null}
             {metaError ? <p className="text-sm text-destructive" role="alert">{metaError}</p> : null}

@@ -116,11 +116,11 @@ function Sidebar({ pathname, mobile = false }: { pathname: string; mobile?: bool
       <nav className="scrollbar-thin flex-1 overflow-y-auto p-3" aria-label="主导航">
         <p className="px-2 pb-2 pt-1 font-mono text-[10px] font-medium tracking-[0.08em] text-muted-foreground">OPERATE</p>
         <div className="space-y-0.5">
-          {visibleItems.filter((item) => !["/events", "/users", "/settings", "/mcp-tools"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
+          {visibleItems.filter((item) => !["/events", "/users", "/settings"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
         </div>
         <p className="px-2 pb-2 pt-6 font-mono text-[10px] font-medium tracking-[0.08em] text-muted-foreground">SYSTEM</p>
         <div className="space-y-0.5">
-          {visibleItems.filter((item) => ["/events", "/users", "/settings", "/mcp-tools"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
+          {visibleItems.filter((item) => ["/events", "/users", "/settings"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
         </div>
       </nav>
     </div>
