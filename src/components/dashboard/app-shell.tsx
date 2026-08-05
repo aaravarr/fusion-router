@@ -17,6 +17,7 @@ import {
   LogOut,
   UserCog,
   UsersRound,
+  Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +41,7 @@ const navItems = [
   { href: "/events", label: "事件", description: "恢复与认证记录", icon: CalendarClock },
   { href: "/users", label: "用户", description: "租户与访问权限", icon: UserCog, adminOnly: true },
   { href: "/settings", label: "设置", description: "检查周期与安全", icon: Settings, adminOnly: true },
+  { href: "/mcp-tools", label: "MCP 工具", description: "识图等外部工具", icon: Wrench, adminOnly: true },
 ] as const;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -114,11 +116,11 @@ function Sidebar({ pathname, mobile = false }: { pathname: string; mobile?: bool
       <nav className="scrollbar-thin flex-1 overflow-y-auto p-3" aria-label="主导航">
         <p className="px-2 pb-2 pt-1 font-mono text-[10px] font-medium tracking-[0.08em] text-muted-foreground">OPERATE</p>
         <div className="space-y-0.5">
-          {visibleItems.filter((item) => !["/events", "/users", "/settings"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
+          {visibleItems.filter((item) => !["/events", "/users", "/settings", "/mcp-tools"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
         </div>
         <p className="px-2 pb-2 pt-6 font-mono text-[10px] font-medium tracking-[0.08em] text-muted-foreground">SYSTEM</p>
         <div className="space-y-0.5">
-          {visibleItems.filter((item) => ["/events", "/users", "/settings"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
+          {visibleItems.filter((item) => ["/events", "/users", "/settings", "/mcp-tools"].includes(item.href)).map((item) => <NavItem key={item.href} item={item} pathname={pathname} mobile={mobile} />)}
         </div>
       </nav>
     </div>

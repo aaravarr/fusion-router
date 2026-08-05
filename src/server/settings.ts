@@ -30,6 +30,7 @@ export const LOG_SETTING_KEYS = [
 export const SYSTEM_SECRET_KEYS = {
   apiKeyPepper: "api_key_pepper",
   cronSecret: "cron_secret",
+  mcpAccessToken: "mcp_access_token",
 } as const;
 
 export type SystemSecretKey =

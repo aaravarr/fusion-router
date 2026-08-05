@@ -321,6 +321,17 @@ CREATE TABLE IF NOT EXISTS response_conversations (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS response_conversations_updated_idx ON response_conversations(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS mcp_tools (
+  id TEXT PRIMARY KEY,
+  tool_type TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `
 
 export function createDatabase(filename: string): AppDatabase {
