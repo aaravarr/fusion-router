@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { resolveImageSource, callRemoteDescribe, DEFAULT_BASE_URL } from "./lib.mjs";
