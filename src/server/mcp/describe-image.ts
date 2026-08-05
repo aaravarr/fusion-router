@@ -35,8 +35,38 @@ interface DescribeRequestBody {
     }>
     max_tokens: number
     temperature: number
-    reasoning_effort?: "low" | "medium" | "high"
+    reasoning_effort?: "none" | "low" | "medium" | "high"
+    thinking?: { type: string }
   }
+}
+
+/**
+ * 思考参数按模型适配：
+ * - MiniMax（M3 等）用 `thinking: { type }`，且只接受 "adaptive" / "disabled"，
+ *   不支持 OpenAI 的 reasoning_effort（实测传 low/medium/high 无效）。
+ * - 其它 OpenAI 兼容模型用 `reasoning_effort`，"none" 可显式关闭思考。
+ */
+function applyReasoningParams(
+  body: DescribeRequestBody["body"],
+  config: DescribeImageConfig,
+): void {
+  const model = config.model ?? ""
+  const isMinimax = /minimax/i.test(model)
+  if (!config.reasoningEnabled) {
+    // 显式关闭思考：有些模型（如 minimax-m3）默认输出 <think>，必须显式关闭。
+    if (isMinimax) body.thinking = { type: "disabled" }
+    else body.reasoning_effort = "none"
+    return
+  }
+  if (isMinimax) {
+    // M3 没有思考等级，adaptive 即"自动判断是否需要思考"（等价开启）。
+    body.thinking = { type: "adaptive" }
+    return
+  }
+  if (config.reasoningEffort) {
+    body.reasoning_effort = config.reasoningEffort
+  }
+  // reasoningEnabled=true 但未指定等级：不传，让模型用默认思考强度。
 }
 
 function buildDescribeRequestBody(
@@ -89,9 +119,7 @@ function buildDescribeRequestBody(
     max_tokens: config.maxTokens,
     temperature: config.temperature,
   }
-  if (config.reasoningEnabled && config.reasoningEffort) {
-    body.reasoning_effort = config.reasoningEffort
-  }
+  applyReasoningParams(body, config)
 
   return { config, ownerUserId: ctx.ownerUserId, body }
 }

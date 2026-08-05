@@ -62,6 +62,9 @@ function errorMessage(payload: unknown, fallback: string) {
 }
 
 const MCP_SERVER_NAME = "opencode-mcp";
+// 已通过线上实测确认支持图片输入的多模态模型（其余模型如 grok-4.5 / gpt-5.6-luna
+// 端点不可用或不支持图片，选了会识图失败）。
+const RECOMMENDED_VISION_MODELS = ["minimax-m3", "qwen3.7-plus"];
 
 export function McpPage() {
   const { adminFetch } = useAdmin();
@@ -138,7 +141,12 @@ export function McpPage() {
   const [testResult, setTestResult] = useState<{ text?: string; model?: string } | null>(null);
 
   const selectedCatalog = catalogs.find((catalog) => catalog.poolType === provider) ?? null;
-  const modelOptions = selectedCatalog?.models ?? [];
+  const modelOptions = useMemo(() => {
+    const base = selectedCatalog?.models ?? [];
+    const recommended = RECOMMENDED_VISION_MODELS.filter((model) => base.includes(model));
+    const rest = base.filter((model) => !RECOMMENDED_VISION_MODELS.includes(model));
+    return [...recommended, ...rest];
+  }, [selectedCatalog]);
 
   async function loadMeta() {
     setMetaLoading(true);
@@ -438,8 +446,8 @@ export function McpPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Input value={modelInput} onChange={(event) => setModelInput(event.target.value)} placeholder="例如 gpt-5.6 / gemini-2.5-pro" className="font-mono text-xs" aria-label="自定义模型名" />
-              <p className="text-[11px] leading-5 text-muted-foreground">从下拉选择会自动填入输入框，也可以直接输入自定义模型名（必填）。</p>
+              <Input value={modelInput} onChange={(event) => setModelInput(event.target.value)} placeholder="例如 minimax-m3 / qwen3.7-plus" className="font-mono text-xs" aria-label="自定义模型名" />
+              <p className="text-[11px] leading-5 text-muted-foreground">已验证可识图：minimax-m3、qwen3.7-plus（已排在最前）；grok-4.5、gpt-5.6-luna 等不支持图片输入，请勿选用。从下拉选择会自动填入输入框，也可直接输入自定义模型名（必填）。</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="mcp-prompt">默认提示词（可选）</Label>

@@ -94,9 +94,52 @@ describe("describeImage", () => {
     expect(result.text).toBe("画面中有一只橘猫")
   })
 
-  it("未开启思考时不透传 reasoning_effort", async () => {
+  it("未开启思考时对非 MiniMax 模型显式传 reasoning_effort=none", async () => {
     const callGateway = vi.fn(async (request: Request) => {
-      const body = JSON.parse(await request.text()) as { reasoning_effort?: string }
+      const body = JSON.parse(await request.text()) as { reasoning_effort?: string; thinking?: { type: string } }
+      expect(body.reasoning_effort).toBe("none")
+      expect(body.thinking).toBeUndefined()
+      return new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
+        status: 200,
+      })
+    })
+    const result = await describeImage(
+      { image: "https://example.com/a.png" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
+    expect(result.text).toBe("画面中有一只橘猫")
+  })
+
+  it("未开启思考时对 MiniMax 模型显式传 thinking=disabled", async () => {
+    updateMcpTool("describe_image", { config: { model: "minimax-m3" } }, db)
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as { reasoning_effort?: string; thinking?: { type: string } }
+      expect(body.thinking).toEqual({ type: "disabled" })
+      expect(body.reasoning_effort).toBeUndefined()
+      return new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
+        status: 200,
+      })
+    })
+    const result = await describeImage(
+      { image: "https://example.com/a.png" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
+    expect(result.text).toBe("画面中有一只橘猫")
+  })
+
+  it("开启思考时对 MiniMax 模型传 thinking=adaptive", async () => {
+    updateMcpTool(
+      "describe_image",
+      { config: { model: "minimax-m3", reasoningEnabled: true, reasoningEffort: "low" } },
+      db,
+    )
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as { reasoning_effort?: string; thinking?: { type: string } }
+      expect(body.thinking).toEqual({ type: "adaptive" })
       expect(body.reasoning_effort).toBeUndefined()
       return new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
         status: 200,
