@@ -1,6 +1,24 @@
 type Obj = Record<string, unknown>
 const isObj = (value: unknown): value is Obj => Boolean(value && typeof value === "object" && !Array.isArray(value))
 
+/**
+ * 把 Chat Completions 的 content（字符串或 part 数组）映射为 Responses API 的
+ * input content。Responses 上游（如 opencode-go）只接受 input_text / input_image
+ * 等变体，直接透传 Chat 的 {type:"text"} / {type:"image_url"} 会导致
+ * "unknown variant `text`, expected one of `input_text`, ..." 反序列化错误。
+ */
+function chatContentToResponsesContent(content: unknown): unknown {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return content
+  return content.map((part) => {
+    if (!isObj(part)) return part
+    const type = String(part.type ?? "")
+    if (type === "text") return { ...part, type: "input_text" }
+    if (type === "image_url") return { ...part, type: "input_image" }
+    return part
+  })
+}
+
 export function chatRequestToResponses(body: unknown): Obj {
   if (!isObj(body)) return {}
   const result: Obj = {}
@@ -23,7 +41,7 @@ export function chatRequestToResponses(body: unknown): Obj {
       input.push({ type: "function_call_output", call_id: message.tool_call_id, output: typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "") })
       continue
     }
-    const base: Obj = { role: message.role, content: message.content ?? "" }
+    const base: Obj = { role: message.role, content: chatContentToResponsesContent(message.content ?? "") }
     input.push(base)
     if (Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {

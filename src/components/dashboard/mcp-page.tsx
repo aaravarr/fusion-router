@@ -52,6 +52,7 @@ interface ModelCatalog {
   poolType: string;
   label: string;
   models: string[];
+  visionModels?: string[];
 }
 
 function errorMessage(payload: unknown, fallback: string) {
@@ -63,7 +64,7 @@ function errorMessage(payload: unknown, fallback: string) {
 
 const MCP_SERVER_NAME = "opencode-mcp";
 // 已通过线上实测确认支持图片输入的多模态模型（其余模型如 grok-4.5 / gpt-5.6-luna
-// 端点不可用或不支持图片，选了会识图失败）。
+// 端点不可用或不支持图片，选了会识图失败）。优先用后端 visionModels，这里作为兜底。
 const RECOMMENDED_VISION_MODELS = ["minimax-m3", "qwen3.7-plus"];
 
 export function McpPage() {
@@ -88,10 +89,17 @@ export function McpPage() {
       {
         mcpServers: {
           [MCP_SERVER_NAME]: {
-            url: endpoint,
-            headers: {
-              Authorization: "Bearer <你的 API Key>",
-            },
+            command: "cmd",
+            args: [
+              "/c",
+              "npx",
+              "-y",
+              "fusionrouter-mcp",
+              "--base-url",
+              endpoint.replace(/\/mcp$/, ""),
+              "--api-key",
+              "<你的 API Key>",
+            ],
           },
         },
       },
@@ -142,10 +150,11 @@ export function McpPage() {
 
   const selectedCatalog = catalogs.find((catalog) => catalog.poolType === provider) ?? null;
   const modelOptions = useMemo(() => {
-    const base = selectedCatalog?.models ?? [];
-    const recommended = RECOMMENDED_VISION_MODELS.filter((model) => base.includes(model));
-    const rest = base.filter((model) => !RECOMMENDED_VISION_MODELS.includes(model));
-    return [...recommended, ...rest];
+    // 只展示支持图片输入（多模态）的模型，避免误选 grok-4.5 / gpt-5.6-luna 等
+    const vision = selectedCatalog?.visionModels?.length
+      ? selectedCatalog.visionModels
+      : RECOMMENDED_VISION_MODELS.filter((model) => (selectedCatalog?.models ?? []).includes(model));
+    return [...vision];
   }, [selectedCatalog]);
 
   async function loadMeta() {
@@ -315,14 +324,13 @@ export function McpPage() {
         <div className="space-y-4">
           <Panel title="MCP 服务信息" description="MCP 客户端连接地址与鉴权方式。">
             <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-[3fr_2fr]">
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid auto-rows-fr gap-3 sm:grid-cols-2">
                 <InfoCell label="服务端点" mono>{endpoint}</InfoCell>
                 <InfoCell label="协议版本" mono>{server?.protocolVersion || "—"}</InfoCell>
                 <InfoCell label="工具数量">{server?.toolCount ?? tools.length}</InfoCell>
-                <div className="min-w-0">
-                  <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;</InfoCell>
-                  <p className="mt-2 px-1 text-[11px] leading-5 text-muted-foreground">使用用户在「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</p>
-                </div>
+                <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;
+                  <span className="mt-1 block truncate text-[11px] font-normal leading-5 text-muted-foreground">使用「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</span>
+                </InfoCell>
               </div>
               <div className="min-w-0 rounded-lg border bg-white p-4">
                 <div className="flex items-center justify-between gap-2">
@@ -334,7 +342,7 @@ export function McpPage() {
                 </div>
                 <pre className="mt-2 overflow-x-auto rounded-md bg-[#fafafa] p-3 font-mono text-[11px] leading-5">{mcpServerConfig || "…"}</pre>
                 <div className="mt-3 space-y-1.5 text-[11px] leading-5 text-muted-foreground">
-                  <p>把上面的配置粘贴到支持 MCP 的客户端（如 Claude Desktop、Cursor）即可接入。</p>
+                  <p>本地桥（npx fusionrouter-mcp）支持传<strong>本地图片路径</strong>，推荐接入方式；远程 URL 直连（<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code> + Bearer 鉴权）不支持本地图片。</p>
                   <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；识图请求使用该 Key 归属用户的账号池。</p>
                 </div>
               </div>
@@ -438,16 +446,19 @@ export function McpPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="mcp-model">识图模型</Label>
-              <Select value={modelOptions.includes(modelInput) ? modelInput : undefined} onValueChange={setModelInput}>
+              <Select value={modelInput || undefined} onValueChange={setModelInput}>
                 <SelectTrigger id="mcp-model" className="w-full bg-white"><SelectValue placeholder={provider ? "选择模型或手动输入模型名" : "自动路由下请直接输入模型名"} /></SelectTrigger>
                 <SelectContent>
+                  {modelInput && !modelOptions.includes(modelInput) ? (
+                    <SelectItem key={modelInput} value={modelInput}>{modelInput}</SelectItem>
+                  ) : null}
                   {modelOptions.map((model) => (
                     <SelectItem key={model} value={model}>{model}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <Input value={modelInput} onChange={(event) => setModelInput(event.target.value)} placeholder="例如 minimax-m3 / qwen3.7-plus" className="font-mono text-xs" aria-label="自定义模型名" />
-              <p className="text-[11px] leading-5 text-muted-foreground">已验证可识图：minimax-m3、qwen3.7-plus（已排在最前）；grok-4.5、gpt-5.6-luna 等不支持图片输入，请勿选用。从下拉选择会自动填入输入框，也可直接输入自定义模型名（必填）。</p>
+              <p className="text-[11px] leading-5 text-muted-foreground">下拉只列出已验证可识图的多模态模型（minimax-m3、qwen3.7-plus）；如确有特殊模型需求，可在下方直接输入模型名（必填）。</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="mcp-prompt">默认提示词（可选）</Label>

@@ -22,6 +22,21 @@ describe("custom provider protocol compatibility", () => {
     })
   })
 
+  it("maps chat content parts to Responses input variants (text/image_url)", () => {
+    expect(chatRequestToResponses({
+      model: "gpt-test",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "https://x/a.png" } }] },
+        { role: "user", content: "plain string" },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      ],
+    }).input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "hi" }, { type: "input_image", image_url: { url: "https://x/a.png" } }] },
+      { role: "user", content: "plain string" },
+      { role: "assistant", content: [{ type: "input_text", text: "ok" }] },
+    ])
+  })
+
   it("converts a Responses JSON result to Chat Completions", () => {
     expect(responsesJsonToChatCompletion({ id: "resp_1", model: "gpt-test", output: [{ type: "message", content: [{ type: "output_text", text: "hello" }] }], usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } })).toMatchObject({
       id: "resp_1", object: "chat.completion", choices: [{ message: { role: "assistant", content: "hello" }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
