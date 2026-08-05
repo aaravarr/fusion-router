@@ -47,7 +47,24 @@ $env:OPENCODE_MCP_API_KEY  = "ocg_xxx"   # 管理后台「API 密钥」页创建
 node mcp-bridge/index.mjs --base-url http://49.233.103.93:13600 --api-key ocg_xxx
 ```
 
-## 客户端接入配置
+## 快速安装（推荐）
+
+一条命令自动写入 Claude Desktop / Cursor / Codex CLI 的配置，不用手动编辑 JSON：
+
+```bash
+# PowerShell
+node mcp-bridge/install.mjs --api-key ocg_xxx --base-url http://49.233.103.93:13600
+```
+
+- `--api-key` 也可用环境变量 `OPENCODE_MCP_API_KEY`，`--base-url` 也可用 `OPENCODE_MCP_BASE_URL`
+- 默认写入三种客户端；只想装某个用 `--clients claude,cursor,codex` 过滤
+- 先预览不写文件：加 `--dry-run`
+- 脚本会自动探测配置文件路径（Windows / macOS / Linux），**合并保留**已有 mcpServers，不会覆盖其它 MCP 配置
+
+安装后**重启对应客户端**即可使用 describe_image。
+
+## 客户端接入配置（手动方式）
+
 
 ### Claude Desktop
 
