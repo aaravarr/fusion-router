@@ -628,7 +628,14 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
 function appendResponsesInput(input: unknown, messages: Obj[], ctx: CodexToolContext, reasoningQueue: ReasoningQueue = []) {
   const pending: PendingToolCall[] = [];
   const items = Array.isArray(input) ? input : input != null ? [input] : [];
-  for (const item of items) appendResponsesItem(item, messages, pending, ctx, reasoningQueue);
+  for (const item of items) {
+    if (typeof item === "string") {
+      // 纯字符串 input（OpenAI Responses 允许）：转成 user message 再处理。
+      appendResponsesItem({ type: "message", role: "user", content: [{ type: "input_text", text: item }] }, messages, pending, ctx, reasoningQueue)
+    } else {
+      appendResponsesItem(item, messages, pending, ctx, reasoningQueue)
+    }
+  }
   flushPendingToolCalls(messages, pending, reasoningQueue);
 }
 

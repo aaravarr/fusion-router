@@ -176,4 +176,16 @@ describe("responses to chat reasoning replay", () => {
     const messages = body.messages as Array<Record<string, unknown>>
     expect(messages.some((m) => typeof m.reasoning_content === "string")).toBe(false)
   })
+
+  it("keeps plain-string input as a user message", () => {
+    const { body } = responsesToChatCompletions({
+      model: "deepseek-v4-flash",
+      input: "2026年冬奥会主办城市是哪里？",
+    })
+    const messages = body.messages as Array<{ role?: string; content?: unknown }>
+    const user = messages.find((m) => m.role === "user")
+    expect(user).toBeTruthy()
+    expect(String(user?.content)).toContain("2026年冬奥会主办城市是哪里？")
+    expect(messages.some((m) => m.role === "user" && String(m.content) === "Continue.")).toBe(false)
+  })
 })
