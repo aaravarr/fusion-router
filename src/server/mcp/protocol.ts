@@ -4,7 +4,7 @@ import { describeImage, describeImageStream } from "./describe-image"
 import { MCP_TOOL_DEFINITIONS } from "./mcp-tools"
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18"
-export const MCP_SERVER_INFO = { name: "opencode-mcp", version: "0.1.0" }
+export const MCP_SERVER_INFO = { name: "fusionrouter-mcp", version: "0.1.0" }
 
 const CORS_HEADERS = {
   "Content-Type": "application/json",

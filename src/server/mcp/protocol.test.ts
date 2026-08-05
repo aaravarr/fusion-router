@@ -28,7 +28,7 @@ let db: AppDatabase
 let directory: string
 
 beforeEach(() => {
-  directory = mkdtempSync(join(tmpdir(), "opencode-mcp-protocol-"))
+  directory = mkdtempSync(join(tmpdir(), "fusionrouter-mcp-protocol-"))
   process.env.DATA_DIR = directory
   clearBootstrapCacheForTests()
   ensureMasterKey()
@@ -72,7 +72,7 @@ describe("MCP protocol", () => {
     expect(body.id).toBe(1)
     expect(body.result.protocolVersion).toBe(MCP_PROTOCOL_VERSION)
     expect(body.result.capabilities).toEqual({ tools: {} })
-    expect(body.result.serverInfo).toEqual({ name: "opencode-mcp", version: "0.1.0" })
+    expect(body.result.serverInfo).toEqual({ name: "fusionrouter-mcp", version: "0.1.0" })
     expect(body.result.instructions).toContain("describe_image")
   })
 

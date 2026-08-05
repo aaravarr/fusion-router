@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 一键安装 opencode-mcp-bridge 到本机常见 MCP 客户端。
+ * 一键安装 fusionrouter-mcp 到本机常见 MCP 客户端。
  *
  * 用法:
  *   node mcp-bridge/install.mjs --api-key ocg_xxx [--base-url http://49.233.103.93:13600] [--clients claude,cursor,codex] [--dry-run]
@@ -78,11 +78,11 @@ export function readConfig(file) {
   return {};
 }
 
-/** 在配置对象中写入/更新 opencode-mcp 条目，返回新配置。 */
+/** 在配置对象中写入/更新 fusionrouter-mcp 条目，返回新配置。 */
 export function upsertMcpServer(config, entry) {
   const out = { ...config };
   const servers = out.mcpServers && typeof out.mcpServers === "object" ? { ...out.mcpServers } : {};
-  servers["opencode-mcp"] = entry;
+  servers["fusionrouter-mcp"] = entry;
   out.mcpServers = servers;
   return out;
 }
@@ -95,7 +95,7 @@ export function buildEntry({ baseUrl, apiKey, scriptPath }) {
 }
 
 export function printBanner() {
-  console.log("opencode-mcp-bridge 一键安装");
+  console.log("fusionrouter-mcp 一键安装");
   console.log("------------------------------");
 }
 

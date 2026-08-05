@@ -1,4 +1,4 @@
-# opencode-mcp-bridge
+# fusionrouter-mcp
 
 本地 stdio MCP 桥：让 Claude Desktop / Cursor / Codex CLI 等客户端通过本地图片路径（或 http(s) URL）调用远程 opencode-api 的 `/mcp` 识图工具。
 
@@ -18,7 +18,7 @@
 
 ```text
 ┌──────────────┐   stdio (newline JSON)   ┌──────────────────┐   HTTP POST /mcp   ┌────────────────────┐
-│ Claude /     │ ───────────────────────▶ │  opencode-mcp-   │ ─────────────────▶ │ 远程 opencode-api  │
+│ Claude /     │ ───────────────────────▶ │  fusionrouter-mcp-   │ ─────────────────▶ │ 远程 opencode-api  │
 │ Cursor /     │   tools/call             │  bridge (index)  │   Bearer ocg_xxx   │  账号池多模态识图   │
 │ Codex CLI    │ ◀─────────────────────── │  读文件→data URI │ ◀───────────────── │                    │
 └──────────────┘   文本描述               └──────────────────┘     识别结果        └────────────────────┘
@@ -54,7 +54,7 @@ node mcp-bridge/index.mjs --base-url http://49.233.103.93:13600 --api-key ocg_xx
 ```json
 {
   "mcpServers": {
-    "opencode-mcp": {
+    "fusionrouter-mcp": {
       "command": "npx",
       "args": [
         "-y",
@@ -112,7 +112,7 @@ node mcp-bridge/install.mjs --api-key ocg_xxx --base-url http://49.233.103.93:13
 ```json
 {
   "mcpServers": {
-    "opencode-mcp": {
+    "fusionrouter-mcp": {
       "command": "node",
       "args": [
         "D:\\Code\\AI\\opencode-api\\mcp-bridge\\index.mjs",
@@ -134,7 +134,7 @@ node mcp-bridge/install.mjs --api-key ocg_xxx --base-url http://49.233.103.93:13
 ```json
 {
   "mcpServers": {
-    "opencode-mcp": {
+    "fusionrouter-mcp": {
       "command": "node",
       "args": [
         "D:\\Code\\AI\\opencode-api\\mcp-bridge\\index.mjs",
@@ -155,7 +155,7 @@ node mcp-bridge/install.mjs --api-key ocg_xxx --base-url http://49.233.103.93:13
 ```json
 {
   "mcpServers": {
-    "opencode-mcp": {
+    "fusionrouter-mcp": {
       "command": "node",
       "args": ["D:/Code/AI/opencode-api/mcp-bridge/index.mjs", "--base-url", "http://49.233.103.93:13600", "--api-key", "ocg_xxx"]
     }
@@ -163,7 +163,7 @@ node mcp-bridge/install.mjs --api-key ocg_xxx --base-url http://49.233.103.93:13
 }
 ```
 
-也可先 `npm link`（或全局安装本包）后，用 `npx opencode-mcp-bridge --base-url ... --api-key ...` 启动。
+也可先 `npm link`（或全局安装本包）后，用 `npx fusionrouter-mcp-bridge --base-url ... --api-key ...` 启动。
 
 ## 用法示例（AI 视角）
 

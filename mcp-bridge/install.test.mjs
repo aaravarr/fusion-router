@@ -37,18 +37,18 @@ test("readConfig: 正常读取", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("upsertMcpServer: 保留已有 mcpServers 并写入 opencode-mcp", () => {
+test("upsertMcpServer: 保留已有 mcpServers 并写入 fusionrouter-mcp", () => {
   const next = upsertMcpServer({ mcpServers: { github: { command: "npx" } } }, { command: "node", args: [] });
-  assert.deepEqual(Object.keys(next.mcpServers).sort(), ["github", "opencode-mcp"]);
-  assert.deepEqual(next.mcpServers["opencode-mcp"], { command: "node", args: [] });
+  assert.deepEqual(Object.keys(next.mcpServers).sort(), ["fusionrouter-mcp", "github"]);
+  assert.deepEqual(next.mcpServers["fusionrouter-mcp"], { command: "node", args: [] });
 });
 
 test("upsertMcpServer: 覆盖同名旧条目", () => {
   const next = upsertMcpServer(
-    { mcpServers: { "opencode-mcp": { command: "old" } } },
+    { mcpServers: { "fusionrouter-mcp": { command: "old" } } },
     { command: "node", args: ["x"] },
   );
-  assert.deepEqual(next.mcpServers["opencode-mcp"], { command: "node", args: ["x"] });
+  assert.deepEqual(next.mcpServers["fusionrouter-mcp"], { command: "node", args: ["x"] });
 });
 
 test("buildEntry: 含 api-key 时带参数", () => {

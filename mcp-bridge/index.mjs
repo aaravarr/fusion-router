@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { resolveImageSources, callRemoteDescribe, DEFAULT_BASE_URL } from "./lib.mjs";
 
-const HELP_TEXT = `opencode-mcp-bridge - 本地 stdio MCP 桥
+const HELP_TEXT = `fusionrouter-mcp - 本地 stdio MCP 桥
 
 用法:
   node index.mjs [--base-url <url>] [--api-key <key>] [--help]
@@ -16,7 +16,7 @@ const HELP_TEXT = `opencode-mcp-bridge - 本地 stdio MCP 桥
 客户端接入示例 (Claude Desktop claude_desktop_config.json):
   {
     "mcpServers": {
-      "opencode-mcp": {
+      "fusionrouter-mcp": {
         "command": "node",
         "args": ["D:\\\\Code\\\\AI\\\\opencode-api\\\\mcp-bridge\\\\index.mjs", "--base-url", "http://49.233.103.93:13600", "--api-key", "ocg_xxx"],
         "env": {}
@@ -54,7 +54,7 @@ function buildConfig(argv) {
 const SERVER_INFO = {
   protocolVersion: "2025-06-18",
   capabilities: { tools: {} },
-  serverInfo: { name: "opencode-mcp-bridge", version: "0.1.0" },
+  serverInfo: { name: "fusionrouter-mcp", version: "0.1.0" },
   instructions:
     "识图工具：传入本地图片路径或 http(s) URL，自动读取本地图片并调用远程 MCP 识图；prompt 可选",
 };
@@ -143,7 +143,7 @@ export async function main(argv = process.argv.slice(2)) {
     process.stderr.write(HELP_TEXT);
     return;
   }
-  process.stderr.write("opencode-mcp-bridge ready\n");
+  process.stderr.write("fusionrouter-mcp ready\n");
 
   const rl = createInterface({ input: process.stdin });
   for await (const line of rl) {
@@ -152,7 +152,7 @@ export async function main(argv = process.argv.slice(2)) {
     try {
       msg = JSON.parse(line);
     } catch {
-      process.stderr.write(`opencode-mcp-bridge: 忽略无法解析的行: ${line}\n`);
+      process.stderr.write(`fusionrouter-mcp: 忽略无法解析的行: ${line}\n`);
       continue;
     }
     const response = await handleMessage(msg, config);

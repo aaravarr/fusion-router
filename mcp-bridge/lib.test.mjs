@@ -11,7 +11,7 @@ import {
 } from "./lib.mjs";
 
 function tempFile(name, bytes) {
-  const dir = mkdtempSync(join(tmpdir(), "opencode-mcp-bridge-"));
+  const dir = mkdtempSync(join(tmpdir(), "fusionrouter-mcp-"));
   const path = join(dir, name);
   writeFileSync(path, bytes);
   return { path, dir };
