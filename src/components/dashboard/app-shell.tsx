@@ -37,11 +37,11 @@ const navItems = [
   { href: "/providers", label: "Provider", description: "自定义上游与 API Key", icon: Boxes },
   { href: "/routing", label: "智能路由", description: "优先账号与候选顺序", icon: Network },
   { href: "/api-keys", label: "API 密钥", description: "对外访问凭据", icon: KeyRound },
+  { href: "/mcp-tools", label: "MCP 工具", description: "识图等外部工具", icon: Wrench, adminOnly: true },
   { href: "/requests", label: "请求", description: "结果与内部切号", icon: ListTree },
   { href: "/events", label: "事件", description: "恢复与认证记录", icon: CalendarClock },
   { href: "/users", label: "用户", description: "租户与访问权限", icon: UserCog, adminOnly: true },
   { href: "/settings", label: "设置", description: "检查周期与安全", icon: Settings, adminOnly: true },
-  { href: "/mcp-tools", label: "MCP 工具", description: "识图等外部工具", icon: Wrench, adminOnly: true },
 ] as const;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
