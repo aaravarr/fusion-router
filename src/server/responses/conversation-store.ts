@@ -511,6 +511,25 @@ export async function sanitizeResponsesInputItems(
         delete out.content
         modified = true
       }
+      if (Array.isArray(out.content)) {
+        // 兼容归一化：会话历史回放的 part 可能是 chat 变体（text/image_url），
+        // 上游 Responses API 只接受 input_text / input_image / output_text 等。
+        const normalized = out.content.map((part) => {
+          if (!part || typeof part !== "object") return part
+          const p = part as Record<string, unknown>
+          const pt = String(p.type ?? "")
+          if (pt === "text" && typeof p.text === "string") {
+            modified = true
+            return { ...p, type: "input_text" }
+          }
+          if (pt === "image_url") {
+            modified = true
+            return { ...p, type: "input_image" }
+          }
+          return p
+        })
+        out.content = normalized
+      }
       nextItems.push(out)
       continue
     }

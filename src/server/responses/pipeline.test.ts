@@ -7,6 +7,37 @@ import { responseToolCallItemFromChatName } from "./codex-chat-compat"
 import { sanitizeResponsesInputItems, rememberConversationTurn, extractContinuityKeysFromRequest, loadConversationReasoning } from "./conversation-store"
 import { shouldEagerFallbackResponses } from "./responses-fallback"
 
+describe("sanitizeResponsesInputItems 归一化历史消息 part", () => {
+  it("把 chat 变体 text/image_url 归一化为 input_text/input_image", async () => {
+    const db = createDatabase(":memory:")
+    const result = await sanitizeResponsesInputItems({
+      model: "deepseek-v4-flash",
+      input: [
+        { type: "message", role: "user", content: [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:image/png;base64,xx" } }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] },
+      ],
+    }, db)
+    expect(result.modified).toBe(true)
+    const input = (result.body as any).input as Array<{ type: string; content: Array<{ type: string }> }>
+    expect(input[0].content[0].type).toBe("input_text")
+    expect(input[0].content[1].type).toBe("input_image")
+    expect(input[1].content[0].type).toBe("output_text") // 合法变体保持不变
+    db.close()
+  })
+
+  it("纯合法 responses 变体不改写", async () => {
+    const db = createDatabase(":memory:")
+    const result = await sanitizeResponsesInputItems({
+      model: "deepseek-v4-flash",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+      ],
+    }, db)
+    expect(result.modified).toBe(false)
+    db.close()
+  })
+})
+
 describe("responses tool-schema", () => {
   it("injects default web_search and x_search", () => {
     const body = injectDefaultServerTools({ model: "grok-4.5", input: "hi" }, { enabled: true, tools: ["web_search", "x_search"] }) as any
