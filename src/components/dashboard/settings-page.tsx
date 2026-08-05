@@ -35,6 +35,8 @@ interface Settings {
   maintenanceIntervalMs: number;
   refreshBatchLimit: number;
   refreshConcurrency: number;
+  mediaTtlHours: number;
+  mediaMaxBytes: number;
   loggingEnabled: boolean;
   logBodies: boolean;
   logBodiesOnError: boolean;
@@ -257,6 +259,35 @@ export function SettingsPage() {
                 label="启用额度维护调度"
                 description="常驻 Node/Docker 部署建议开启；失效的 Console 会话会标记为需要重新登录。"
               />
+            </div>
+          </Panel>
+          <Panel
+            title="临时媒体存储"
+            description="模型不支持图片输入时，将 data URI 图片临时落盘并生成带签名 URL 引用（供 MCP 识图等外层取图）。图片按内容去重，过期后自动清理。"
+          >
+            <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-2">
+              <Field label="保留时长（小时）">
+                <Input
+                  type="number"
+                  min={1}
+                  max={720}
+                  value={form.mediaTtlHours}
+                  onChange={(e) =>
+                    update("mediaTtlHours", Number(e.target.value))
+                  }
+                />
+              </Field>
+              <Field label="容量上限（MB）">
+                <Input
+                  type="number"
+                  min={1}
+                  max={10240}
+                  value={Math.round(form.mediaMaxBytes / (1024 * 1024))}
+                  onChange={(e) =>
+                    update("mediaMaxBytes", Math.round(Number(e.target.value)) * 1024 * 1024)
+                  }
+                />
+              </Field>
             </div>
           </Panel>
           <Panel

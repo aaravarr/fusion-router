@@ -12,6 +12,8 @@ export const SYSTEM_SETTING_KEYS = {
   maintenanceEnabled: "maintenance_enabled",
   refreshBatchLimit: "refresh_batch_limit",
   refreshConcurrency: "refresh_concurrency",
+  mediaTtlHours: "media_ttl_hours",
+  mediaMaxBytes: "media_max_bytes",
   loggingEnabled: "logging_enabled",
   logBodies: "log_bodies",
   logBodiesOnError: "log_bodies_on_error",
@@ -77,6 +79,8 @@ export interface SystemSettings {
   maintenanceIntervalMs: number;
   refreshBatchLimit: number;
   refreshConcurrency: number;
+  mediaTtlHours: number;
+  mediaMaxBytes: number;
 }
 
 export interface UpdateSystemSettingsInput {
@@ -89,6 +93,8 @@ export interface UpdateSystemSettingsInput {
   maintenanceIntervalMs?: number;
   refreshBatchLimit?: number;
   refreshConcurrency?: number;
+  mediaTtlHours?: number;
+  mediaMaxBytes?: number;
   loggingEnabled?: boolean;
   logBodies?: boolean;
   logBodiesOnError?: boolean;
@@ -114,6 +120,8 @@ const defaults: SystemSettings & LogSettings = {
   maintenanceIntervalMs: 60_000,
   refreshBatchLimit: 25,
   refreshConcurrency: 3,
+  mediaTtlHours: 12,
+  mediaMaxBytes: 200 * 1024 * 1024,
   loggingEnabled: true,
   logBodies: false,
   logBodiesOnError: true,
@@ -189,6 +197,18 @@ export function initializeSystemSettings(db: AppDatabase): void {
       SYSTEM_SECRET_KEYS.apiKeyPepper,
       JSON.stringify(vault.encrypt(randomBytes(32).toString("base64url"))),
       1,
+      now,
+    );
+    insert.run(
+      SYSTEM_SETTING_KEYS.mediaTtlHours,
+      JSON.stringify(defaults.mediaTtlHours),
+      0,
+      now,
+    );
+    insert.run(
+      SYSTEM_SETTING_KEYS.mediaMaxBytes,
+      JSON.stringify(defaults.mediaMaxBytes),
+      0,
       now,
     );
     insert.run(
@@ -281,6 +301,8 @@ export function getSystemSettings(
       SYSTEM_SETTING_KEYS.refreshConcurrency,
       defaults.refreshConcurrency,
     ),
+    mediaTtlHours: readPublic(db, SYSTEM_SETTING_KEYS.mediaTtlHours, defaults.mediaTtlHours),
+    mediaMaxBytes: readPublic(db, SYSTEM_SETTING_KEYS.mediaMaxBytes, defaults.mediaMaxBytes),
   };
 }
 

@@ -332,6 +332,16 @@ CREATE TABLE IF NOT EXISTS mcp_tools (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS media_cache (
+  md5 TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  use_count INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS media_cache_used_idx ON media_cache(last_used_at);
 `
 
 export function createDatabase(filename: string): AppDatabase {
@@ -511,7 +521,7 @@ function resetLegacyAccountDomain(db: AppDatabase): void {
   }
 }
 
-const CURRENT_ACCOUNT_SCHEMA_VERSION = 9
+const CURRENT_ACCOUNT_SCHEMA_VERSION = 10
 const globalDatabase = globalThis as typeof globalThis & {
   __opencodeApiDb?: AppDatabase
   __opencodeApiAccountSchemaVersion?: number

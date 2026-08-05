@@ -1,5 +1,6 @@
 import type { AppDatabase } from "@/server/db"
 import { getDatabase } from "@/server/db"
+import { storeDataUri } from "@/server/media-store"
 
 /**
  * 基于 OpenRouter 模型目录判断模型是否支持图片输入（多模态）。
@@ -241,3 +242,102 @@ export function hasImageInBody(body: unknown): boolean {
   }
   return false
 }
+/**
+ * 把单个图片 part 转成文本信息 part。
+ * - http(s) URL：直接文本化 URL（模型能看到图片来源，配合外层机制取图）
+ * - data URI：落盘为临时媒体，生成带签名 URL 引用写进文本（完整 base64 塞文本会爆 token）
+ */
+async function imagePartToText(
+  part: Record<string, unknown>,
+  db: AppDatabase,
+): Promise<Record<string, unknown>> {
+  const imageUrl =
+    typeof part.image_url === "string"
+      ? part.image_url
+      : part.image_url && typeof part.image_url === "object"
+        ? (part.image_url as Record<string, unknown>).url
+        : part.url
+  const url = typeof imageUrl === "string" ? imageUrl : ""
+  if (/^https?:\/\/.*/i.test(url)) {
+    return { type: "text", text: `[图片: ${url}]` }
+  }
+  try {
+    const stored = storeDataUri(url, db)
+    return { type: "text", text: `[图片: ${stored.urlPath}]` }
+  } catch {
+    const mime = url.startsWith("data:") ? (url.slice(5, url.indexOf(";")) || "图片") : "图片"
+    return { type: "text", text: `[用户上传了一张${mime}，图片数据未随请求发送]` }
+  }
+}
+
+/**
+ * 接口兼容：把请求体中的图片 part 改写为文本信息（chat 的 image_url /
+ * responses 的 input_image / input_file），返回改写后的深拷贝与是否发生了改写。
+ * 用于"模型不支持图片输入"的场景：不把图片字节发给模型，只让模型知道图的存在与来源，
+ * data URI 会落盘为临时媒体并生成签名 URL 引用（外层 MCP 识图工具可经 URL 取图）。
+ */
+export async function rewriteImagesToText(
+  body: unknown,
+  db: AppDatabase = getDatabase(),
+): Promise<{ body: unknown; converted: boolean }> {
+  if (!body || typeof body !== "object") return { body, converted: false }
+  const clone = JSON.parse(JSON.stringify(body)) as Record<string, unknown>
+  let converted = false
+
+  // chat 格式：messages[].content 数组里的 image_url
+  if (Array.isArray(clone.messages)) {
+    for (const message of clone.messages) {
+      if (!message || typeof message !== "object") continue
+      const record = message as Record<string, unknown>
+      if (!Array.isArray(record.content)) continue
+      const parts: unknown[] = []
+      for (const part of record.content) {
+        if (!part || typeof part !== "object") { parts.push(part); continue }
+        const p = part as Record<string, unknown>
+        if (String(p.type ?? "") === "image_url") {
+          converted = true
+          parts.push(await imagePartToText(p, db))
+        } else {
+          parts.push(p)
+        }
+      }
+      record.content = parts
+    }
+  }
+
+  // responses 格式：input 数组里的顶层 input_image / input_file，
+  // 或 message 的 content 数组里的 input_image / input_file
+  if (Array.isArray(clone.input)) {
+    const input: unknown[] = []
+    for (const item of clone.input) {
+      if (!item || typeof item !== "object") { input.push(item); continue }
+      const it = item as Record<string, unknown>
+      const type = String(it.type ?? "")
+      if (type === "input_image" || type === "input_file") {
+        converted = true
+        input.push({ type: "message", role: "user", content: [await imagePartToText(it, db)] })
+        continue
+      }
+      if (type === "message" && Array.isArray(it.content)) {
+        const parts: unknown[] = []
+        for (const part of it.content) {
+          if (!part || typeof part !== "object") { parts.push(part); continue }
+          const p = part as Record<string, unknown>
+          const pt = String(p.type ?? "")
+          if (pt === "input_image" || pt === "input_file") {
+            converted = true
+            parts.push(await imagePartToText(p, db))
+          } else {
+            parts.push(p)
+          }
+        }
+        it.content = parts
+      }
+      input.push(it)
+    }
+    clone.input = input
+  }
+
+  return { body: clone, converted }
+}
+

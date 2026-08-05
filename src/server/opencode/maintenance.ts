@@ -3,6 +3,7 @@ import { getOpenCodeWebService, type OpenCodeWebService } from "@/server/opencod
 import { listDueUsageCandidates } from "@/server/repository"
 import { getSystemSettings } from "@/server/settings"
 import { syncProviderAccount } from "@/server/provider-sync"
+import { cleanupMedia } from "@/server/media-store"
 
 export interface RefreshUsageBatchResult {
   attempted: number
@@ -64,7 +65,13 @@ export function startMaintenanceScheduler(options: { intervalMs?: number; runImm
     if (state.running || now < state.nextRunAt) return
     state.nextRunAt = now + settings.maintenanceIntervalMs
     state.running = true
-    try { await refreshDueUsage({ limit: settings.refreshBatchLimit, concurrency: settings.refreshConcurrency }) }
+    try {
+      await refreshDueUsage({ limit: settings.refreshBatchLimit, concurrency: settings.refreshConcurrency })
+      const cleanup = cleanupMedia(getDatabase())
+      if (cleanup.expiredRemoved > 0 || cleanup.overCapacityRemoved > 0) {
+        console.log(`[media-maintenance] cleaned ${cleanup.expiredRemoved} expired, ${cleanup.overCapacityRemoved} over-capacity; remaining ${cleanup.remainingBytes} bytes`)
+      }
+    }
     catch (error) { console.error("[usage-maintenance] refresh failed", error instanceof Error ? error.message : "Unknown error") }
     finally { state.running = false }
   }
