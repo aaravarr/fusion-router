@@ -6,6 +6,7 @@ import {
   filterVisionModels,
   modelSupportsImage,
   hasImageInBody,
+  rewriteImagesToText,
 } from "./openrouter-models"
 
 function mockFetch(payload: unknown): typeof fetch {
@@ -126,5 +127,42 @@ describe("hasImageInBody", () => {
     expect(hasImageInBody(null)).toBe(false)
     expect(hasImageInBody({})).toBe(false)
     expect(hasImageInBody("str")).toBe(false)
+  })
+})
+
+
+describe("rewriteImagesToText 完整 URL", () => {
+  it("data URI 落盘后生成带 host 的完整签名 URL 引用", async () => {
+    const db = createDatabase(":memory:")
+    const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    const result = await rewriteImagesToText(
+      {
+        model: "deepseek-v4-flash",
+        messages: [{ role: "user", content: [{ type: "text", text: "看看" }, { type: "image_url", image_url: { url: dataUri } }] }],
+      },
+      db,
+      "http://49.233.103.93:13600",
+    )
+    expect(result.converted).toBe(true)
+    const content = (result.body as any).messages[0].content as Array<{ type: string; text: string }>
+    const imageText = content.find((p) => p.type === "text" && p.text.includes("图片"))
+    expect(imageText).toBeTruthy()
+    expect(imageText!.text).toMatch(/^\[图片: http:\/\/49\.233\.103\.93:13600\/mcp\/media\/[0-9a-f]{32}\?exp=\d+&sig=[0-9a-f]{32}\]$/)
+    db.close()
+  })
+
+  it("http(s) URL 图片不落盘，直接文本化 URL", async () => {
+    const db = createDatabase(":memory:")
+    const result = await rewriteImagesToText(
+      {
+        model: "deepseek-v4-flash",
+        messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.com/a.png" } }] }],
+      },
+      db,
+      "http://49.233.103.93:13600",
+    )
+    const content = (result.body as any).messages[0].content as Array<{ type: string; text: string }>
+    expect(content[0].text).toBe("[图片: https://example.com/a.png]")
+    db.close()
   })
 })

@@ -250,6 +250,7 @@ export function hasImageInBody(body: unknown): boolean {
 async function imagePartToText(
   part: Record<string, unknown>,
   db: AppDatabase,
+  baseUrl: string,
 ): Promise<Record<string, unknown>> {
   const imageUrl =
     typeof part.image_url === "string"
@@ -263,7 +264,9 @@ async function imagePartToText(
   }
   try {
     const stored = storeDataUri(url, db)
-    return { type: "text", text: `[图片: ${stored.urlPath}]` }
+    // 必须拼完整 URL（host + 签名路径），否则模型/本地桥会把相对路径当本地文件。
+    const full = `${baseUrl.replace(/\/$/, "")}${stored.urlPath}`
+    return { type: "text", text: `[图片: ${full}]` }
   } catch {
     const mime = url.startsWith("data:") ? (url.slice(5, url.indexOf(";")) || "图片") : "图片"
     return { type: "text", text: `[用户上传了一张${mime}，图片数据未随请求发送]` }
@@ -279,6 +282,7 @@ async function imagePartToText(
 export async function rewriteImagesToText(
   body: unknown,
   db: AppDatabase = getDatabase(),
+  baseUrl = "",
 ): Promise<{ body: unknown; converted: boolean }> {
   if (!body || typeof body !== "object") return { body, converted: false }
   const clone = JSON.parse(JSON.stringify(body)) as Record<string, unknown>
@@ -296,7 +300,7 @@ export async function rewriteImagesToText(
         const p = part as Record<string, unknown>
         if (String(p.type ?? "") === "image_url") {
           converted = true
-          parts.push(await imagePartToText(p, db))
+          parts.push(await imagePartToText(p, db, baseUrl))
         } else {
           parts.push(p)
         }
@@ -315,7 +319,7 @@ export async function rewriteImagesToText(
       const type = String(it.type ?? "")
       if (type === "input_image" || type === "input_file") {
         converted = true
-        input.push({ type: "message", role: "user", content: [await imagePartToText(it, db)] })
+        input.push({ type: "message", role: "user", content: [await imagePartToText(it, db, baseUrl)] })
         continue
       }
       if (type === "message" && Array.isArray(it.content)) {
@@ -326,7 +330,7 @@ export async function rewriteImagesToText(
           const pt = String(p.type ?? "")
           if (pt === "input_image" || pt === "input_file") {
             converted = true
-            parts.push(await imagePartToText(p, db))
+            parts.push(await imagePartToText(p, db, baseUrl))
           } else {
             parts.push(p)
           }

@@ -308,7 +308,12 @@ export class GatewayService {
     if (inferenceRequest && model && hasImageInBody(requestBodyJson)) {
       const supportsImage = await modelSupportsImage(model, this.db)
       if (supportsImage === false) {
-        const rewritten = await rewriteImagesToText(requestBodyJson, this.db)
+        // 拼完整 baseUrl：优先转发头，其次 Host 头
+        const forwardedHost = request.headers.get("x-forwarded-host")
+        const host = forwardedHost ?? request.headers.get("host") ?? ""
+        const proto = request.headers.get("x-forwarded-proto") ?? "http"
+        const mediaBaseUrl = host ? proto + "://" + host : ""
+        const rewritten = await rewriteImagesToText(requestBodyJson, this.db, mediaBaseUrl)
         requestBodyJson = rewritten.body
         upstreamBytes = new TextEncoder().encode(JSON.stringify(requestBodyJson))
       }
