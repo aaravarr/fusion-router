@@ -344,15 +344,20 @@ describe("describeImageStream", () => {
     expect(text).toContain('"method":"notifications/content_block_stop"')
   })
 
-  it("上游响应非 ok 时直接抛错（不走流）", async () => {
+  it("上游响应非 ok 时在流内输出错误信息", async () => {
     const callGateway = vi.fn(async () =>
       new Response(JSON.stringify({ error: { message: "余额不足" } }), { status: 402 }),
     )
-    await expect(
-      describeImageStream({
-      images: ["https://example.com/a.png"],
-    }, db, { ownerUserId: "user-1" }, 1, callGateway),
-    ).rejects.toThrow("余额不足")
+    const stream = await describeImageStream(
+      { images: ["https://example.com/a.png"] },
+      db,
+      { ownerUserId: "user-1" },
+      1,
+      callGateway,
+    )
+    const text = await streamText(stream)
+    expect(text).toContain("余额不足")
+    expect(text).toContain('"method":"notifications/content_block_stop"')
   })
 
   it("未配置模型时报错", async () => {

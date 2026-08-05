@@ -194,12 +194,6 @@ export async function webSearchStream(
     body: JSON.stringify(body),
   })
 
-  const gateway = callGateway ?? defaultGateway(db, ownerUserId, config)
-  const response = await gateway(request, "responses")
-  if (!response.ok) {
-    throw new Error(await extractUpstreamErrorMessage(response, `联网搜索请求失败 (${response.status})`))
-  }
-
   const initial = {
     jsonrpc: "2.0",
     id: id ?? null,
@@ -217,91 +211,79 @@ export async function webSearchStream(
     params: { id: 0 },
   }
 
-  if (!response.body) {
-    return new ReadableStream({
-      start(controller) {
-        controller.enqueue(mcpSseEvent(initial))
-        controller.enqueue(mcpSseEvent(contentBlockStart))
-        controller.enqueue(mcpSseEvent(contentBlockDelta("上游未返回内容")))
-        controller.enqueue(mcpSseEvent(contentBlockStop))
-        controller.close()
-      },
-    })
-  }
-
-  const contentType = response.headers.get("content-type") ?? ""
-  const isSse = contentType.includes("text/event-stream")
-
-  // Non-SSE upstream (some providers ignore stream): emit the whole text once.
-  if (!isSse) {
-    return new ReadableStream({
-      async start(controller) {
-        controller.enqueue(mcpSseEvent(initial))
-        controller.enqueue(mcpSseEvent(contentBlockStart))
-        try {
-          const data = (await response.json()) as { output?: unknown }
-          const text = extractResponseText(data)
-          if (text) controller.enqueue(mcpSseEvent(contentBlockDelta(text)))
-        } catch (cause) {
-          const message = cause instanceof Error ? cause.message : String(cause)
-          controller.enqueue(mcpSseEvent(contentBlockDelta(`联网搜索失败：${message}`)))
-        }
-        controller.enqueue(mcpSseEvent(contentBlockStop))
-        controller.close()
-      },
-    })
-  }
-
-  // SSE upstream: parse responses delta events and forward text chunks.
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  return new ReadableStream({
+  return new ReadableStream<Uint8Array>({
     async start(controller) {
+      // 先立即推送初始 result，客户端立刻收到响应头与"开始"信号；
+      // 上游（DeepSeek 搜索可能 10~30s）在流内异步等待。
       controller.enqueue(mcpSseEvent(initial))
       controller.enqueue(mcpSseEvent(contentBlockStart))
       try {
-        outer: for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          let nl: number
-          while ((nl = buffer.indexOf("\n")) >= 0) {
-            const line = buffer.slice(0, nl).replace(/\r$/, "")
-            buffer = buffer.slice(nl + 1)
-            if (!line.startsWith("data:")) continue
-            const data = line.slice(5).trimStart()
-            if (!data) continue
-            if (data === "[DONE]") break outer
-            try {
-              const parsed = JSON.parse(data) as { type?: string; delta?: unknown }
-              if (parsed.type !== "response.output_text.delta") continue
-              const delta = extractTextDelta(parsed.delta)
-              if (delta) controller.enqueue(mcpSseEvent(contentBlockDelta(delta)))
-            } catch {
-              // 忽略无法解析的 data 行
+        const gateway = callGateway ?? defaultGateway(db, ownerUserId, config)
+        const response = await gateway(request, "responses")
+        if (!response.ok) {
+          controller.enqueue(mcpSseEvent(contentBlockDelta(await extractUpstreamErrorMessage(response, `联网搜索请求失败 (${response.status})`))))
+          return
+        }
+        if (!response.body) {
+          controller.enqueue(mcpSseEvent(contentBlockDelta("上游未返回内容")))
+          return
+        }
+
+        const contentType = response.headers.get("content-type") ?? ""
+        const isSse = contentType.includes("text/event-stream")
+
+        if (!isSse) {
+          // Non-SSE upstream (some providers ignore stream): emit the whole text once.
+          const data = (await response.json()) as { output?: unknown }
+          const text = extractResponseText(data)
+          if (text) controller.enqueue(mcpSseEvent(contentBlockDelta(text)))
+          return
+        }
+
+        // SSE upstream: parse responses delta events and forward text chunks.
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        try {
+          outer: for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            let nl: number
+            while ((nl = buffer.indexOf("\n")) >= 0) {
+              const line = buffer.slice(0, nl).replace(/\r$/, "")
+              buffer = buffer.slice(nl + 1)
+              if (!line.startsWith("data:")) continue
+              const data = line.slice(5).trimStart()
+              if (!data) continue
+              if (data === "[DONE]") break outer
+              try {
+                const parsed = JSON.parse(data) as { type?: string; delta?: unknown }
+                if (parsed.type !== "response.output_text.delta") continue
+                const delta = extractTextDelta(parsed.delta)
+                if (delta) controller.enqueue(mcpSseEvent(contentBlockDelta(delta)))
+              } catch {
+                // 忽略无法解析的 data 行
+              }
             }
+          }
+        } finally {
+          try {
+            await reader.cancel()
+          } catch {
+            // 已关闭
           }
         }
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
         controller.enqueue(mcpSseEvent(contentBlockDelta(`联网搜索流式传输中断：${message}`)))
       } finally {
-        try {
-          await reader.cancel()
-        } catch {
-          // 已关闭
-        }
         controller.enqueue(mcpSseEvent(contentBlockStop))
         controller.close()
       }
     },
-    cancel(reason) {
-      try {
-        void reader.cancel(reason)
-      } catch {
-        // 已关闭
-      }
+    cancel() {
+      // 客户端断开：不再推送。
     },
   })
 }

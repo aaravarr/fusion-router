@@ -85,9 +85,10 @@ export function McpPage() {
     [origin, server?.endpoint]
   );
 
-  const mcpServerConfig = useMemo(() => {
-    if (!endpoint) return "";
-    return JSON.stringify(
+  // 三种接入方式配置：stdio（本地桥）/ http（Streamable HTTP 直连）/ sse（流式传输）
+  const configByTab = useMemo(() => {
+    const baseUrl = endpoint.replace(/\/mcp$/, "");
+    const stdio = JSON.stringify(
       {
         mcpServers: {
           [MCP_SERVER_NAME]: {
@@ -98,7 +99,7 @@ export function McpPage() {
               "-y",
               "fusionrouter-mcp",
               "--base-url",
-              endpoint.replace(/\/mcp$/, ""),
+              baseUrl,
               "--api-key",
               "<你的 API Key>",
             ],
@@ -108,7 +109,24 @@ export function McpPage() {
       null,
       2,
     );
+    const remote = JSON.stringify(
+      {
+        mcpServers: {
+          [MCP_SERVER_NAME]: {
+            url: endpoint,
+            headers: {
+              Authorization: "Bearer <你的 API Key>",
+            },
+          },
+        },
+      },
+      null,
+      2,
+    );
+    return { stdio, http: remote, sse: remote };
   }, [endpoint]);
+  const [configTab, setConfigTab] = useState<"stdio" | "http" | "sse">("http");
+  const mcpServerConfig = configByTab[configTab] || "";
   const [configCopied, setConfigCopied] = useState(false);
 
   async function copyServerConfig() {
@@ -407,14 +425,43 @@ export function McpPage() {
                     {configCopied ? "已复制" : "复制"}
                   </Button>
                 </div>
+                <div className="mt-2 inline-flex rounded-md border bg-[#fafafa] p-0.5" role="tablist" aria-label="接入方式">
+                  {([
+                    { key: "stdio", label: "stdio（本地桥）" },
+                    { key: "http", label: "http" },
+                    { key: "sse", label: "sse（流式）" },
+                  ] as const).map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={configTab === tab.key}
+                      onClick={() => setConfigTab(tab.key)}
+                      className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        configTab === tab.key
+                          ? "bg-white text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
                 <pre className="mt-2 overflow-x-auto rounded-md bg-[#fafafa] p-3 font-mono text-[11px] leading-5">{mcpServerConfig || "…"}</pre>
                 <div className="mt-3 space-y-1.5 text-[11px] leading-5 text-muted-foreground">
-                  <p>本地桥（npx fusionrouter-mcp）支持传<strong>本地图片路径</strong>，推荐接入方式；远程 URL 直连（<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code> + Bearer 鉴权）不支持本地图片。</p>
-                  <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；识图请求使用该 Key 归属用户的账号池。</p>
+                  {configTab === "stdio" ? (
+                    <p>本地桥（npx fusionrouter-mcp）：支持传<strong>本地图片路径</strong>，适合 Claude Desktop / Cursor / Codex 等以 stdio 接入的客户端。建议先执行一次 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">npx -y fusionrouter-mcp</code> 建立缓存，避免首次启动超时。</p>
+                  ) : configTab === "http" ? (
+                    <p>HTTP 直连（MCP Streamable HTTP）：客户端直接请求 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code>，用 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Authorization: Bearer &lt;你的 API Key&gt;</code> 鉴权；传输格式由客户端按 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Accept</code> 头自动选择（JSON 或 SSE）。</p>
+                  ) : (
+                    <p>SSE 流式：与 http 共用同一个端点，客户端请求头带 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Accept: text/event-stream</code> 时，服务端以 SSE 流式返回（先发初始 result，再推送内容增量），适合联网搜索等长耗时工具。</p>
+                  )}
+                  <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；工具调用使用该 Key 归属用户的账号池。</p>
                 </div>
               </div>
             </div>
-          </Panel>
+          </Panel>
+
 
           <Panel title="工具列表" description={`${tools.length} 个工具；停用后外部客户端无法调用。`}>
             {resource.loading ? (

@@ -188,6 +188,14 @@ function contentBlockDelta(text: string): unknown {
  * followed by content_block_start / content_block_delta / content_block_stop
  * notifications, fed from the upstream chat-completions SSE stream.
  */
+/**
+ * Streams describe_image through MCP streamable HTTP: an initial empty result
+ * is sent immediately, then content_block_start / content_block_delta /
+ * content_block_stop notifications fed from the upstream chat-completions
+ * stream. The upstream request runs inside the stream so the client receives
+ * the response head and initial result right away instead of waiting for the
+ * full upstream round-trip (which can take several seconds).
+ */
 export async function describeImageStream(
   input: { images: string[]; prompt?: string },
   db: AppDatabase,
@@ -202,12 +210,6 @@ export async function describeImageStream(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   })
-
-  const gateway = callGateway ?? defaultGateway(db, ownerUserId, config)
-  const response = await gateway(request, "chat/completions")
-  if (!response.ok) {
-    throw new Error(await extractUpstreamErrorMessage(response, `识图请求失败 (${response.status})`))
-  }
 
   const initial = {
     jsonrpc: "2.0",
@@ -226,93 +228,80 @@ export async function describeImageStream(
     params: { id: 0 },
   }
 
-  if (!response.body) {
-    return new ReadableStream({
-      start(controller) {
-        controller.enqueue(mcpSseEvent(initial))
-        controller.enqueue(mcpSseEvent(contentBlockStart))
-        controller.enqueue(mcpSseEvent(contentBlockDelta("上游未返回内容")))
-        controller.enqueue(mcpSseEvent(contentBlockStop))
-        controller.close()
-      },
-    })
-  }
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      // 先立即推送初始 result，客户端立刻收到响应头与"开始"信号。
+      controller.enqueue(mcpSseEvent(initial))
+      controller.enqueue(mcpSseEvent(contentBlockStart))
+      try {
+        const gateway = callGateway ?? defaultGateway(db, ownerUserId, config)
+        const response = await gateway(request, "chat/completions")
+        if (!response.ok) {
+          controller.enqueue(mcpSseEvent(contentBlockDelta(await extractUpstreamErrorMessage(response, `识图请求失败 (${response.status})`))))
+          return
+        }
+        if (!response.body) {
+          controller.enqueue(mcpSseEvent(contentBlockDelta("上游未返回内容")))
+          return
+        }
 
-  const contentType = response.headers.get("content-type") ?? ""
-  const isSse = contentType.includes("text/event-stream")
+        const contentType = response.headers.get("content-type") ?? ""
+        const isSse = contentType.includes("text/event-stream")
 
-  // Non-SSE upstream (some providers ignore stream): emit the whole text once.
-  if (!isSse) {
-    return new ReadableStream({
-      async start(controller) {
-        controller.enqueue(mcpSseEvent(initial))
-        controller.enqueue(mcpSseEvent(contentBlockStart))
-        try {
+        if (!isSse) {
+          // Non-SSE upstream (some providers ignore stream): emit the whole text once.
           const data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
           const raw = data.choices?.[0]?.message?.content
           const text = typeof raw === "string" ? raw : ""
           if (text) controller.enqueue(mcpSseEvent(contentBlockDelta(text)))
-        } catch (cause) {
-          const message = cause instanceof Error ? cause.message : String(cause)
-          controller.enqueue(mcpSseEvent(contentBlockDelta(`识图失败：${message}`)))
+          return
         }
-        controller.enqueue(mcpSseEvent(contentBlockStop))
-        controller.close()
-      },
-    })
-  }
 
-  // SSE upstream: parse chat-completions delta events and forward each chunk.
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  return new ReadableStream({
-    async start(controller) {
-      controller.enqueue(mcpSseEvent(initial))
-      controller.enqueue(mcpSseEvent(contentBlockStart))
-      try {
-        outer: for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          let nl: number
-          while ((nl = buffer.indexOf("\n")) >= 0) {
-            const line = buffer.slice(0, nl).replace(/\r$/, "")
-            buffer = buffer.slice(nl + 1)
-            if (!line.startsWith("data:")) continue
-            const data = line.slice(5).trimStart()
-            if (!data) continue
-            if (data === "[DONE]") break outer
-            try {
-              const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> }
-              const delta = parsed.choices?.[0]?.delta?.content
-              if (typeof delta === "string" && delta) {
-                controller.enqueue(mcpSseEvent(contentBlockDelta(delta)))
+        // SSE upstream: parse chat-completions delta events and forward each chunk.
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        try {
+          outer: for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            let nl: number
+            while ((nl = buffer.indexOf("\n")) >= 0) {
+              const line = buffer.slice(0, nl).replace(/\r$/, "")
+              buffer = buffer.slice(nl + 1)
+              if (!line.startsWith("data:")) continue
+              const data = line.slice(5).trimStart()
+              if (!data) continue
+              if (data === "[DONE]") break outer
+              try {
+                const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> }
+                const delta = parsed.choices?.[0]?.delta?.content
+                if (typeof delta === "string" && delta) {
+                  controller.enqueue(mcpSseEvent(contentBlockDelta(delta)))
+                }
+              } catch {
+                // 忽略无法解析的 data 行
               }
-            } catch {
-              // 忽略无法解析的 data 行
             }
+          }
+        } finally {
+          try {
+            await reader.cancel()
+          } catch {
+            // 已关闭
           }
         }
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
         controller.enqueue(mcpSseEvent(contentBlockDelta(`识图流式传输中断：${message}`)))
       } finally {
-        try {
-          await reader.cancel()
-        } catch {
-          // 已关闭
-        }
         controller.enqueue(mcpSseEvent(contentBlockStop))
         controller.close()
       }
     },
-    cancel(reason) {
-      try {
-        void reader.cancel(reason)
-      } catch {
-        // 已关闭
-      }
+    cancel() {
+      // 客户端断开：不再推送。
     },
   })
 }
