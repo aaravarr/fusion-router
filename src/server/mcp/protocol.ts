@@ -42,7 +42,7 @@ function extractProgressToken(params: Record<string, unknown>): string | number 
   return undefined
 }
 
-const STREAM_HEADERS = {
+export const STREAM_HEADERS = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache",
   Connection: "keep-alive",

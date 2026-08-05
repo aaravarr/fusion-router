@@ -1,5 +1,5 @@
 import { getDatabase } from "@/server/db"
-import { authenticateMcpRequest, handleMcpRequest, isEventStreamRequest } from "@/server/mcp/protocol"
+import { authenticateMcpRequest, handleMcpRequest, isEventStreamRequest, STREAM_HEADERS } from "@/server/mcp/protocol"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -10,11 +10,58 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
 } as const
 
-export async function GET() {
+// legacy HTTP+SSE transport 的心跳间隔：防止代理/负载均衡关闭空闲 SSE 连接
+const SSE_KEEPALIVE_MS = 15_000
+
+function methodNotAllowed(): Response {
   return Response.json(
     { error: { type: "method_not_allowed", message: "MCP 端点仅支持 POST" } },
     { status: 405, headers: corsHeaders },
   )
+}
+
+/**
+ * GET /mcp
+ *
+ * 支持 legacy HTTP+SSE transport（如部分客户端的 "SSE" 连接方式）：
+ * 客户端先 GET 本端点（Accept: text/event-stream）建立 SSE 流，服务端返回
+ * endpoint 事件告知后续 POST 地址，并保持连接（心跳保活）。之后客户端
+ * POST 的 JSON-RPC 请求仍走 POST handler（非流式返回完整 JSON result，
+ * 流式返回标准 Streamable HTTP SSE）。
+ *
+ * 客户端未显式请求 SSE 时保持 405（符合 Streamable HTTP 规范）。
+ */
+export async function GET(request: Request) {
+  if (!(request.headers.get("accept") ?? "").includes("text/event-stream")) {
+    return methodNotAllowed()
+  }
+  const db = getDatabase()
+  const auth = authenticateMcpRequest(request, db)
+  if (!auth.ok) {
+    return auth.error
+  }
+
+  const url = new URL(request.url)
+  const endpoint = `${url.origin}/mcp`
+  let heartbeat: ReturnType<typeof setInterval> | null = null
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder()
+      // legacy transport：先通知客户端 POST 端点
+      controller.enqueue(encoder.encode(`event: endpoint\ndata: ${endpoint}\n\n`))
+      heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"))
+        } catch {
+          if (heartbeat) clearInterval(heartbeat)
+        }
+      }, SSE_KEEPALIVE_MS)
+    },
+    cancel() {
+      if (heartbeat) clearInterval(heartbeat)
+    },
+  })
+  return new Response(stream, { status: 200, headers: STREAM_HEADERS })
 }
 
 export async function POST(request: Request) {
