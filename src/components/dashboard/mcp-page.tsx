@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
 import {
+  Check,
+  Copy,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -17,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { useAdmin } from "./admin-context";
+import { copyToClipboard } from "@/lib/utils";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
 
@@ -58,18 +61,7 @@ function errorMessage(payload: unknown, fallback: string) {
   return typeof value.message === "string" ? value.message : fallback;
 }
 
-const MCP_JSON_EXAMPLE = `{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "describe_image",
-    "arguments": {
-      "image": "https://example.com/photo.png",
-      "prompt": "请描述这张图片里有什么"
-    }
-  }
-}`;
+const MCP_SERVER_NAME = "opencode-mcp";
 
 export function McpPage() {
   const { adminFetch } = useAdmin();
@@ -87,8 +79,39 @@ export function McpPage() {
     [origin, server?.endpoint]
   );
 
+  const mcpServerConfig = useMemo(() => {
+    if (!endpoint) return "";
+    return JSON.stringify(
+      {
+        mcpServers: {
+          [MCP_SERVER_NAME]: {
+            url: endpoint,
+            headers: {
+              Authorization: "Bearer <你的 API Key>",
+            },
+          },
+        },
+      },
+      null,
+      2,
+    );
+  }, [endpoint]);
+  const [configCopied, setConfigCopied] = useState(false);
+
+  async function copyServerConfig() {
+    if (!mcpServerConfig) return;
+    const ok = await copyToClipboard(mcpServerConfig);
+    if (ok) {
+      setConfigCopied(true);
+      window.setTimeout(() => setConfigCopied(false), 2000);
+    } else {
+      setMessage("复制失败，请手动选择并复制。");
+    }
+  }
+
   const [message, setMessage] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
+
 
   // 编辑对话框状态
   const [editing, setEditing] = useState<MCPTool | null>(null);
@@ -294,12 +317,17 @@ export function McpPage() {
                 </div>
               </div>
               <div className="min-w-0 rounded-lg border bg-white p-4">
-                <p className="text-xs font-medium text-foreground">describe_image 接入示例（JSON-RPC）</p>
-                <pre className="mt-2 overflow-x-auto rounded-md bg-[#fafafa] p-3 font-mono text-[11px] leading-5">{MCP_JSON_EXAMPLE}</pre>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-foreground">客户端接入配置（mcpServers）</p>
+                  <Button size="xs" variant="outline" onClick={() => void copyServerConfig()}>
+                    {configCopied ? <Check /> : <Copy />}
+                    {configCopied ? "已复制" : "复制"}
+                  </Button>
+                </div>
+                <pre className="mt-2 overflow-x-auto rounded-md bg-[#fafafa] p-3 font-mono text-[11px] leading-5">{mcpServerConfig || "…"}</pre>
                 <div className="mt-3 space-y-1.5 text-[11px] leading-5 text-muted-foreground">
-                  <p>连接地址：<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code></p>
-                  <p>鉴权方式：<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Authorization: Bearer &lt;你的 API Key&gt;</code></p>
-                  <p>在「API 密钥」页创建 Key；识图请求使用该 Key 归属用户的账号池。支持 MCP 的客户端（如 Claude Desktop、Cursor）可直接接入。</p>
+                  <p>把上面的配置粘贴到支持 MCP 的客户端（如 Claude Desktop、Cursor）即可接入。</p>
+                  <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；识图请求使用该 Key 归属用户的账号池。</p>
                 </div>
               </div>
             </div>

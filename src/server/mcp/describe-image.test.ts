@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createDatabase, type AppDatabase } from "@/server/db"
-import { describeImage, normalizeImageInput } from "./describe-image"
+import { describeImage, describeImageStream, normalizeImageInput } from "./describe-image"
 import { ensureDefaultMcpTools, updateMcpTool } from "./mcp-tools"
 
 let db: AppDatabase
@@ -207,5 +207,83 @@ describe("describeImage", () => {
     await expect(
       describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "" }, vi.fn()),
     ).rejects.toThrow("未指定调用用户")
+  })
+})
+describe("describeImageStream", () => {
+  async function streamText(stream: ReadableStream<Uint8Array>): Promise<string> {
+    return new Response(stream).text()
+  }
+
+  it("上游 SSE 时转发 content_block 增量事件", async () => {
+    const encoder = new TextEncoder()
+    const sseBody = [
+      "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}",
+      "",
+      "data: {\"choices\":[{\"delta\":{\"content\":\"世界\"}}]}",
+      "",
+      "data: [DONE]",
+      "",
+      "",
+    ].join("\n")
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as { stream: boolean }
+      expect(body.stream).toBe(true)
+      return new Response(encoder.encode(sseBody), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    })
+
+    const stream = await describeImageStream(
+      { image: "https://example.com/a.png", prompt: "描述一下" },
+      db,
+      { ownerUserId: "user-1" },
+      42,
+      callGateway,
+    )
+    const text = await streamText(stream)
+    expect(text).toContain('"content":[]')
+    expect(text).toContain('"method":"notifications/content_block_start"')
+    expect(text).toContain('"method":"notifications/content_block_delta"')
+    expect(text).toContain('"text":"你好"')
+    expect(text).toContain('"text":"世界"')
+    expect(text).toContain('"method":"notifications/content_block_stop"')
+    // 初始 result 带 JSON-RPC id
+    expect(text).toContain('"id":42')
+  })
+
+  it("上游返回 JSON 全文时一次性发出 delta", async () => {
+    const callGateway = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    )
+    const stream = await describeImageStream(
+      { image: "https://example.com/a.png" },
+      db,
+      { ownerUserId: "user-1" },
+      "req-1",
+      callGateway,
+    )
+    const text = await streamText(stream)
+    expect(text).toContain('"text":"画面中有一只橘猫"')
+    expect(text).toContain('"method":"notifications/content_block_stop"')
+  })
+
+  it("上游响应非 ok 时直接抛错（不走流）", async () => {
+    const callGateway = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { message: "余额不足" } }), { status: 402 }),
+    )
+    await expect(
+      describeImageStream({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, 1, callGateway),
+    ).rejects.toThrow("余额不足")
+  })
+
+  it("未配置模型时报错", async () => {
+    updateMcpTool("describe_image", { config: { model: "" } }, db)
+    await expect(
+      describeImageStream({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, 1, vi.fn()),
+    ).rejects.toThrow("尚未配置识图模型")
   })
 })

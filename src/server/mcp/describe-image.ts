@@ -23,12 +23,28 @@ export interface DescribeImageResult {
   accountName: string | null
 }
 
-export async function describeImage(
+interface DescribeRequestBody {
+  config: DescribeImageConfig
+  ownerUserId: string
+  body: {
+    model: string
+    stream: boolean
+    messages: Array<{
+      role: string
+      content: Array<{ type: string; text?: string; image_url?: { url: string } }>
+    }>
+    max_tokens: number
+    temperature: number
+    reasoning_effort?: "low" | "medium" | "high"
+  }
+}
+
+function buildDescribeRequestBody(
   input: { image: string; prompt?: string },
   db: AppDatabase,
   ctx: { ownerUserId: string },
-  callGateway?: (request: Request, endpoint: string) => Promise<Response>,
-): Promise<DescribeImageResult> {
+  stream: boolean,
+): DescribeRequestBody {
   if (!ctx.ownerUserId) throw new Error("未指定调用用户")
 
   let tool = getMcpTool("describe_image", db)
@@ -61,19 +77,9 @@ export async function describeImage(
       ]
     : [{ type: "image_url", image_url: { url: imageUrl } }]
 
-  const body: {
-    model: string
-    stream: boolean
-    messages: Array<{
-      role: string
-      content: Array<{ type: string; text?: string; image_url?: { url: string } }>
-    }>
-    max_tokens: number
-    temperature: number
-    reasoning_effort?: "low" | "medium" | "high"
-  } = {
+  const body: DescribeRequestBody["body"] = {
     model: config.model,
-    stream: false,
+    stream,
     messages: [
       {
         role: "user",
@@ -87,30 +93,45 @@ export async function describeImage(
     body.reasoning_effort = config.reasoningEffort
   }
 
+  return { config, ownerUserId: ctx.ownerUserId, body }
+}
+
+function defaultGateway(db: AppDatabase, ownerUserId: string, config: DescribeImageConfig) {
+  return (req: Request, endpoint: string) =>
+    new GatewayService({ get: getGoCredential }, db).handle(req, endpoint, {
+      principal: { ownerUserId, label: "mcp-describe-image" },
+      routing: config.poolType ? { poolType: config.poolType as PoolType } : undefined,
+    })
+}
+
+async function extractUpstreamErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const parsed = (await response.json()) as { error?: { message?: unknown } }
+    if (typeof parsed.error?.message === "string" && parsed.error.message) return parsed.error.message
+  } catch {
+    // 保留默认错误信息
+  }
+  return fallback
+}
+
+export async function describeImage(
+  input: { image: string; prompt?: string },
+  db: AppDatabase,
+  ctx: { ownerUserId: string },
+  callGateway?: (request: Request, endpoint: string) => Promise<Response>,
+): Promise<DescribeImageResult> {
+  const { config, ownerUserId, body } = buildDescribeRequestBody(input, db, ctx, false)
+
   const request = new Request("http://internal/mcp/describe_image", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   })
 
-  const gateway =
-    callGateway ??
-    (async (req: Request, endpoint: string) =>
-      new GatewayService({ get: getGoCredential }, db).handle(req, endpoint, {
-        principal: { ownerUserId: ctx.ownerUserId, label: "mcp-describe-image" },
-        routing: config.poolType ? { poolType: config.poolType as PoolType } : undefined,
-      }))
-
+  const gateway = callGateway ?? defaultGateway(db, ownerUserId, config)
   const response = await gateway(request, "chat/completions")
   if (!response.ok) {
-    let message = `识图请求失败 (${response.status})`
-    try {
-      const parsed = (await response.json()) as { error?: { message?: unknown } }
-      if (typeof parsed.error?.message === "string" && parsed.error.message) message = parsed.error.message
-    } catch {
-      // 保留默认错误信息
-    }
-    throw new Error(message)
+    throw new Error(await extractUpstreamErrorMessage(response, `识图请求失败 (${response.status})`))
   }
 
   const data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
@@ -119,4 +140,150 @@ export async function describeImage(
   if (!text) throw new Error("模型未返回内容")
 
   return { text, model: config.model, accountName: null }
+}
+
+function mcpSseEvent(payload: unknown): Uint8Array {
+  return new TextEncoder().encode(`event: message\ndata: ${JSON.stringify(payload)}\n\n`)
+}
+
+function contentBlockDelta(text: string): unknown {
+  return {
+    jsonrpc: "2.0",
+    method: "notifications/content_block_delta",
+    params: { id: 0, delta: { type: "text", text } },
+  }
+}
+
+/**
+ * Streams describe_image through MCP streamable HTTP: an initial empty result
+ * followed by content_block_start / content_block_delta / content_block_stop
+ * notifications, fed from the upstream chat-completions SSE stream.
+ */
+export async function describeImageStream(
+  input: { image: string; prompt?: string },
+  db: AppDatabase,
+  ctx: { ownerUserId: string },
+  id: unknown,
+  callGateway?: (request: Request, endpoint: string) => Promise<Response>,
+): Promise<ReadableStream<Uint8Array>> {
+  const { config, ownerUserId, body } = buildDescribeRequestBody(input, db, ctx, true)
+
+  const request = new Request("http://internal/mcp/describe_image", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+
+  const gateway = callGateway ?? defaultGateway(db, ownerUserId, config)
+  const response = await gateway(request, "chat/completions")
+  if (!response.ok) {
+    throw new Error(await extractUpstreamErrorMessage(response, `识图请求失败 (${response.status})`))
+  }
+
+  const initial = {
+    jsonrpc: "2.0",
+    id: id ?? null,
+    result: { content: [], isError: false },
+    meta: {},
+  }
+  const contentBlockStart = {
+    jsonrpc: "2.0",
+    method: "notifications/content_block_start",
+    params: { id: 0, contentBlock: { type: "text", text: "" } },
+  }
+  const contentBlockStop = {
+    jsonrpc: "2.0",
+    method: "notifications/content_block_stop",
+    params: { id: 0 },
+  }
+
+  if (!response.body) {
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(mcpSseEvent(initial))
+        controller.enqueue(mcpSseEvent(contentBlockStart))
+        controller.enqueue(mcpSseEvent(contentBlockDelta("上游未返回内容")))
+        controller.enqueue(mcpSseEvent(contentBlockStop))
+        controller.close()
+      },
+    })
+  }
+
+  const contentType = response.headers.get("content-type") ?? ""
+  const isSse = contentType.includes("text/event-stream")
+
+  // Non-SSE upstream (some providers ignore stream): emit the whole text once.
+  if (!isSse) {
+    return new ReadableStream({
+      async start(controller) {
+        controller.enqueue(mcpSseEvent(initial))
+        controller.enqueue(mcpSseEvent(contentBlockStart))
+        try {
+          const data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
+          const raw = data.choices?.[0]?.message?.content
+          const text = typeof raw === "string" ? raw : ""
+          if (text) controller.enqueue(mcpSseEvent(contentBlockDelta(text)))
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause)
+          controller.enqueue(mcpSseEvent(contentBlockDelta(`识图失败：${message}`)))
+        }
+        controller.enqueue(mcpSseEvent(contentBlockStop))
+        controller.close()
+      },
+    })
+  }
+
+  // SSE upstream: parse chat-completions delta events and forward each chunk.
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  return new ReadableStream({
+    async start(controller) {
+      controller.enqueue(mcpSseEvent(initial))
+      controller.enqueue(mcpSseEvent(contentBlockStart))
+      try {
+        outer: for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let nl: number
+          while ((nl = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, nl).replace(/\r$/, "")
+            buffer = buffer.slice(nl + 1)
+            if (!line.startsWith("data:")) continue
+            const data = line.slice(5).trimStart()
+            if (!data) continue
+            if (data === "[DONE]") break outer
+            try {
+              const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> }
+              const delta = parsed.choices?.[0]?.delta?.content
+              if (typeof delta === "string" && delta) {
+                controller.enqueue(mcpSseEvent(contentBlockDelta(delta)))
+              }
+            } catch {
+              // 忽略无法解析的 data 行
+            }
+          }
+        }
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        controller.enqueue(mcpSseEvent(contentBlockDelta(`识图流式传输中断：${message}`)))
+      } finally {
+        try {
+          await reader.cancel()
+        } catch {
+          // 已关闭
+        }
+        controller.enqueue(mcpSseEvent(contentBlockStop))
+        controller.close()
+      }
+    },
+    cancel(reason) {
+      try {
+        void reader.cancel(reason)
+      } catch {
+        // 已关闭
+      }
+    },
+  })
 }

@@ -1,6 +1,6 @@
 import type { AppDatabase } from "@/server/db"
 import { authenticateApiKey } from "@/server/repository"
-import { describeImage } from "./describe-image"
+import { describeImage, describeImageStream } from "./describe-image"
 import { MCP_TOOL_DEFINITIONS } from "./mcp-tools"
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -31,10 +31,25 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
+const STREAM_HEADERS = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+} as const
+
+export function isEventStreamRequest(request: Request): boolean {
+  return (request.headers.get("accept") ?? "").includes("text/event-stream")
+}
+
 export async function handleMcpRequest(
   body: unknown,
   db: AppDatabase,
   ctx: { ownerUserId: string; apiKeyId?: string | null },
+  options?: { acceptEventStream?: boolean },
+  callGateway?: (request: Request, endpoint: string) => Promise<Response>,
 ): Promise<Response> {
   const record = asRecord(body)
   if (record.jsonrpc !== "2.0" || typeof record.method !== "string") {
@@ -87,7 +102,18 @@ export async function handleMcpRequest(
         if (definition.toolType === "describe_image") {
           const image = typeof args.image === "string" ? args.image : ""
           const prompt = typeof args.prompt === "string" ? args.prompt : undefined
-          const result = await describeImage({ image, prompt }, db, { ownerUserId: ctx.ownerUserId })
+          const wantStream = options?.acceptEventStream === true && args.stream !== false
+          if (wantStream) {
+            const stream = await describeImageStream(
+              { image, prompt },
+              db,
+              { ownerUserId: ctx.ownerUserId },
+              id,
+              callGateway,
+            )
+            return new Response(stream, { status: 200, headers: STREAM_HEADERS })
+          }
+          const result = await describeImage({ image, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
           return rpcResult(id, { content: [{ type: "text", text: result.text }] })
         }
         return rpcError(id, -32601, "Method not found")

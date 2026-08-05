@@ -8,7 +8,7 @@ import { clearBootstrapCacheForTests, ensureMasterKey } from "@/server/bootstrap
 import { ApiKeyHasher } from "@/server/crypto"
 import { getSystemSecret, initializeSystemSettings } from "@/server/settings"
 import { ensureDefaultMcpTools } from "./mcp-tools"
-import { describeImage } from "./describe-image"
+import { describeImage, describeImageStream } from "./describe-image"
 import {
   authenticateMcpRequest,
   handleMcpRequest,
@@ -18,9 +18,11 @@ import {
 
 vi.mock("./describe-image", () => ({
   describeImage: vi.fn(),
+  describeImageStream: vi.fn(),
 }))
 
 const mockedDescribeImage = vi.mocked(describeImage)
+const mockedDescribeImageStream = vi.mocked(describeImageStream)
 
 let db: AppDatabase
 let directory: string
@@ -114,7 +116,62 @@ describe("MCP protocol", () => {
       { image: "https://example.com/a.png", prompt: undefined },
       db,
       { ownerUserId: "user-1" },
+      undefined,
     )
+  })
+
+  it("acceptEventStream 时 tools/call 返回 SSE 流", async () => {
+    const encoder = new TextEncoder()
+    mockedDescribeImageStream.mockResolvedValue(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("event: message\ndata: x\n\n"))
+          controller.close()
+        },
+      }),
+    )
+    const response = await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "describe_image", arguments: { image: "https://example.com/a.png" } },
+      },
+      db,
+      { ownerUserId: "user-1" },
+      { acceptEventStream: true },
+    )
+    expect(response.headers.get("content-type")).toContain("text/event-stream")
+    expect(mockedDescribeImage).not.toHaveBeenCalled()
+    expect(mockedDescribeImageStream).toHaveBeenCalledWith(
+      { image: "https://example.com/a.png", prompt: undefined },
+      db,
+      { ownerUserId: "user-1" },
+      4,
+      undefined,
+    )
+  })
+
+  it("acceptEventStream 但 args.stream=false 时仍返回 JSON", async () => {
+    mockedDescribeImage.mockResolvedValue({ text: "图片描述", model: "grok-4", accountName: null })
+    const response = await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "describe_image",
+          arguments: { image: "https://example.com/a.png", stream: false },
+        },
+      },
+      db,
+      { ownerUserId: "user-1" },
+      { acceptEventStream: true },
+    )
+    expect(response.headers.get("content-type")).toContain("application/json")
+    const body = await response.json()
+    expect(body.result.content).toEqual([{ type: "text", text: "图片描述" }])
+    expect(mockedDescribeImageStream).not.toHaveBeenCalled()
   })
 
   it("tools/call 未知工具返回 -32602", async () => {

@@ -1,5 +1,5 @@
 import { getDatabase } from "@/server/db"
-import { authenticateMcpRequest, handleMcpRequest } from "@/server/mcp/protocol"
+import { authenticateMcpRequest, handleMcpRequest, isEventStreamRequest } from "@/server/mcp/protocol"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -32,7 +32,12 @@ export async function POST(request: Request) {
       { status: 400, headers: corsHeaders },
     )
   }
-  return handleMcpRequest(body, db, { ownerUserId: auth.ownerUserId, apiKeyId: auth.apiKeyId })
+  return handleMcpRequest(
+    body,
+    db,
+    { ownerUserId: auth.ownerUserId, apiKeyId: auth.apiKeyId },
+    { acceptEventStream: isEventStreamRequest(request) },
+  )
 }
 
 export async function OPTIONS() {
