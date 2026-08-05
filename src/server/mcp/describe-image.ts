@@ -171,30 +171,33 @@ export async function describeImage(
   return { text, model: config.model, accountName: null }
 }
 
+
 function mcpSseEvent(payload: unknown): Uint8Array {
   return new TextEncoder().encode(`event: message\ndata: ${JSON.stringify(payload)}\n\n`)
 }
 
-function contentBlockDelta(text: string): unknown {
+/** 构造标准 tools/call 的 JSON-RPC result：完整 content 一次性返回。 */
+function toolResult(id: unknown, text: string, isError: boolean): unknown {
   return {
     jsonrpc: "2.0",
-    method: "notifications/content_block_delta",
-    params: { id: 0, delta: { type: "text", text } },
+    id: id ?? null,
+    result: {
+      content: [{ type: "text", text }],
+      isError,
+    },
   }
 }
 
+export interface McpStreamOptions {
+  /** 客户端通过 params._meta.progressToken 请求的进度通知 token。 */
+  progressToken?: string | number
+}
+
 /**
- * Streams describe_image through MCP streamable HTTP: an initial empty result
- * followed by content_block_start / content_block_delta / content_block_stop
- * notifications, fed from the upstream chat-completions SSE stream.
- */
-/**
- * Streams describe_image through MCP streamable HTTP: an initial empty result
- * is sent immediately, then content_block_start / content_block_delta /
- * content_block_stop notifications fed from the upstream chat-completions
- * stream. The upstream request runs inside the stream so the client receives
- * the response head and initial result right away instead of waiting for the
- * full upstream round-trip (which can take several seconds).
+ * Streams describe_image through MCP Streamable HTTP（标准实现）：
+ * - 可选发送 notifications/progress 进度通知（客户端请求 progressToken 时）；
+ * - 最后发送一条带完整 result.content 的 JSON-RPC response 后关闭流。
+ * 上游（chat-completions）请求在流内执行，客户端能立即收到响应头。
  */
 export async function describeImageStream(
   input: { images: string[]; prompt?: string },
@@ -202,6 +205,7 @@ export async function describeImageStream(
   ctx: { ownerUserId: string },
   id: unknown,
   callGateway?: (request: Request, endpoint: string) => Promise<Response>,
+  options?: McpStreamOptions,
 ): Promise<ReadableStream<Uint8Array>> {
   const { config, ownerUserId, body } = buildDescribeRequestBody(input, db, ctx, true)
 
@@ -211,92 +215,82 @@ export async function describeImageStream(
     body: JSON.stringify(body),
   })
 
-  const initial = {
-    jsonrpc: "2.0",
-    id: id ?? null,
-    result: { content: [], isError: false },
-    meta: {},
-  }
-  const contentBlockStart = {
-    jsonrpc: "2.0",
-    method: "notifications/content_block_start",
-    params: { id: 0, contentBlock: { type: "text", text: "" } },
-  }
-  const contentBlockStop = {
-    jsonrpc: "2.0",
-    method: "notifications/content_block_stop",
-    params: { id: 0 },
-  }
-
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      // 先立即推送初始 result，客户端立刻收到响应头与"开始"信号。
-      controller.enqueue(mcpSseEvent(initial))
-      controller.enqueue(mcpSseEvent(contentBlockStart))
+      const emit = (payload: unknown): void => controller.enqueue(mcpSseEvent(payload))
+      const emitProgress = (progress: number, total: number): void => {
+        if (options?.progressToken === undefined) return
+        emit({
+          jsonrpc: "2.0",
+          method: "notifications/progress",
+          params: { progressToken: options.progressToken, progress, total },
+        })
+      }
       try {
+        emitProgress(0, 1)
         const gateway = callGateway ?? defaultGateway(db, ownerUserId, config)
         const response = await gateway(request, "chat/completions")
         if (!response.ok) {
-          controller.enqueue(mcpSseEvent(contentBlockDelta(await extractUpstreamErrorMessage(response, `识图请求失败 (${response.status})`))))
+          const message = await extractUpstreamErrorMessage(response, `识图请求失败 (${response.status})`)
+          emit(toolResult(id, message, true))
           return
         }
         if (!response.body) {
-          controller.enqueue(mcpSseEvent(contentBlockDelta("上游未返回内容")))
+          emit(toolResult(id, "上游未返回内容", true))
           return
         }
 
         const contentType = response.headers.get("content-type") ?? ""
         const isSse = contentType.includes("text/event-stream")
+        let text = ""
 
         if (!isSse) {
-          // Non-SSE upstream (some providers ignore stream): emit the whole text once.
+          // Non-SSE upstream (some providers ignore stream): use the whole text once.
           const data = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
           const raw = data.choices?.[0]?.message?.content
-          const text = typeof raw === "string" ? raw : ""
-          if (text) controller.enqueue(mcpSseEvent(contentBlockDelta(text)))
-          return
-        }
-
-        // SSE upstream: parse chat-completions delta events and forward each chunk.
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ""
-        try {
-          outer: for (;;) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            let nl: number
-            while ((nl = buffer.indexOf("\n")) >= 0) {
-              const line = buffer.slice(0, nl).replace(/\r$/, "")
-              buffer = buffer.slice(nl + 1)
-              if (!line.startsWith("data:")) continue
-              const data = line.slice(5).trimStart()
-              if (!data) continue
-              if (data === "[DONE]") break outer
-              try {
-                const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> }
-                const delta = parsed.choices?.[0]?.delta?.content
-                if (typeof delta === "string" && delta) {
-                  controller.enqueue(mcpSseEvent(contentBlockDelta(delta)))
+          text = typeof raw === "string" ? raw : ""
+        } else {
+          // SSE upstream: accumulate the full text from chat-completions delta events.
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ""
+          try {
+            outer: for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              buffer += decoder.decode(value, { stream: true })
+              let nl: number
+              while ((nl = buffer.indexOf("\n")) >= 0) {
+                const line = buffer.slice(0, nl).replace(/\r$/, "")
+                buffer = buffer.slice(nl + 1)
+                if (!line.startsWith("data:")) continue
+                const data = line.slice(5).trimStart()
+                if (!data) continue
+                if (data === "[DONE]") break outer
+                try {
+                  const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> }
+                  const delta = parsed.choices?.[0]?.delta?.content
+                  if (typeof delta === "string" && delta) text += delta
+                } catch {
+                  // 忽略无法解析的 data 行
                 }
-              } catch {
-                // 忽略无法解析的 data 行
               }
             }
-          }
-        } finally {
-          try {
-            await reader.cancel()
-          } catch {
-            // 已关闭
+          } finally {
+            try {
+              await reader.cancel()
+            } catch {
+              // 已关闭
+            }
           }
         }
+
+        emitProgress(1, 1)
+        emit(toolResult(id, text, false))
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
-        controller.enqueue(mcpSseEvent(contentBlockDelta(`识图流式传输中断：${message}`)))
+        emit(toolResult(id, `识图失败：${message}`, true))
       } finally {
-        controller.enqueue(mcpSseEvent(contentBlockStop))
         controller.close()
       }
     },

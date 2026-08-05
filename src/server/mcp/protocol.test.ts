@@ -161,6 +161,7 @@ describe("MCP protocol", () => {
       { ownerUserId: "user-1" },
       4,
       undefined,
+      undefined,
     )
   })
 
@@ -279,6 +280,41 @@ describe("MCP protocol", () => {
       { ownerUserId: "user-1" },
       10,
       undefined,
+      undefined,
+    )
+  })
+  it("客户端传 _meta.progressToken 时透传给流式实现", async () => {
+    const encoder = new TextEncoder()
+    mockedDescribeImageStream.mockResolvedValue(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("event: message\ndata: x\n\n"))
+          controller.close()
+        },
+      }),
+    )
+    await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 11,
+        method: "tools/call",
+        params: {
+          name: "describe_image",
+          arguments: { image: "https://example.com/a.png" },
+          _meta: { progressToken: "tok-123" },
+        },
+      },
+      db,
+      { ownerUserId: "user-1" },
+      { acceptEventStream: true },
+    )
+    expect(mockedDescribeImageStream).toHaveBeenCalledWith(
+      { images: ["https://example.com/a.png"], prompt: undefined },
+      db,
+      { ownerUserId: "user-1" },
+      11,
+      undefined,
+      { progressToken: "tok-123" },
     )
   })
   it("notifications/initialized 返回 202", async () => {

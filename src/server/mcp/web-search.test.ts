@@ -150,7 +150,7 @@ describe("webSearchStream", () => {
     return new Response(stream).text()
   }
 
-  it("上游 SSE 时转发 output_text.delta 并忽略 reasoning_text.delta", async () => {
+  it("上游 SSE 时累积完整文本并在最终 result 一次性返回，忽略 reasoning_text.delta", async () => {
     const encoder = new TextEncoder()
     const sseBody = [
       'data: {"type":"response.reasoning_text.delta","item_id":"reasoning_1","output_index":0,"content_index":0,"delta":"思考中"}',
@@ -174,17 +174,15 @@ describe("webSearchStream", () => {
 
     const stream = await webSearchStream({ query: "问题", prompt: "补充" }, db, { ownerUserId: "user-1" }, 42, callGateway)
     const text = await streamText(stream)
-    expect(text).toContain('"content":[]')
-    expect(text).toContain('"method":"notifications/content_block_start"')
-    expect(text).toContain('"method":"notifications/content_block_delta"')
-    expect(text).toContain('"text":"你好"')
-    expect(text).toContain('"text":"世界"')
+    // 标准实现：不发送 content_block 通知，只发一条带完整 content 的 result
+    expect(text).not.toContain("notifications/content_block")
+    expect(text).toContain('"text":"你好世界"')
     expect(text).not.toContain("思考中")
-    expect(text).toContain('"method":"notifications/content_block_stop"')
     expect(text).toContain('"id":42')
+    expect(text).toContain('"isError":false')
   })
 
-  it("上游返回 JSON 全文时一次性发出 delta", async () => {
+  it("上游返回 JSON 全文时在最终 result 返回完整文本", async () => {
     const callGateway = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -196,7 +194,7 @@ describe("webSearchStream", () => {
     const stream = await webSearchStream({ query: "问题" }, db, { ownerUserId: "user-1" }, "req-1", callGateway)
     const text = await streamText(stream)
     expect(text).toContain('"text":"根据搜索结果回答"')
-    expect(text).toContain('"method":"notifications/content_block_stop"')
+    expect(text).not.toContain("notifications/content_block")
   })
 
   it("上游响应非 ok 时在流内输出错误信息", async () => {
@@ -206,6 +204,7 @@ describe("webSearchStream", () => {
     const stream = await webSearchStream({ query: "问题" }, db, { ownerUserId: "user-1" }, 1, callGateway)
     const text = await streamText(stream)
     expect(text).toContain("搜索额度不足")
-    expect(text).toContain('"method":"notifications/content_block_stop"')
+    expect(text).toContain('"isError":true')
+    expect(text).not.toContain("notifications/content_block")
   })
 })

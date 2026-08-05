@@ -287,7 +287,7 @@ describe("describeImageStream", () => {
     return new Response(stream).text()
   }
 
-  it("上游 SSE 时转发 content_block 增量事件", async () => {
+  it("上游 SSE 时累积完整文本并在最终 result 一次性返回", async () => {
     const encoder = new TextEncoder()
     const sseBody = [
       "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}",
@@ -315,17 +315,14 @@ describe("describeImageStream", () => {
       callGateway,
     )
     const text = await streamText(stream)
-    expect(text).toContain('"content":[]')
-    expect(text).toContain('"method":"notifications/content_block_start"')
-    expect(text).toContain('"method":"notifications/content_block_delta"')
-    expect(text).toContain('"text":"你好"')
-    expect(text).toContain('"text":"世界"')
-    expect(text).toContain('"method":"notifications/content_block_stop"')
-    // 初始 result 带 JSON-RPC id
+    // 标准实现：不发送 content_block 通知，只发一条带完整 content 的 result
+    expect(text).not.toContain("notifications/content_block")
+    expect(text).toContain('"text":"你好世界"')
     expect(text).toContain('"id":42')
+    expect(text).toContain('"isError":false')
   })
 
-  it("上游返回 JSON 全文时一次性发出 delta", async () => {
+  it("上游返回 JSON 全文时在最终 result 返回完整文本", async () => {
     const callGateway = vi.fn(async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
         status: 200,
@@ -341,7 +338,7 @@ describe("describeImageStream", () => {
     )
     const text = await streamText(stream)
     expect(text).toContain('"text":"画面中有一只橘猫"')
-    expect(text).toContain('"method":"notifications/content_block_stop"')
+    expect(text).not.toContain("notifications/content_block")
   })
 
   it("上游响应非 ok 时在流内输出错误信息", async () => {
@@ -357,7 +354,8 @@ describe("describeImageStream", () => {
     )
     const text = await streamText(stream)
     expect(text).toContain("余额不足")
-    expect(text).toContain('"method":"notifications/content_block_stop"')
+    expect(text).toContain('"isError":true')
+    expect(text).not.toContain("notifications/content_block")
   })
 
   it("未配置模型时报错", async () => {
