@@ -731,8 +731,10 @@ describe("gateway logging", () => {
   it("客户端 stream=true 时，委托场景把最终结果以 SSE 流返回", async () => {
     const { db, apiKey, credentials, hasher } = setup()
     delegateWebSearchMock.mockResolvedValue({ query: "q1", text: "搜索文本", model: "deepseek-v4-flash" })
+    const firstBodies: Array<{ stream?: unknown; stream_options?: unknown }> = []
     const fetcher = vi.fn().mockImplementation(async (_url: unknown, init?: { body?: unknown }) => {
       const index = fetcher.mock.calls.length - 1
+      if (index === 0) firstBodies.push(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)) as { stream?: unknown; stream_options?: unknown })
       void init
       if (index === 0) {
         return Response.json({
@@ -755,10 +757,14 @@ describe("gateway logging", () => {
         input: "搜索问题",
         tools: [{ type: "web_search" }],
         stream: true,
+        stream_options: { include_usage: true },
       }),
     })
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
     expect(response.status).toBe(200)
+    // 内部强制非流式且移除 stream_options
+    expect(firstBodies[0]?.stream).toBe(false)
+    expect(firstBodies[0]?.stream_options).toBeUndefined()
     expect(response.headers.get("content-type")).toContain("text/event-stream")
     const text = await response.text()
     expect(text).toContain("response.web_search_call.searching")

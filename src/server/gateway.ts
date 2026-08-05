@@ -524,6 +524,8 @@ export class GatewayService {
            chatBody = injectWebSearchFunctionTool(chatBody)
            // tool 循环需要完整的 JSON 响应，内部强制非流式；客户端 stream 由响应侧再包装。
            chatBody.stream = false
+           // 客户端 stream:true 时会带 stream_options，强制非流式后上游会拒绝。
+           delete chatBody.stream_options
          }
          attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(chatBody))
          attemptToolContext = convertedRequest.toolContext
