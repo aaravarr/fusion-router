@@ -10,7 +10,7 @@ export const runtime = "nodejs"
  * grok-4.5 / gpt-5.6-luna / glm-5.2 等端点不可用或不支持图片，不列入。
  * 后续实测确认新模型可识图后在此追加。
  */
-const VISION_MODEL_PATTERNS = [/^minimax-m3/i, /^qwen3\.[5-9]\.(plus|max)/i]
+const VISION_MODEL_PATTERNS = [/^minimax-m3/i, /^qwen3\.[5-9]-(plus|max)/i]
 
 function isVisionModel(model: string): boolean {
   return VISION_MODEL_PATTERNS.some((pattern) => pattern.test(model))
