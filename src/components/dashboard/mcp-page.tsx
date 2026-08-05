@@ -75,7 +75,7 @@ export function McpPage() {
     return () => window.clearTimeout(timer);
   }, []);
   const endpoint = useMemo(
-    () => server?.endpoint || (origin ? `${origin}/mcp` : "/mcp"),
+    () => (origin ? `${origin}/mcp` : server?.endpoint || "/mcp"),
     [origin, server?.endpoint]
   );
 
