@@ -19,6 +19,7 @@ import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
 import { normalizeOpenCodeGoResponsesSse } from "./responses/opencode-go-compat"
+import { hasImageInBody, modelSupportsImage } from "./mcp/openrouter-models"
 
 export interface AccessCredential { accountId: string; goApiKey: string; credentialVersion: number }
 export interface CredentialProvider { get(ownerUserId: string, accountId: string): Promise<AccessCredential> }
@@ -292,6 +293,23 @@ export class GatewayService {
     const inferenceRequest = request.method !== "GET" && endpoint !== "models"
     if (inferenceRequest && apiKey.allowedModels?.length && !model) return Response.json({ error: { type: "model_required", message: "A string model is required for restricted API keys" } }, { status: 400 })
     if (apiKey.allowedModels?.length && model && !apiKey.allowedModels.includes(model)) return Response.json({ error: { type: "model_not_allowed", message: "This API key cannot use the requested model" } }, { status: 403 })
+
+    // 接口兼容：请求带图片但模型明确不支持多模态（基于 OpenRouter 模型目录）时，
+    // 直接给出清晰错误，避免把图片发给不支持图片输入的模型导致晦涩的上游报错。
+    if (inferenceRequest && model && hasImageInBody(requestBodyJson)) {
+      const supportsImage = await modelSupportsImage(model, this.db)
+      if (supportsImage === false) {
+        return Response.json(
+          {
+            error: {
+              type: "model_does_not_support_image",
+              message: `模型 ${model} 不支持图片输入，请更换多模态模型或移除图片后再试`,
+            },
+          },
+          { status: 400 },
+        )
+      }
+    }
 
     const logSettings = getLogSettings(this.db)
     const logging = logSettings.loggingEnabled

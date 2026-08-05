@@ -67,7 +67,7 @@ function errorMessage(payload: unknown, fallback: string) {
 const MCP_SERVER_NAME = "opencode-mcp";
 // 已通过线上实测确认支持图片输入的多模态模型（其余模型如 grok-4.5 / gpt-5.6-luna
 // 端点不可用或不支持图片，选了会识图失败）。优先用后端 visionModels，这里作为兜底。
-const RECOMMENDED_VISION_MODELS = ["minimax-m3", "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-plus", "qwen3.8-max"];
+const RECOMMENDED_VISION_MODELS = ["minimax-m3", "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-plus", "qwen3.8-max", "mimo-v2.5"];
 
 export function McpPage() {
   const { adminFetch } = useAdmin();
