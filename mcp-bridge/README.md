@@ -1,6 +1,6 @@
 # fusionrouter-mcp
 
-本地 stdio MCP 桥：让 Claude Desktop / Cursor / Codex CLI 等客户端通过本地图片路径（或 http(s) URL）调用远程 opencode-api 的 `/mcp` 识图工具。
+本地 stdio MCP 桥：动态透传远程 opencode-api 的 MCP 工具（describe_image 识图 / web_search 联网搜索）。工具列表以远程为准，Claude Desktop / Cursor / Codex CLI 等客户端始终能看到与远程一致的工具；describe_image 的本地图片路径或 http(s) URL 由本桥自动转 data URI 转发。
 
 ## 这是什么
 

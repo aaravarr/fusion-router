@@ -52,6 +52,9 @@ export function resolveImageSources(image, deps) {
   return [resolveImageSource(image, deps)];
 }
 
+/**
+ * 构造 describe_image 的 tools/call 请求体（保留旧签名，供测试与旧调用方使用）
+ */
 export function buildToolsCallPayload({ image, prompt, id }) {
   const args = { image };
   if (prompt) {
@@ -65,16 +68,29 @@ export function buildToolsCallPayload({ image, prompt, id }) {
   };
 }
 
-export async function callRemoteDescribe({
-  baseUrl,
-  apiKey,
-  image,
-  prompt,
-  id = 1,
-  fetchImpl = fetch,
-}) {
+/**
+ * 构造任意工具的 tools/call 请求体
+ */
+export function buildRemoteCallPayload({ name, args, id }) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: { name, arguments: args },
+  };
+}
+
+export function buildListToolsPayload({ id = 1 } = {}) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method: "tools/list",
+    params: {},
+  };
+}
+
+async function postJson(baseUrl, apiKey, body, fetchImpl) {
   const url = `${baseUrl}/mcp`;
-  const body = JSON.stringify(buildToolsCallPayload({ image, prompt, id }));
   let resp;
   try {
     resp = await fetchImpl(url, {
@@ -83,9 +99,10 @@ export async function callRemoteDescribe({
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
       },
-      body,
+      body: JSON.stringify(body),
     });
   } catch (err) {
+    // 错误消息沿用 baseUrl（不含 /mcp 后缀），与旧版行为一致
     throw new Error(`无法连接 MCP 服务 ${baseUrl}: ${err.message}`);
   }
 
@@ -107,12 +124,71 @@ export async function callRemoteDescribe({
     throw new Error(`MCP 服务响应解析失败: ${err.message}`);
   }
 
+  if (data?.error) {
+    throw new Error(data.error.message || `MCP 服务错误 (${data.error.code ?? "unknown"})`);
+  }
+  return data;
+}
+
+/**
+ * 通用远程工具转发：调用远程 /mcp 的 tools/call，返回首个 text 内容
+ */
+export async function callRemoteTool({
+  baseUrl,
+  apiKey,
+  name,
+  args,
+  id = 1,
+  fetchImpl = fetch,
+}) {
+  const data = await postJson(
+    baseUrl,
+    apiKey,
+    buildRemoteCallPayload({ name, args, id }),
+    fetchImpl
+  );
+
   if (data?.result?.isError === true) {
-    throw new Error(data?.result?.content?.[0]?.text || "识图失败");
+    throw new Error(data?.result?.content?.[0]?.text || "工具调用失败");
   }
   const text = data?.result?.content?.[0]?.text || "";
   if (text === "") {
     throw new Error("模型未返回内容");
   }
   return text;
+}
+
+/**
+ * 识图专用：image 已由调用方解析为 data URI / URL 数组后透传
+ */
+export async function callRemoteDescribe({
+  baseUrl,
+  apiKey,
+  image,
+  prompt,
+  id = 1,
+  fetchImpl = fetch,
+}) {
+  const args = { image };
+  if (prompt) {
+    args.prompt = prompt;
+  }
+  return callRemoteTool({ baseUrl, apiKey, name: "describe_image", args, id, fetchImpl });
+}
+
+/**
+ * 从远程拉取真实工具列表（供 stdio 桥 tools/list 透传，保证与远程同步）
+ */
+export async function fetchRemoteToolList({
+  baseUrl,
+  apiKey,
+  id = 1,
+  fetchImpl = fetch,
+}) {
+  const data = await postJson(baseUrl, apiKey, buildListToolsPayload({ id }), fetchImpl);
+  const tools = data?.result?.tools;
+  if (!Array.isArray(tools)) {
+    throw new Error("远程 MCP 未返回工具列表");
+  }
+  return tools;
 }
