@@ -23,7 +23,7 @@
     "install.mjs",
     "README.md"
   ],
-  "version": "0.1.5",
+  "version": "0.1.6",
   "scripts": {
     "test": "node --test ./install.test.mjs ./lib.test.mjs ./index.test.mjs"
   },
