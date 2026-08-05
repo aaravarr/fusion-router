@@ -3,10 +3,8 @@ import { createDatabase, type AppDatabase } from "@/server/db"
 import {
   DEFAULT_DESCRIBE_IMAGE_PROMPT,
   ensureDefaultMcpTools,
-  getFirstAdminUserId,
   getMcpTool,
   listMcpTools,
-  resolveMcpOwnerUserId,
   updateMcpTool,
 } from "./mcp-tools"
 
@@ -34,13 +32,13 @@ describe("mcp tools", () => {
     expect(tool!.description).toContain("识图工具")
     expect(tool!.enabled).toBe(true)
     expect(tool!.config).toEqual({
-      ownerUserId: null,
       poolType: null,
       model: "",
       prompt: DEFAULT_DESCRIBE_IMAGE_PROMPT,
       maxTokens: 1024,
       temperature: 0.3,
     })
+    expect(DEFAULT_DESCRIBE_IMAGE_PROMPT).toBe("")
 
     const before = listMcpTools(db).length
     ensureDefaultMcpTools(db)
@@ -65,7 +63,6 @@ describe("mcp tools", () => {
     // 未提供的字段保持原值
     expect(updated.config.prompt).toBe(DEFAULT_DESCRIBE_IMAGE_PROMPT)
     expect(updated.config.temperature).toBe(0.3)
-    expect(updated.config.ownerUserId).toBeNull()
 
     // 继续更新会基于上次合并
     const again = updateMcpTool("describe_image", { config: { temperature: 1 } }, db)
@@ -82,18 +79,5 @@ describe("mcp tools", () => {
     expect(() => updateMcpTool("describe_image", { config: { temperature: -1 } }, db)).toThrow(/0 到 2/)
     expect(() => updateMcpTool("describe_image", { config: { model: 123 as unknown as string } }, db)).toThrow(/字符串/)
     expect(() => updateMcpTool("unknown_tool", {}, db)).toThrow(/not found/)
-  })
-
-  it("getFirstAdminUserId 与 resolveMcpOwnerUserId", () => {
-    expect(getFirstAdminUserId(db)).toBe("admin-1")
-    const base = { poolType: null, model: "", prompt: "", maxTokens: 1024, temperature: 0.3 }
-    expect(resolveMcpOwnerUserId({ ownerUserId: "user-x", ...base }, db)).toBe("user-x")
-    expect(resolveMcpOwnerUserId({ ownerUserId: null, ...base }, db)).toBe("admin-1")
-  })
-
-  it("getFirstAdminUserId 无管理员时返回 null", () => {
-    const empty = createDatabase(":memory:")
-    expect(getFirstAdminUserId(empty)).toBeNull()
-    empty.close()
   })
 })

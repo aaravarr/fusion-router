@@ -53,7 +53,7 @@ describe("describeImage", () => {
       expect(body.stream).toBe(false)
       expect(body.max_tokens).toBe(1024)
       expect(body.temperature).toBe(0.3)
-      expect(body.messages[0].content[0]).toMatchObject({ type: "text", text: expect.stringContaining("请仔细描述这张图片的内容") })
+      expect(body.messages[0].content[0]).toEqual({ type: "text", text: "请描述这张图片的内容" })
       expect(body.messages[0].content[1]).toEqual({
         type: "image_url",
         image_url: { url: "https://example.com/a.png" },
@@ -63,39 +63,92 @@ describe("describeImage", () => {
       })
     })
 
-    const result = await describeImage({ image: "https://example.com/a.png" }, db, callGateway)
+    const result = await describeImage(
+      { image: "https://example.com/a.png", prompt: "请描述这张图片的内容" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
     expect(result).toEqual({ text: "画面中有一只橘猫", model: "grok-4", accountName: null })
   })
 
   it("未配置模型时报错", async () => {
     updateMcpTool("describe_image", { config: { model: "" } }, db)
-    await expect(describeImage({ image: "https://example.com/a.png" }, db, vi.fn())).rejects.toThrow(
-      "尚未配置识图模型",
+    await expect(
+      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, vi.fn()),
+    ).rejects.toThrow("尚未配置识图模型")
+  })
+
+  it("不传 prompt 且未配置默认提示词时 content 只含 image_url", async () => {
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as {
+        messages: Array<{ content: Array<{ type: string; text?: string; image_url?: { url: string } }> }>
+      }
+      expect(body.messages[0].content).toHaveLength(1)
+      expect(body.messages[0].content[0]).toEqual({
+        type: "image_url",
+        image_url: { url: "https://example.com/a.png" },
+      })
+      return new Response(JSON.stringify({ choices: [{ message: { content: "画面中有一只橘猫" } }] }), {
+        status: 200,
+      })
+    })
+
+    const result = await describeImage(
+      { image: "https://example.com/a.png" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
     )
+    expect(result.text).toBe("画面中有一只橘猫")
+  })
+
+  it("传 prompt 时有 text 与 image_url", async () => {
+    const callGateway = vi.fn(async (request: Request) => {
+      const body = JSON.parse(await request.text()) as {
+        messages: Array<{ content: Array<{ type: string; text?: string; image_url?: { url: string } }> }>
+      }
+      expect(body.messages[0].content).toHaveLength(2)
+      expect(body.messages[0].content[0]).toEqual({ type: "text", text: "这只猫在做什么？" })
+      expect(body.messages[0].content[1]).toEqual({
+        type: "image_url",
+        image_url: { url: "https://example.com/a.png" },
+      })
+      return new Response(JSON.stringify({ choices: [{ message: { content: "猫在睡觉" } }] }), {
+        status: 200,
+      })
+    })
+
+    const result = await describeImage(
+      { image: "https://example.com/a.png", prompt: "这只猫在做什么？" },
+      db,
+      { ownerUserId: "user-1" },
+      callGateway,
+    )
+    expect(result.text).toBe("猫在睡觉")
   })
 
   it("响应非 ok 时抛出上游错误", async () => {
     const callGateway = vi.fn(async () =>
       new Response(JSON.stringify({ error: { message: "余额不足" } }), { status: 402 }),
     )
-    await expect(describeImage({ image: "https://example.com/a.png" }, db, callGateway)).rejects.toThrow(
-      "余额不足",
-    )
+    await expect(
+      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, callGateway),
+    ).rejects.toThrow("余额不足")
   })
 
   it("模型未返回内容时报错", async () => {
     const callGateway = vi.fn(async () =>
       new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }),
     )
-    await expect(describeImage({ image: "https://example.com/a.png" }, db, callGateway)).rejects.toThrow(
-      "模型未返回内容",
-    )
+    await expect(
+      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "user-1" }, callGateway),
+    ).rejects.toThrow("模型未返回内容")
   })
 
-  it("未找到可用账号时（无管理员）报错", async () => {
-    db.prepare("DELETE FROM users").run()
-    await expect(describeImage({ image: "https://example.com/a.png" }, db, vi.fn())).rejects.toThrow(
-      "未找到可用账号池",
-    )
+  it("未指定调用用户时报错", async () => {
+    await expect(
+      describeImage({ image: "https://example.com/a.png" }, db, { ownerUserId: "" }, vi.fn()),
+    ).rejects.toThrow("未指定调用用户")
   })
 })

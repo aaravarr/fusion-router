@@ -6,7 +6,6 @@ import {
   ensureDefaultMcpTools,
   getMcpTool,
   MCP_TOOL_DEFINITIONS,
-  resolveMcpOwnerUserId,
   type DescribeImageConfig,
 } from "./mcp-tools"
 
@@ -27,8 +26,11 @@ export interface DescribeImageResult {
 export async function describeImage(
   input: { image: string; prompt?: string },
   db: AppDatabase,
+  ctx: { ownerUserId: string },
   callGateway?: (request: Request, endpoint: string) => Promise<Response>,
 ): Promise<DescribeImageResult> {
+  if (!ctx.ownerUserId) throw new Error("未指定调用用户")
+
   let tool = getMcpTool("describe_image", db)
   if (!tool) {
     ensureDefaultMcpTools(db)
@@ -39,7 +41,6 @@ export async function describeImage(
   const definition = MCP_TOOL_DEFINITIONS.find((item) => item.toolType === "describe_image")
   const defaultConfig: DescribeImageConfig =
     definition?.defaultConfig ?? {
-      ownerUserId: null,
       poolType: null,
       model: "",
       prompt: "",
@@ -49,8 +50,14 @@ export async function describeImage(
   const config: DescribeImageConfig = { ...defaultConfig, ...tool.config }
   if (!config.model) throw new Error("尚未配置识图模型，请先在管理后台 MCP 页面选择模型")
 
-  const ownerUserId = resolveMcpOwnerUserId(config, db)
-  if (!ownerUserId) throw new Error("未找到可用账号池，请先在账号池添加账号")
+  const promptText = (input.prompt ?? config.prompt ?? "").trim()
+  const imageUrl = normalizeImageInput(input.image)
+  const content = promptText
+    ? [
+        { type: "text", text: promptText },
+        { type: "image_url", image_url: { url: imageUrl } },
+      ]
+    : [{ type: "image_url", image_url: { url: imageUrl } }]
 
   const body = {
     model: config.model,
@@ -58,10 +65,7 @@ export async function describeImage(
     messages: [
       {
         role: "user",
-        content: [
-          { type: "text", text: input.prompt ?? config.prompt },
-          { type: "image_url", image_url: { url: normalizeImageInput(input.image) } },
-        ],
+        content,
       },
     ],
     max_tokens: config.maxTokens,
@@ -78,7 +82,7 @@ export async function describeImage(
     callGateway ??
     (async (req: Request, endpoint: string) =>
       new GatewayService({ get: getGoCredential }, db).handle(req, endpoint, {
-        principal: { ownerUserId, label: "mcp-describe-image" },
+        principal: { ownerUserId: ctx.ownerUserId, label: "mcp-describe-image" },
         routing: config.poolType ? { poolType: config.poolType as PoolType } : undefined,
       }))
 

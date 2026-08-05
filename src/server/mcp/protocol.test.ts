@@ -1,18 +1,19 @@
 import { mkdtempSync, rmSync } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createDatabase, type AppDatabase } from "@/server/db"
 import { clearBootstrapCacheForTests, ensureMasterKey } from "@/server/bootstrap"
+import { ApiKeyHasher } from "@/server/crypto"
+import { getSystemSecret, initializeSystemSettings } from "@/server/settings"
 import { ensureDefaultMcpTools } from "./mcp-tools"
 import { describeImage } from "./describe-image"
 import {
-  checkMcpAccessToken,
+  authenticateMcpRequest,
   handleMcpRequest,
-  isMcpAccessTokenConfigured,
   MCP_PROTOCOL_VERSION,
   parseBearerToken,
-  setMcpAccessToken,
 } from "./protocol"
 
 vi.mock("./describe-image", () => ({
@@ -30,6 +31,7 @@ beforeEach(() => {
   clearBootstrapCacheForTests()
   ensureMasterKey()
   db = createDatabase(":memory:")
+  initializeSystemSettings(db)
   const now = new Date().toISOString()
   db.prepare(
     `INSERT INTO users(id, username, username_normalized, display_name, role, status, password_hash, created_at, updated_at)
@@ -46,9 +48,22 @@ afterEach(() => {
   rmSync(directory, { recursive: true, force: true })
 })
 
+function seedApiKey(plaintext: string, ownerUserId = "admin-1"): void {
+  const hasher = new ApiKeyHasher(getSystemSecret(db, "api_key_pepper"))
+  const now = new Date().toISOString()
+  db.prepare(
+    `INSERT INTO api_keys(id, owner_user_id, name, key_prefix, key_hash, enabled, allowed_models_json, expires_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 1, NULL, NULL, ?, ?)`,
+  ).run(randomUUID(), ownerUserId, "mcp-test-key", plaintext.slice(0, 12), hasher.hash(plaintext), now, now)
+}
+
 describe("MCP protocol", () => {
   it("initialize 返回协议版本与工具能力", async () => {
-    const response = await handleMcpRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }, db)
+    const response = await handleMcpRequest(
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      db,
+      { ownerUserId: "user-1" },
+    )
     expect(response.status).toBe(200)
     const body = await response.json()
     expect(body.jsonrpc).toBe("2.0")
@@ -60,13 +75,17 @@ describe("MCP protocol", () => {
   })
 
   it("ping 返回空结果", async () => {
-    const response = await handleMcpRequest({ jsonrpc: "2.0", id: 2, method: "ping" }, db)
+    const response = await handleMcpRequest({ jsonrpc: "2.0", id: 2, method: "ping" }, db, {
+      ownerUserId: "user-1",
+    })
     const body = await response.json()
     expect(body.result).toEqual({})
   })
 
   it("tools/list 返回启用的工具", async () => {
-    const response = await handleMcpRequest({ jsonrpc: "2.0", id: 3, method: "tools/list" }, db)
+    const response = await handleMcpRequest({ jsonrpc: "2.0", id: 3, method: "tools/list" }, db, {
+      ownerUserId: "user-1",
+    })
     const body = await response.json()
     expect(body.result.tools).toHaveLength(1)
     expect(body.result.tools[0]).toMatchObject({
@@ -86,6 +105,7 @@ describe("MCP protocol", () => {
         params: { name: "describe_image", arguments: { image: "https://example.com/a.png" } },
       },
       db,
+      { ownerUserId: "user-1" },
     )
     const body = await response.json()
     expect(body.error).toBeUndefined()
@@ -93,6 +113,7 @@ describe("MCP protocol", () => {
     expect(mockedDescribeImage).toHaveBeenCalledWith(
       { image: "https://example.com/a.png", prompt: undefined },
       db,
+      { ownerUserId: "user-1" },
     )
   })
 
@@ -100,6 +121,7 @@ describe("MCP protocol", () => {
     const response = await handleMcpRequest(
       { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "nope", arguments: {} } },
       db,
+      { ownerUserId: "user-1" },
     )
     const body = await response.json()
     expect(body.error.code).toBe(-32602)
@@ -117,6 +139,7 @@ describe("MCP protocol", () => {
         params: { name: "describe_image", arguments: { image: "data:image/png;base64,AAAA" } },
       },
       db,
+      { ownerUserId: "user-1" },
     )
     const body = await response.json()
     expect(body.result.isError).toBe(true)
@@ -124,12 +147,14 @@ describe("MCP protocol", () => {
   })
 
   it("notifications/initialized 返回 202", async () => {
-    const response = await handleMcpRequest({ jsonrpc: "2.0", method: "notifications/initialized" }, db)
+    const response = await handleMcpRequest({ jsonrpc: "2.0", method: "notifications/initialized" }, db, {
+      ownerUserId: "user-1",
+    })
     expect(response.status).toBe(202)
   })
 
   it("非 JSON-RPC 请求返回 400 Invalid Request", async () => {
-    const response = await handleMcpRequest({ foo: "bar" }, db)
+    const response = await handleMcpRequest({ foo: "bar" }, db, { ownerUserId: "user-1" })
     expect(response.status).toBe(400)
     const body = await response.json()
     expect(body.error.code).toBe(-32600)
@@ -137,38 +162,55 @@ describe("MCP protocol", () => {
   })
 
   it("未知方法返回 -32601", async () => {
-    const response = await handleMcpRequest({ jsonrpc: "2.0", id: 7, method: "bogus" }, db)
+    const response = await handleMcpRequest({ jsonrpc: "2.0", id: 7, method: "bogus" }, db, {
+      ownerUserId: "user-1",
+    })
     const body = await response.json()
     expect(body.error.code).toBe(-32601)
   })
 
-  it("checkMcpAccessToken 未配置时返回 401", () => {
-    const result = checkMcpAccessToken(
-      new Request("http://internal/mcp", { method: "POST", headers: { authorization: "Bearer x" } }),
+  it("authenticateMcpRequest 通过 Authorization Bearer 识别归属用户", () => {
+    seedApiKey("ocg_test_bearer_key_123")
+    const result = authenticateMcpRequest(
+      new Request("http://internal/mcp", { method: "POST", headers: { authorization: "Bearer ocg_test_bearer_key_123" } }),
+      db,
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.ownerUserId).toBe("admin-1")
+      expect(result.apiKeyId).toBeTruthy()
+    }
+  })
+
+  it("authenticateMcpRequest 兼容 x-api-key 头", () => {
+    seedApiKey("ocg_test_xapikey_456")
+    const result = authenticateMcpRequest(
+      new Request("http://internal/mcp", { method: "POST", headers: { "x-api-key": "ocg_test_xapikey_456" } }),
+      db,
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.ownerUserId).toBe("admin-1")
+    }
+  })
+
+  it("authenticateMcpRequest 无效 key 返回 401", () => {
+    const result = authenticateMcpRequest(
+      new Request("http://internal/mcp", { method: "POST", headers: { authorization: "Bearer wrong-key" } }),
       db,
     )
     expect(result.ok).toBe(false)
-    expect(result.error?.status).toBe(401)
+    if (!result.ok) {
+      expect(result.error.status).toBe(401)
+    }
   })
 
-  it("checkMcpAccessToken 校验 Bearer token", () => {
-    expect(isMcpAccessTokenConfigured(db)).toBe(false)
-    setMcpAccessToken(db, "secret-token")
-    expect(isMcpAccessTokenConfigured(db)).toBe(true)
-
-    const bad = checkMcpAccessToken(
-      new Request("http://internal/mcp", { method: "POST", headers: { authorization: "Bearer wrong" } }),
-      db,
-    )
-    expect(bad.ok).toBe(false)
-    expect(bad.error?.status).toBe(401)
-
-    const good = checkMcpAccessToken(
-      new Request("http://internal/mcp", { method: "POST", headers: { authorization: "Bearer secret-token" } }),
-      db,
-    )
-    expect(good.ok).toBe(true)
-    expect(good.token).toBe("secret-token")
+  it("authenticateMcpRequest 未携带凭据返回 401", () => {
+    const result = authenticateMcpRequest(new Request("http://internal/mcp", { method: "POST" }), db)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.status).toBe(401)
+    }
   })
 
   it("parseBearerToken 解析 Authorization 头", () => {

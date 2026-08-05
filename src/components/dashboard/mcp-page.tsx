@@ -2,15 +2,10 @@
 
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
 import {
-  Check,
-  Copy,
-  Eye,
-  EyeOff,
   Info,
   LoaderCircle,
   Pencil,
   RefreshCw,
-  RotateCcw,
   Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -25,8 +20,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAdmin } from "./admin-context";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
-import { copyToClipboard } from "@/lib/utils";
-import { useConfirm } from "@/components/ui/confirm-provider";
 
 interface MCPToolConfig {
   poolType?: string;
@@ -34,7 +27,6 @@ interface MCPToolConfig {
   prompt?: string;
   maxTokens?: number;
   temperature?: number;
-  ownerUserId?: string;
 }
 interface MCPTool {
   toolType: string;
@@ -47,8 +39,6 @@ interface MCPServer {
   endpoint?: string;
   protocolVersion?: string;
   toolCount?: number;
-  tokenConfigured?: boolean;
-  token?: string;
 }
 interface MCPPayload {
   server?: MCPServer;
@@ -59,11 +49,6 @@ interface ModelCatalog {
   label: string;
   models: string[];
 }
-interface MCPUser {
-  id: string;
-  username: string;
-  displayName?: string;
-}
 
 function errorMessage(payload: unknown, fallback: string) {
   if (!payload || typeof payload !== "object") return fallback;
@@ -72,7 +57,6 @@ function errorMessage(payload: unknown, fallback: string) {
   return typeof value.message === "string" ? value.message : fallback;
 }
 
-const DEFAULT_PROMPT = "请用中文描述这张图片，包括主体、场景、文字和明显细节。";
 const MCP_JSON_EXAMPLE = `{
   "jsonrpc": "2.0",
   "id": 1,
@@ -81,14 +65,13 @@ const MCP_JSON_EXAMPLE = `{
     "name": "describe_image",
     "arguments": {
       "image": "https://example.com/photo.png",
-      "prompt": "请描述这张图片的内容"
+      "prompt": "请描述这张图片里有什么"
     }
   }
 }`;
 
 export function McpPage() {
   const { adminFetch } = useAdmin();
-  const confirm = useConfirm();
   const resource = useAdminResource<MCPPayload>("/api/admin/mcp");
   const server = resource.data?.server ?? null;
   const tools = resource.data?.tools ?? [];
@@ -103,14 +86,6 @@ export function McpPage() {
     [origin, server?.endpoint]
   );
 
-  const tokenConfigured = server?.tokenConfigured === true || Boolean(server?.token);
-  const token = server?.token || "";
-  const [revealToken, setRevealToken] = useState(false);
-  const [copiedToken, setCopiedToken] = useState(false);
-  const [resettingToken, setResettingToken] = useState(false);
-  const [newToken, setNewToken] = useState<string | null>(null);
-  const [newTokenCopied, setNewTokenCopied] = useState(false);
-
   const [message, setMessage] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
 
@@ -120,12 +95,10 @@ export function McpPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [provider, setProvider] = useState("");
   const [modelInput, setModelInput] = useState("");
-  const [ownerUserId, setOwnerUserId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [maxTokens, setMaxTokens] = useState("1024");
   const [temperature, setTemperature] = useState("0.3");
   const [catalogs, setCatalogs] = useState<ModelCatalog[]>([]);
-  const [mcpUsers, setMcpUsers] = useState<MCPUser[]>([]);
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaError, setMetaError] = useState<string | null>(null);
 
@@ -138,8 +111,6 @@ export function McpPage() {
   const [testError, setTestError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ text?: string; model?: string } | null>(null);
 
-  const effectiveOwnerUserId = ownerUserId || mcpUsers[0]?.id || "";
-
   const selectedCatalog = catalogs.find((catalog) => catalog.poolType === provider) ?? null;
   const modelOptions = selectedCatalog?.models ?? [];
 
@@ -147,16 +118,10 @@ export function McpPage() {
     setMetaLoading(true);
     setMetaError(null);
     try {
-      const [modelsResponse, usersResponse] = await Promise.all([
-        adminFetch("/api/admin/mcp/models"),
-        adminFetch("/api/admin/mcp/users"),
-      ]);
+      const modelsResponse = await adminFetch("/api/admin/mcp/models");
       const modelsPayload = await modelsResponse.json().catch(() => null) as { catalogs?: ModelCatalog[] } | null;
-      const usersPayload = await usersResponse.json().catch(() => null) as { users?: MCPUser[] } | null;
       if (!modelsResponse.ok) throw new Error(errorMessage(modelsPayload, "拉取识图模型失败"));
-      if (!usersResponse.ok) throw new Error(errorMessage(usersPayload, "拉取账号列表失败"));
       setCatalogs(modelsPayload?.catalogs ?? []);
-      setMcpUsers(usersPayload?.users ?? []);
     } catch (cause) {
       setMetaError(cause instanceof Error ? cause.message : "拉取配置选项失败");
     } finally {
@@ -176,7 +141,6 @@ export function McpPage() {
     setEditing(tool);
     setProvider(config.poolType ?? "");
     setModelInput(config.model ?? "");
-    setOwnerUserId(config.ownerUserId ?? "");
     setPrompt(config.prompt ?? "");
     setMaxTokens(config.maxTokens != null ? String(config.maxTokens) : "1024");
     setTemperature(config.temperature != null ? String(config.temperature) : "0.3");
@@ -222,7 +186,6 @@ export function McpPage() {
           config: {
             poolType: provider || '',
             model,
-            ownerUserId: effectiveOwnerUserId || undefined,
             prompt: prompt || undefined,
             maxTokens: maxTokensValue,
             temperature: temperatureValue,
@@ -290,52 +253,6 @@ export function McpPage() {
     }
   }
 
-  async function copyToken() {
-    setCopiedToken(false);
-    if (!token) {
-      setMessage("当前接口未返回令牌内容，可点击「重置令牌」获取新令牌后再复制。");
-      return;
-    }
-    const ok = await copyToClipboard(token);
-    if (ok) setCopiedToken(true);
-    else setMessage("复制失败，请手动选择并复制。");
-  }
-
-  async function resetToken() {
-    const approved = await confirm({
-      title: "重置 MCP 访问令牌？",
-      description: "重置后旧令牌立即失效，所有 MCP 客户端需要更新 Authorization 头。",
-      confirmText: "确认重置",
-      destructive: true,
-    });
-    if (!approved) return;
-    setResettingToken(true);
-    setMessage(null);
-    try {
-      const response = await adminFetch("/api/admin/mcp", { method: "POST", body: JSON.stringify({ resetToken: true }) });
-      const payload = await response.json().catch(() => null) as { token?: string; accessToken?: string; server?: { token?: string } } | null;
-      if (!response.ok) throw new Error(errorMessage(payload, "重置令牌失败"));
-      const next = payload?.token || payload?.accessToken || payload?.server?.token || null;
-      setNewToken(next);
-      setNewTokenCopied(false);
-      setMessage(next ? "访问令牌已重置" : "访问令牌已重置，但响应中未包含新令牌内容");
-      await resource.refresh();
-    } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "重置令牌失败");
-    } finally {
-      setResettingToken(false);
-    }
-  }
-
-  async function copyNewToken() {
-    if (!newToken) return;
-    const ok = await copyToClipboard(newToken);
-    if (ok) setNewTokenCopied(true);
-    else setMessage("复制失败，请长按上方令牌手动复制");
-  }
-
-  const tokenText = revealToken && token ? token : "••••••••••••";
-
   return (
     <>
       <PageIntro
@@ -358,38 +275,14 @@ export function McpPage() {
         </Panel>
       ) : (
         <div className="space-y-4">
-          <Panel title="MCP 服务信息" description="MCP 客户端连接地址与访问令牌配置。">
+          <Panel title="MCP 服务信息" description="MCP 客户端连接地址与鉴权方式。">
             <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-4">
               <InfoCell label="服务端点" mono>{endpoint}</InfoCell>
               <InfoCell label="协议版本" mono>{server?.protocolVersion || "—"}</InfoCell>
               <InfoCell label="工具数量">{server?.toolCount ?? tools.length}</InfoCell>
-              <div className="min-w-0 rounded-lg border bg-[#fafafa] p-3">
-                <p className="font-mono text-[10px] tracking-[0.08em] text-muted-foreground">访问令牌</p>
-                <div className="mt-1.5 flex items-center gap-2">
-                  {tokenConfigured ? (
-                    <code className="min-w-0 flex-1 truncate font-mono text-sm tracking-widest" title={revealToken ? token : undefined}>{tokenText}</code>
-                  ) : (
-                    <span className="text-sm font-medium text-warning">未配置</span>
-                  )}
-                </div>
-                <div className="mt-2.5 flex flex-wrap gap-1.5">
-                  {tokenConfigured ? (
-                    <>
-                      <Button size="xs" variant="outline" onClick={() => setRevealToken((value) => !value)}>
-                        {revealToken ? <EyeOff /> : <Eye />}
-                        {revealToken ? "隐藏" : "显示"}
-                      </Button>
-                      <Button size="xs" variant="outline" onClick={() => void copyToken()}>
-                        {copiedToken ? <Check /> : <Copy />}
-                        {copiedToken ? "已复制" : "复制"}
-                      </Button>
-                    </>
-                  ) : null}
-                  <Button size="xs" variant="outline" disabled={resettingToken} onClick={() => void resetToken()}>
-                    {resettingToken ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}
-                    重置令牌
-                  </Button>
-                </div>
+              <div className="min-w-0">
+                <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;</InfoCell>
+                <p className="mt-2 px-1 text-[11px] leading-5 text-muted-foreground">使用用户在「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</p>
               </div>
             </div>
             <Collapsible className="border-t px-4 py-2.5 sm:px-5">
@@ -404,7 +297,8 @@ export function McpPage() {
                   <div className="space-y-2.5 text-xs leading-6 text-muted-foreground">
                     <p className="font-medium text-foreground">MCP 客户端连接</p>
                     <p><span>连接地址：</span><code className="rounded-md border bg-white px-1.5 py-0.5 font-mono text-[11px] text-foreground">{endpoint}</code></p>
-                    <p><span>鉴权方式：</span><code className="rounded-md border bg-white px-1.5 py-0.5 font-mono text-[11px] text-foreground">Authorization: Bearer &lt;访问令牌&gt;</code></p>
+                    <p><span>鉴权方式：</span><code className="rounded-md border bg-white px-1.5 py-0.5 font-mono text-[11px] text-foreground">Authorization: Bearer &lt;你的 API Key&gt;</code></p>
+                    <p>在「API 密钥」页创建；识图请求使用该 Key 归属用户的账号池。</p>
                     <p>在支持 MCP 的客户端（如 Claude Desktop、Cursor）中配置以上连接地址与鉴权头，即可调用本服务暴露的工具。</p>
                   </div>
                   <div className="min-w-0">
@@ -490,7 +384,7 @@ export function McpPage() {
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>编辑识图配置</DialogTitle>
-            <DialogDescription>{editing ? `${editing.name}（${editing.toolType}）` : ""} — 配置识图使用的模型、账号归属与推理参数。</DialogDescription>
+            <DialogDescription>{editing ? `${editing.name}（${editing.toolType}）` : ""} — 配置识图使用的模型与推理参数。</DialogDescription>
           </DialogHeader>
           <form id="mcp-edit-form" onSubmit={(event) => void saveConfig(event)} className="space-y-4">
             <div className="space-y-2">
@@ -520,21 +414,8 @@ export function McpPage() {
               <p className="text-[11px] leading-5 text-muted-foreground">从下拉选择会自动填入输入框，也可以直接输入自定义模型名（必填）。</p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="mcp-owner">账号归属</Label>
-              <Select value={effectiveOwnerUserId} onValueChange={setOwnerUserId}>
-                <SelectTrigger id="mcp-owner" className="w-full bg-white"><SelectValue placeholder={metaLoading ? "正在加载账号…" : "选择使用哪个用户的账号池"} /></SelectTrigger>
-                <SelectContent>
-                  {mcpUsers.map((user) => (
-                    <SelectItem key={user.id} value={user.id}>
-                      {user.displayName || user.username}{user.displayName && user.displayName !== user.username ? `（${user.username}）` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="mcp-prompt">提示词</Label>
-              <Textarea id="mcp-prompt" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={DEFAULT_PROMPT} />
+              <Label htmlFor="mcp-prompt">默认提示词（可选）</Label>
+              <Textarea id="mcp-prompt" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="留空则使用调用方 AI 传入的问题；调用方也未传时模型直接看图回答" />
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
@@ -546,7 +427,7 @@ export function McpPage() {
                 <Input id="mcp-temperature" type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(event.target.value)} />
               </div>
             </div>
-            {metaLoading ? <p className="text-xs text-muted-foreground">正在加载 Provider 与账号选项…</p> : null}
+            {metaLoading ? <p className="text-xs text-muted-foreground">正在加载 Provider 选项…</p> : null}
             {metaError ? <p className="text-sm text-destructive" role="alert">{metaError}</p> : null}
             {formError ? <p className="text-sm text-destructive" role="alert">{formError}</p> : null}
           </form>
@@ -585,7 +466,7 @@ export function McpPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="mcp-test-prompt">提示词（可选）</Label>
-              <Textarea id="mcp-test-prompt" rows={2} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} placeholder="留空使用工具默认提示词" />
+              <Textarea id="mcp-test-prompt" rows={2} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} placeholder="留空则不附带提示词，模型直接看图回答" />
             </div>
             {testError ? <p className="text-sm text-destructive" role="alert">{testError}</p> : null}
             {testResult ? (
@@ -604,26 +485,6 @@ export function McpPage() {
               {testLoading ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
               {testLoading ? "识别中" : "运行识图"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 重置后的新令牌 */}
-      <Dialog open={Boolean(newToken)} onOpenChange={(open) => { if (!open) setNewToken(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>新的 MCP 访问令牌</DialogTitle>
-            <DialogDescription>请立即复制并更新到 MCP 客户端配置中；关闭后无法再次查看。</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="select-all break-all rounded-md border bg-[#fafafa] p-3 font-mono text-xs leading-5">{newToken}</div>
-            <Button variant="outline" className="w-full" onClick={() => void copyNewToken()}>
-              {newTokenCopied ? <Check /> : <Copy />}
-              {newTokenCopied ? "已复制" : "复制令牌"}
-            </Button>
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setNewToken(null)}>我已保存</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

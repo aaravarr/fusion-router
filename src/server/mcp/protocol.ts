@@ -1,7 +1,5 @@
-import { timingSafeEqual } from "node:crypto"
 import type { AppDatabase } from "@/server/db"
-import { SecretVault } from "@/server/crypto"
-import { getSystemSecret, SYSTEM_SECRET_KEYS } from "@/server/settings"
+import { authenticateApiKey } from "@/server/repository"
 import { describeImage } from "./describe-image"
 import { MCP_TOOL_DEFINITIONS } from "./mcp-tools"
 
@@ -33,7 +31,11 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
-export async function handleMcpRequest(body: unknown, db: AppDatabase): Promise<Response> {
+export async function handleMcpRequest(
+  body: unknown,
+  db: AppDatabase,
+  ctx: { ownerUserId: string; apiKeyId?: string | null },
+): Promise<Response> {
   const record = asRecord(body)
   if (record.jsonrpc !== "2.0" || typeof record.method !== "string") {
     return rpcError(null, -32600, "Invalid Request", 400)
@@ -57,7 +59,8 @@ export async function handleMcpRequest(body: unknown, db: AppDatabase): Promise<
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: MCP_SERVER_INFO,
-        instructions: "识图工具：调用 describe_image 并传入 image（URL 或 data URI）",
+        instructions:
+          "调用 describe_image 并传入 image（URL 或 data URI）与可选 prompt；使用调用者自己的 API Key 鉴权，识图消耗调用者账号池额度。prompt 不传时模型直接看图回答。",
       })
     }
     case "ping":
@@ -84,7 +87,7 @@ export async function handleMcpRequest(body: unknown, db: AppDatabase): Promise<
         if (definition.toolType === "describe_image") {
           const image = typeof args.image === "string" ? args.image : ""
           const prompt = typeof args.prompt === "string" ? args.prompt : undefined
-          const result = await describeImage({ image, prompt }, db)
+          const result = await describeImage({ image, prompt }, db, { ownerUserId: ctx.ownerUserId })
           return rpcResult(id, { content: [{ type: "text", text: result.text }] })
         }
         return rpcError(id, -32601, "Method not found")
@@ -105,55 +108,12 @@ export function parseBearerToken(request: Request): string | null {
   return match ? match[1].trim() : null
 }
 
-function readConfiguredMcpAccessToken(db: AppDatabase): string | null {
-  try {
-    return getSystemSecret(db, SYSTEM_SECRET_KEYS.mcpAccessToken)
-  } catch {
-    return null
-  }
-}
-
-function constantTimeEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left, "utf8")
-  const rightBuffer = Buffer.from(right, "utf8")
-  if (leftBuffer.length !== rightBuffer.length) return false
-  return timingSafeEqual(leftBuffer, rightBuffer)
-}
-
-export function checkMcpAccessToken(
+export function authenticateMcpRequest(
   request: Request,
   db: AppDatabase,
-): { ok: boolean; token: string | null; error?: Response } {
-  const configured = readConfiguredMcpAccessToken(db)
-  const bearer = parseBearerToken(request)
-  if (configured === null) {
-    return {
-      ok: false,
-      token: null,
-      error: rpcError(null, -32001, "请先在管理后台配置 MCP 访问令牌", 401),
-    }
-  }
-  if (!bearer || !constantTimeEqual(bearer, configured)) {
-    return { ok: false, token: null, error: rpcError(null, -32001, "未授权", 401) }
-  }
-  return { ok: true, token: bearer }
-}
-
-export function isMcpAccessTokenConfigured(db: AppDatabase): boolean {
-  const row = db
-    .prepare("SELECT 1 AS present FROM system_settings WHERE key = ? AND is_secret = 1")
-    .get(SYSTEM_SECRET_KEYS.mcpAccessToken)
-  return row !== undefined
-}
-
-export function setMcpAccessToken(db: AppDatabase, token: string): void {
-  const encrypted = JSON.stringify(new SecretVault().encrypt(token))
-  const now = new Date().toISOString()
-  const result = db
-    .prepare("UPDATE system_settings SET value_json = ?, updated_at = ? WHERE key = ? AND is_secret = 1")
-    .run(encrypted, now, SYSTEM_SECRET_KEYS.mcpAccessToken)
-  if (result.changes !== 1) {
-    db.prepare("INSERT INTO system_settings(key, value_json, is_secret, updated_at) VALUES (?, ?, 1, ?)")
-      .run(SYSTEM_SECRET_KEYS.mcpAccessToken, encrypted, now)
-  }
+): { ok: true; ownerUserId: string; apiKeyId: string | null } | { ok: false; error: Response } {
+  const plaintext = parseBearerToken(request) ?? request.headers.get("x-api-key") ?? ""
+  const apiKey = authenticateApiKey(plaintext, db)
+  if (!apiKey) return { ok: false, error: rpcError(null, -32001, "无效的 API Key", 401) }
+  return { ok: true, ownerUserId: apiKey.ownerUserId, apiKeyId: apiKey.id }
 }

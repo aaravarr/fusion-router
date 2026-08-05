@@ -6,7 +6,6 @@ import { requireAdministrator } from "../../../_auth"
 export const runtime = "nodejs"
 
 const configSchema = z.object({
-  ownerUserId: z.string().nullable().optional(),
   poolType: z.string().nullable().optional(),
   model: z.string().optional(),
   prompt: z.string().optional(),

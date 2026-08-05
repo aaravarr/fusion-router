@@ -18,7 +18,7 @@ export async function POST(request: Request, context: { params: Promise<{ toolTy
     return Response.json({ error: { type: "validation_error", details: parsed.error.flatten() } }, { status: 400 })
   }
   try {
-    const result = await describeImage(parsed.data, getDatabase())
+    const result = await describeImage(parsed.data, getDatabase(), { ownerUserId: user.id })
     return Response.json({ result: { text: result.text, model: result.model } })
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "识图调用失败"

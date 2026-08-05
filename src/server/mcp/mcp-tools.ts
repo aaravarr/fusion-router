@@ -1,11 +1,9 @@
 import { randomUUID } from "node:crypto"
 import type { AppDatabase } from "@/server/db"
 
-export const DEFAULT_DESCRIBE_IMAGE_PROMPT =
-  "请仔细描述这张图片的内容，包括主体、场景、人物动作、文字和细节。用中文回答。"
+export const DEFAULT_DESCRIBE_IMAGE_PROMPT = ""
 
 export interface DescribeImageConfig {
-  ownerUserId: string | null
   poolType: string | null
   model: string
   prompt: string
@@ -46,14 +44,13 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         },
         prompt: {
           type: "string",
-          description: "可选：本次调用的提示词，覆盖默认配置",
+          description: "可选：本次调用的提问/提示词；不传则由模型直接看图回答",
         },
       },
       required: ["image"],
       additionalProperties: false,
     },
     defaultConfig: {
-      ownerUserId: null,
       poolType: null,
       model: "",
       prompt: DEFAULT_DESCRIBE_IMAGE_PROMPT,
@@ -77,7 +74,6 @@ interface McpToolRow {
 function defaultConfigFor(toolType: string): DescribeImageConfig {
   return (
     MCP_TOOL_DEFINITIONS.find((definition) => definition.toolType === toolType)?.defaultConfig ?? {
-      ownerUserId: null,
       poolType: null,
       model: "",
       prompt: DEFAULT_DESCRIBE_IMAGE_PROMPT,
@@ -181,15 +177,4 @@ export function updateMcpTool(
   const updated = getMcpTool(toolType, db)
   if (!updated) throw new Error(`MCP tool not found: ${toolType}`)
   return updated
-}
-
-export function getFirstAdminUserId(db: AppDatabase): string | null {
-  const row = db
-    .prepare("SELECT id FROM users WHERE role = 'ADMIN' ORDER BY created_at LIMIT 1")
-    .get() as { id: string } | undefined
-  return row?.id ?? null
-}
-
-export function resolveMcpOwnerUserId(config: DescribeImageConfig, db: AppDatabase): string | null {
-  return config.ownerUserId ?? getFirstAdminUserId(db)
 }

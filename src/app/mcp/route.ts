@@ -1,5 +1,5 @@
 import { getDatabase } from "@/server/db"
-import { checkMcpAccessToken, handleMcpRequest } from "@/server/mcp/protocol"
+import { authenticateMcpRequest, handleMcpRequest } from "@/server/mcp/protocol"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -19,12 +19,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const db = getDatabase()
-  const auth = checkMcpAccessToken(request, db)
+  const auth = authenticateMcpRequest(request, db)
   if (!auth.ok) {
-    return auth.error ?? Response.json(
-      { jsonrpc: "2.0", id: null, error: { code: -32001, message: "未授权" } },
-      { status: 401, headers: corsHeaders },
-    )
+    return auth.error
   }
   let body: unknown
   try {
@@ -35,7 +32,7 @@ export async function POST(request: Request) {
       { status: 400, headers: corsHeaders },
     )
   }
-  return handleMcpRequest(body, db)
+  return handleMcpRequest(body, db, { ownerUserId: auth.ownerUserId, apiKeyId: auth.apiKeyId })
 }
 
 export async function OPTIONS() {
