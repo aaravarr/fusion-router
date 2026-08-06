@@ -661,6 +661,61 @@ describe("gateway logging", () => {
     expect(response.headers.get("x-responses-route")).toBe("chat")
   })
 
+  it("模型并行发起多个 tool_calls 时，第二轮为每个 tool_call_id 都回填 tool 消息", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    delegateWebSearchMock.mockResolvedValue({
+      query: "今天上海天气",
+      text: "上海今天晴，26 度。",
+      model: "deepseek-v4-flash",
+    })
+    const bodies: Array<{ messages?: unknown }> = []
+    const fetcher = vi.fn().mockImplementation(async (_url: unknown, init?: { body?: unknown }) => {
+      const index = bodies.length
+      bodies.push(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)))
+      if (index === 0) {
+        // 第一轮：模型并行调用 web_search + code_search 两个工具
+        return Response.json({
+          id: "chatcmpl_m1", object: "chat.completion", model: "deepseek-v4-flash",
+          choices: [{
+            index: 0,
+            message: {
+              role: "assistant", content: null,
+              tool_calls: [
+                { id: "call_ws", type: "function", function: { name: "web_search", arguments: "{\"query\": \"今天上海天气\"}" } },
+                { id: "call_cs", type: "function", function: { name: "code_search", arguments: "{\"query\": \"foo\"}" } },
+              ],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: {},
+        })
+      }
+      // 第二轮：基于搜索结果作答
+      return Response.json({
+        id: "chatcmpl_m2", object: "chat.completion", model: "deepseek-v4-flash",
+        choices: [{ index: 0, message: { role: "assistant", content: "上海今天晴。" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+      })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "deepseek-v4-flash", input: "上海天气", tools: [{ type: "web_search" }] }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    const second = bodies[1] as { messages?: Array<{ role?: string; tool_call_id?: unknown; content?: unknown }> }
+    const toolMsgs = second.messages?.filter((m) => m.role === "tool") ?? []
+    // 每个 tool_call_id 都有一条 tool 消息（web_search 用搜索结果，其它用占位）
+    expect(toolMsgs).toHaveLength(2)
+    const wsMsg = toolMsgs.find((m) => m.tool_call_id === "call_ws")
+    expect(String(wsMsg?.content)).toContain("上海今天晴")
+    const csMsg = toolMsgs.find((m) => m.tool_call_id === "call_cs")
+    expect(String(csMsg?.content)).toContain("已跳过")
+    expect(delegateWebSearchMock).toHaveBeenCalledTimes(1)
+  })
+
   it("opencode-go 带 web_search 但模型判断无需搜索时，只请求一次且响应无搜索痕迹", async () => {
     const { db, apiKey, credentials, hasher } = setup()
     const fetcher = vi.fn().mockImplementation(async (_url: unknown, init?: { body?: unknown }) => {

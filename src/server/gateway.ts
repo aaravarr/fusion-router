@@ -676,11 +676,20 @@ export class GatewayService {
                   content: firstMessage?.content ?? null,
                   tool_calls: firstMessage?.tool_calls,
                 })
-                messages.push({
-                  role: "tool",
-                  tool_call_id: String(wsCall.id ?? "call_ws"),
-                  content: toolContent,
-                })
+                // 第一轮模型可能并行发起多个 tool_calls，必须逐条回填 tool 消息，
+                // 否则上游报 "insufficient tool messages following tool_calls message"。
+                // web_search 回填真实搜索结果；其它工具回填占位提示。
+                const allToolCalls = Array.isArray(firstMessage?.tool_calls)
+                  ? firstMessage.tool_calls as Array<{ id?: unknown; function?: { name?: unknown } }>
+                  : []
+                for (const tc of allToolCalls) {
+                  const isWs = String(tc?.function?.name ?? "").toLowerCase() === "web_search"
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: String(tc?.id ?? "call_ws"),
+                    content: isWs ? toolContent : "该工具调用已跳过（仅 web_search 可委托执行）。",
+                  })
+                }
                 const secondBody = { ...firstBodyJson, messages, stream: false }
                 const target2 = provider.buildForwardTarget({
                   method: request.method, endpoint: attemptEndpoint, model: model ?? "", upstreamModel,

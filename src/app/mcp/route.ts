@@ -123,6 +123,9 @@ export async function POST(request: Request) {
   }
   const key = sessionKey(auth.ownerUserId, auth.apiKeyId)
   const session = sseSessions.get(key)
+  // 仅当客户端本请求也声明接受 SSE 时，才走 legacy SSE 流转发；
+  // 避免活跃 SSE 会话误劫持 http 直连（JSON）请求。
+  const clientAcceptsSse = isEventStreamRequest(request)
 
   const response = await handleMcpRequest(
     body,
@@ -131,8 +134,8 @@ export async function POST(request: Request) {
     { acceptEventStream: isEventStreamRequest(request) },
   )
 
-  // 无活跃 SSE 会话：http 直连，原样返回响应
-  if (!session) {
+  // 无活跃 SSE 会话，或客户端本请求未声明接受 SSE：http 直连，原样返回响应
+  if (!session || !clientAcceptsSse) {
     return response
   }
 
