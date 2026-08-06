@@ -20,15 +20,12 @@ interface SseSession {
 }
 
 /**
- * 活跃的 legacy HTTP+SSE 会话：GET 建立的流，POST 的响应通过它推送。
- * 以 apiKeyId 关联（一个 key 同一时刻一个活跃 SSE 连接）。
+ * 活跃的 legacy HTTP+SSE 会话，以 GET 时下发的 session id 关联。
+ * 每个客户端独立一个会话槽：多客户端/多会话窗口共享同一 API Key 也不会
+ * 互抢，且与 sessionless 的 Streamable HTTP 直接 POST 在同一端点共存。
  * Next.js nodejs runtime 下模块级状态在进程内共享。
  */
 const sseSessions = new Map<string, SseSession>()
-
-function sessionKey(ownerUserId: string, apiKeyId: string | null): string {
-  return `${ownerUserId}:${apiKeyId ?? ""}`
-}
 
 function methodNotAllowed(): Response {
   return Response.json(
@@ -40,8 +37,9 @@ function methodNotAllowed(): Response {
 /**
  * GET /mcp —— legacy HTTP+SSE transport：
  * 客户端先 GET 本端点（Accept: text/event-stream）建立 SSE 流，服务端返回
- * `endpoint` 事件告知后续 POST 地址并保持连接（心跳保活）。之后客户端
- * POST 的 JSON-RPC 请求由 POST handler 处理，响应通过本流以 message 事件推送。
+ * 带 session id 的 `endpoint` 事件告知后续 POST 地址（带 ?session=xxx）并保持
+ * 连接（心跳保活）。之后客户端 POST 的 JSON-RPC 请求由 POST handler 处理，
+ * 响应通过本流以 message 事件推送。
  *
  * 客户端未显式请求 SSE 时保持 405（符合 Streamable HTTP 规范）。
  */
@@ -59,24 +57,14 @@ export async function GET(request: Request) {
   // 用客户端实际请求的 Host（及转发头）拼 endpoint，避免拿到服务端内部 host（如 0.0.0.0）
   const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? url.host
   const proto = request.headers.get("x-forwarded-proto") ?? url.protocol.slice(0, -1)
-  const endpoint = `${proto}://${host}/mcp`
-  const key = sessionKey(auth.ownerUserId, auth.apiKeyId)
+  // 每个连接独立会话 id：POST 携带它才能把响应推回本流，不干扰其它客户端
+  const sessionId = crypto.randomUUID()
+  const endpoint = `${proto}://${host}/mcp?session=${sessionId}`
 
   let heartbeat: ReturnType<typeof setInterval> | null = null
-  let streamController: ReadableStreamDefaultController<Uint8Array> | null = null
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      streamController = controller
-      // 同一 key 已有旧流（重复连接）时先关闭旧流
-      const previous = sseSessions.get(key)
-      if (previous && previous.controller !== controller) {
-        try {
-          previous.controller.close()
-        } catch {
-          // 已关闭
-        }
-      }
-      sseSessions.set(key, { ownerUserId: auth.ownerUserId, apiKeyId: auth.apiKeyId, controller })
+      sseSessions.set(sessionId, { ownerUserId: auth.ownerUserId, apiKeyId: auth.apiKeyId, controller })
       const encoder = new TextEncoder()
       // legacy transport：先通知客户端 POST 端点
       controller.enqueue(encoder.encode(`event: endpoint\ndata: ${endpoint}\n\n`))
@@ -90,11 +78,7 @@ export async function GET(request: Request) {
     },
     cancel() {
       if (heartbeat) clearInterval(heartbeat)
-      // 仅当仍指向当前连接时移除会话，避免误删新连接
-      const active = sseSessions.get(key)
-      if (active && streamController && active.controller === streamController) {
-        sseSessions.delete(key)
-      }
+      sseSessions.delete(sessionId)
     },
   })
   return new Response(stream, { status: 200, headers: STREAM_HEADERS })
@@ -102,9 +86,10 @@ export async function GET(request: Request) {
 
 /**
  * POST /mcp —— JSON-RPC 请求入口：
- * - 存在活跃 legacy SSE 会话（该 key 的 GET 流）时：处理请求，把响应以
- *   message 事件异步推送到会话流，POST 返回 202 Accepted；
- * - 否则（http 直连）：原样返回响应（JSON 或 Streamable HTTP SSE）。
+ * - 携带 GET 阶段下发的 ?session=xxx（legacy HTTP+SSE）时：处理请求，把响应以
+ *   message 事件异步推送到对应会话流，POST 返回 202 Accepted；
+ * - 否则（Streamable HTTP 直连，sessionless）：原样返回响应（JSON 或 SSE）。
+ * 两种 transport 通过 session 查询参数区分：直连 POST 永远不会被劫持。
  */
 export async function POST(request: Request) {
   const db = getDatabase()
@@ -121,11 +106,11 @@ export async function POST(request: Request) {
       { status: 400, headers: corsHeaders },
     )
   }
-  const key = sessionKey(auth.ownerUserId, auth.apiKeyId)
-  const session = sseSessions.get(key)
-  // 仅当客户端本请求也声明接受 SSE 时，才走 legacy SSE 流转发；
-  // 避免活跃 SSE 会话误劫持 http 直连（JSON）请求。
-  const clientAcceptsSse = isEventStreamRequest(request)
+  // 仅当 POST 携带本连接 GET 阶段下发的 session id 时走 legacy 流推送；
+  // 会话不存在或不属于同一 API Key（过期/他人）时按直连处理，不误劫持。
+  const sessionId = new URL(request.url).searchParams.get("session")
+  const session = sessionId ? sseSessions.get(sessionId) : undefined
+  const isLegacy = session !== undefined && session.apiKeyId === auth.apiKeyId
 
   const response = await handleMcpRequest(
     body,
@@ -134,8 +119,7 @@ export async function POST(request: Request) {
     { acceptEventStream: isEventStreamRequest(request) },
   )
 
-  // 无活跃 SSE 会话，或客户端本请求未声明接受 SSE：http 直连，原样返回响应
-  if (!session || !clientAcceptsSse) {
+  if (!isLegacy) {
     return response
   }
 
