@@ -42,7 +42,10 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url)
-  const endpoint = `${url.origin}/mcp`
+  // 用客户端实际请求的 Host（及转发头）拼 endpoint，避免拿到服务端内部 host（如 0.0.0.0）
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? url.host
+  const proto = request.headers.get("x-forwarded-proto") ?? url.protocol.slice(0, -1)
+  const endpoint = `${proto}://${host}/mcp`
   let heartbeat: ReturnType<typeof setInterval> | null = null
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
