@@ -189,3 +189,66 @@ describe("responses to chat reasoning replay", () => {
     expect(messages.some((m) => m.role === "user" && String(m.content) === "Continue.")).toBe(false)
   })
 })
+
+describe("responses to chat tool-call pairing", () => {
+  it("function_call 与 output 之间夹 message 时仍保持 assistant(tool_calls) 紧跟 tool 消息", () => {
+    const { body } = responsesToChatCompletions({
+      model: "deepseek-v4-flash",
+      input: [
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "我先调用工具" }] },
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "正在执行" }] },
+        { type: "function_call_output", call_id: "call_1", output: "ok" },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+      ],
+    })
+    const messages = body.messages as Array<Record<string, unknown>>
+    // 找到 assistant(tool_calls) 索引，其下一条必须是 tool 消息
+    const tcIdx = messages.findIndex((m) => m.role === "assistant" && Array.isArray(m.tool_calls))
+    expect(tcIdx).toBeGreaterThanOrEqual(0)
+    const next = messages[tcIdx + 1]
+    expect(next?.role).toBe("tool")
+    expect(next?.tool_call_id).toBe("call_1")
+    // 不出现孤儿 assistant(tool_calls)（tool_calls 后没有紧跟 tool）
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i]
+      if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        expect(messages[i + 1]?.role).toBe("tool")
+      }
+    }
+  })
+
+  it("并行多个 function_call 且 output 交错时，每个 (tool_calls, tool) 组相邻", () => {
+    const { body } = responsesToChatCompletions({
+      model: "deepseek-v4-flash",
+      input: [
+        { type: "function_call", id: "fc_a", call_id: "call_a", name: "web_search", arguments: "{\"query\":\"x\"}" },
+        { type: "function_call", id: "fc_b", call_id: "call_b", name: "code_search", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_a", output: "search result" },
+        { type: "function_call_output", call_id: "call_b", output: "code result" },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+      ],
+    })
+    const messages = body.messages as Array<Record<string, unknown>>
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i]
+      if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        expect(messages[i + 1]?.role).toBe("tool")
+      }
+    }
+    // 两个 output 都保留
+    const toolMsgs = messages.filter((m) => m.role === "tool")
+    expect(toolMsgs.map((m) => m.tool_call_id).sort()).toEqual(["call_a", "call_b"])
+  })
+
+  it("以 function_call 结尾（无 output）时丢弃孤儿调用，不生成孤立 assistant(tool_calls)", () => {
+    const { body } = responsesToChatCompletions({
+      model: "deepseek-v4-flash",
+      input: [
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
+      ],
+    })
+    const messages = body.messages as Array<Record<string, unknown>>
+    expect(messages.some((m) => m.role === "assistant" && Array.isArray(m.tool_calls))).toBe(false)
+  })
+})
