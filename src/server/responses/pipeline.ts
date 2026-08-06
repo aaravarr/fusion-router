@@ -23,6 +23,7 @@ import {
   rememberConversationTurn,
   rewriteResponsesBodyForContinuity,
   sanitizeResponsesInputItems,
+  reorderResponsesInputItems,
   extractOpaqueItemsFromResponsePayload,
   type ConversationMessage,
 } from "./conversation-store"
@@ -200,6 +201,9 @@ export async function prepareResponsesRequestBody(
   work = rewritten.body
   const sanitized = await sanitizeResponsesInputItems(work, db)
   work = sanitized.body
+  // 重排 function_call/function_call_output：严格上游要求 call 与 output 相邻
+  const reordered = reorderResponsesInputItems(work)
+  if (reordered.modified) work = reordered.body
   work = normalizeToolsInBody(work, { mode: "responses" })
   work = ensureResponsesStreamUsage(work)
 
