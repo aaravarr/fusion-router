@@ -31,10 +31,21 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
-const STREAM_HEADERS = {
+/** 提取 MCP 标准进度通知 token：来自 params._meta.progressToken（string 或 number）。 */
+function extractProgressToken(params: Record<string, unknown>): string | number | undefined {
+  const meta = params._meta
+  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+    const token = (meta as Record<string, unknown>).progressToken
+    if (typeof token === "string" || typeof token === "number") return token
+  }
+  return undefined
+}
+
+export const STREAM_HEADERS = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache",
   Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -98,6 +109,8 @@ export async function handleMcpRequest(
       const definition = MCP_TOOL_DEFINITIONS.find((item) => item.name === name)
       if (!definition) return rpcError(id, -32602, "Unknown tool")
       const args = asRecord(paramsRecord.arguments)
+      // MCP 标准：客户端可在 params._meta.progressToken 请求进度通知。
+      const progressToken = extractProgressToken(paramsRecord)
       try {
         if (definition.toolType === "describe_image") {
           // image 兼容单图字符串与多图数组；统一归一化为 images 数组。
@@ -118,12 +131,14 @@ export async function handleMcpRequest(
               { ownerUserId: ctx.ownerUserId },
               id,
               callGateway,
+              progressToken !== undefined ? { progressToken } : undefined,
             )
             return new Response(stream, { status: 200, headers: STREAM_HEADERS })
           }
           const result = await describeImage({ images, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
           return rpcResult(id, { content: [{ type: "text", text: result.text }] })
         }
+        
         return rpcError(id, -32601, "Method not found")
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)

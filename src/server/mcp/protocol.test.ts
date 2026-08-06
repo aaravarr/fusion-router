@@ -90,11 +90,12 @@ describe("MCP protocol", () => {
     })
     const body = await response.json()
     expect(body.result.tools).toHaveLength(1)
-    expect(body.result.tools[0]).toMatchObject({
+    const describeImageTool = body.result.tools.find((tool: { name: string }) => tool.name === "describe_image")
+    expect(describeImageTool).toMatchObject({
       name: "describe_image",
       inputSchema: { type: "object" },
     })
-    expect(body.result.tools[0].inputSchema.required).toContain("image")
+    expect(describeImageTool!.inputSchema.required).toContain("image")
   })
 
   it("tools/call describe_image 成功返回内容", async () => {
@@ -148,6 +149,7 @@ describe("MCP protocol", () => {
       db,
       { ownerUserId: "user-1" },
       4,
+      undefined,
       undefined,
     )
   })
@@ -203,6 +205,40 @@ describe("MCP protocol", () => {
     expect(body.result.content).toEqual([{ type: "text", text: "余额不足" }])
   })
 
+  it("客户端传 _meta.progressToken 时透传给流式实现", async () => {
+    const encoder = new TextEncoder()
+    mockedDescribeImageStream.mockResolvedValue(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("event: message\ndata: x\n\n"))
+          controller.close()
+        },
+      }),
+    )
+    await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 11,
+        method: "tools/call",
+        params: {
+          name: "describe_image",
+          arguments: { image: "https://example.com/a.png" },
+          _meta: { progressToken: "tok-123" },
+        },
+      },
+      db,
+      { ownerUserId: "user-1" },
+      { acceptEventStream: true },
+    )
+    expect(mockedDescribeImageStream).toHaveBeenCalledWith(
+      { images: ["https://example.com/a.png"], prompt: undefined },
+      db,
+      { ownerUserId: "user-1" },
+      11,
+      undefined,
+      { progressToken: "tok-123" },
+    )
+  })
   it("notifications/initialized 返回 202", async () => {
     const response = await handleMcpRequest({ jsonrpc: "2.0", method: "notifications/initialized" }, db, {
       ownerUserId: "user-1",
