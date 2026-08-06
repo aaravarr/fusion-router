@@ -481,36 +481,6 @@ function flushPendingToolCalls(messages: Obj[], pending: PendingToolCall[], reas
   pending.length = 0;
 }
 
-/**
- * Flush pending tool calls up to (and including) the one whose id matches
- * upToCallId, then emit a single assistant message with those tool_calls.
- *
- * responses 允许 function_call 与 function_call_output 之间隔着 message；chat
- * 格式要求 assistant(tool_calls) 与其 tool 消息相邻。按 call_id 定位可以保证
- * 每个 (tool_calls, tool) 组相邻，且并行 calls 被拆成多组相邻序列。
- * 找不到匹配 call 时不 flush（孤儿 output 直接作为 tool 消息透传）。
- */
-function flushPendingToolCallsUpTo(messages: Obj[], pending: PendingToolCall[], upToCallId: string, reasoningQueue: ReasoningQueue = []) {
-  if (!pending.length) return;
-  const idx = pending.findIndex((tc) => {
-    const id = String((tc as { id?: unknown }).id ?? (tc as { call_id?: unknown }).call_id ?? '');
-    return id === upToCallId;
-  });
-  if (idx < 0) return;
-  const matched = pending.slice(0, idx + 1);
-  const message: Obj = {
-    role: 'assistant',
-    content: null,
-    tool_calls: matched.map((tc) => clone(tc)),
-  };
-  const reasoning = reasoningQueue.shift();
-  if (reasoning && typeof reasoning.reasoning_content === 'string' && reasoning.reasoning_content.trim()) {
-    message.reasoning_content = reasoning.reasoning_content;
-  }
-  messages.push(message);
-  pending.splice(0, idx + 1);
-}
-
 function functionCallToChatToolCall(item: Obj, ctx: CodexToolContext): Obj {
   const callId = String(item.call_id || item.id || 'call_' + Math.random().toString(16).slice(2));
   const name = pickName(item.name) || 'tool';
@@ -600,10 +570,7 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
   const type = String(item.type || '').toLowerCase();
 
   if (type === 'message' || item.role) {
-    // 不能在这里 flush pending：responses 的 function_call 与 function_call_output
-    // 之间可能隔着 message（assistant 先说话再调工具），提前 flush 会生成孤儿
-    // assistant(tool_calls)，其 tool 消息反而被 message 隔开，chat 上游会报
-    // "insufficient tool messages following tool_calls message"。
+    flushPendingToolCalls(messages, pending, reasoningQueue);
     const role = responsesRoleToChat(String(item.role || 'user'));
     const content = contentPartsToChat(item.content ?? item.text ?? '');
     if (role === 'assistant' && (content === '' || content == null)) return;
@@ -624,13 +591,10 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
     return;
   }
   if (type === 'function_call_output' || type === 'custom_tool_call_output' || type === 'tool_search_output') {
-    // 只 flush 到本 output 对应的 call：保证 assistant(tool_calls) 紧跟 tool 消息，
-    // 且并行 calls 被拆成相邻的 (tool_calls, tool) 组，不会让其它 message 插进中间。
-    const callId = String(item.call_id || item.id || 'tool_call');
-    flushPendingToolCallsUpTo(messages, pending, callId, reasoningQueue);
+    flushPendingToolCalls(messages, pending, reasoningQueue);
     messages.push({
       role: 'tool',
-      tool_call_id: callId,
+      tool_call_id: String(item.call_id || item.id || 'tool_call'),
       content: toolOutputContent(item),
     });
     return;
@@ -664,16 +628,8 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
 function appendResponsesInput(input: unknown, messages: Obj[], ctx: CodexToolContext, reasoningQueue: ReasoningQueue = []) {
   const pending: PendingToolCall[] = [];
   const items = Array.isArray(input) ? input : input != null ? [input] : [];
-  for (const item of items) {
-    if (typeof item === "string") {
-      // 纯字符串 input（OpenAI Responses 允许）：转成 user message 再处理。
-      appendResponsesItem({ type: "message", role: "user", content: [{ type: "input_text", text: item }] }, messages, pending, ctx, reasoningQueue)
-    } else {
-      appendResponsesItem(item, messages, pending, ctx, reasoningQueue)
-    }
-  }
-  // 结尾丢弃未配对的 function_call：chat 上游不允许存在没有 tool 消息跟随的
-  // assistant(tool_calls)，直接丢弃比生成孤儿消息更安全。
+  for (const item of items) appendResponsesItem(item, messages, pending, ctx, reasoningQueue);
+  flushPendingToolCalls(messages, pending, reasoningQueue);
 }
 
 function mapToolChoice(toolChoice: unknown, _ctx: CodexToolContext): unknown {
@@ -1307,13 +1263,6 @@ function extractServerSearchQuery(item: Obj): string {
   if (isObj(item.action)) {
     if (typeof item.action.query === 'string' && item.action.query.trim()) return item.action.query.trim();
     if (typeof item.action.q === 'string' && item.action.q.trim()) return item.action.q.trim();
-    // DeepSeek responses API returns action.queries as a string array that may
-    // include noise entries like `ws_call_id=call_xx`; use the first real query.
-    if (Array.isArray(item.action.queries)) {
-      for (const q of item.action.queries) {
-        if (typeof q === 'string' && q.trim() && !q.includes('ws_call_id=')) return q.trim();
-      }
-    }
   }
   const argsRaw = item.arguments ?? item.input ?? item.parameters;
   if (typeof argsRaw === 'string' && argsRaw.trim()) {

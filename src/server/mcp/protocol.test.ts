@@ -9,7 +9,6 @@ import { ApiKeyHasher } from "@/server/crypto"
 import { getSystemSecret, initializeSystemSettings } from "@/server/settings"
 import { ensureDefaultMcpTools } from "./mcp-tools"
 import { describeImage, describeImageStream } from "./describe-image"
-import { webSearch, webSearchStream } from "./web-search"
 import {
   authenticateMcpRequest,
   handleMcpRequest,
@@ -22,15 +21,8 @@ vi.mock("./describe-image", () => ({
   describeImageStream: vi.fn(),
 }))
 
-vi.mock("./web-search", () => ({
-  webSearch: vi.fn(),
-  webSearchStream: vi.fn(),
-}))
-
 const mockedDescribeImage = vi.mocked(describeImage)
 const mockedDescribeImageStream = vi.mocked(describeImageStream)
-const mockedWebSearch = vi.mocked(webSearch)
-const mockedWebSearchStream = vi.mocked(webSearchStream)
 
 let db: AppDatabase
 let directory: string
@@ -97,16 +89,12 @@ describe("MCP protocol", () => {
       ownerUserId: "user-1",
     })
     const body = await response.json()
-    expect(body.result.tools).toHaveLength(2)
-    const describeImageTool = body.result.tools.find((tool: { name: string }) => tool.name === "describe_image")
-    expect(describeImageTool).toMatchObject({
+    expect(body.result.tools).toHaveLength(1)
+    expect(body.result.tools[0]).toMatchObject({
       name: "describe_image",
       inputSchema: { type: "object" },
     })
-    expect(describeImageTool!.inputSchema.required).toContain("image")
-    const webSearchTool = body.result.tools.find((tool: { name: string }) => tool.name === "web_search")
-    expect(webSearchTool).toMatchObject({ name: "web_search", inputSchema: { type: "object" } })
-    expect(webSearchTool!.inputSchema.required).toContain("query")
+    expect(body.result.tools[0].inputSchema.required).toContain("image")
   })
 
   it("tools/call describe_image 成功返回内容", async () => {
@@ -160,7 +148,6 @@ describe("MCP protocol", () => {
       db,
       { ownerUserId: "user-1" },
       4,
-      undefined,
       undefined,
     )
   })
@@ -216,107 +203,6 @@ describe("MCP protocol", () => {
     expect(body.result.content).toEqual([{ type: "text", text: "余额不足" }])
   })
 
-  it("tools/call web_search 成功返回内容", async () => {
-    mockedWebSearch.mockResolvedValue({ text: "搜索答案", model: "deepseek-v4", accountName: null })
-    const response = await handleMcpRequest(
-      {
-        jsonrpc: "2.0",
-        id: 8,
-        method: "tools/call",
-        params: { name: "web_search", arguments: { query: "今天的天气", prompt: "用中文回答" } },
-      },
-      db,
-      { ownerUserId: "user-1" },
-    )
-    const body = await response.json()
-    expect(body.error).toBeUndefined()
-    expect(body.result.content).toEqual([{ type: "text", text: "搜索答案" }])
-    expect(mockedWebSearch).toHaveBeenCalledWith(
-      { query: "今天的天气", prompt: "用中文回答" },
-      db,
-      { ownerUserId: "user-1" },
-      undefined,
-    )
-  })
-
-  it("tools/call web_search 缺 query 返回 isError", async () => {
-    const response = await handleMcpRequest(
-      { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "web_search", arguments: {} } },
-      db,
-      { ownerUserId: "user-1" },
-    )
-    const body = await response.json()
-    expect(body.result.isError).toBe(true)
-    expect(body.result.content).toEqual([{ type: "text", text: "请提供搜索问题" }])
-    expect(mockedWebSearch).not.toHaveBeenCalled()
-  })
-
-  it("acceptEventStream 时 tools/call web_search 返回 SSE 流", async () => {
-    const encoder = new TextEncoder()
-    mockedWebSearchStream.mockResolvedValue(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(encoder.encode("event: message\ndata: y\n\n"))
-          controller.close()
-        },
-      }),
-    )
-    const response = await handleMcpRequest(
-      {
-        jsonrpc: "2.0",
-        id: 10,
-        method: "tools/call",
-        params: { name: "web_search", arguments: { query: "今天天气" } },
-      },
-      db,
-      { ownerUserId: "user-1" },
-      { acceptEventStream: true },
-    )
-    expect(response.headers.get("content-type")).toContain("text/event-stream")
-    expect(mockedWebSearch).not.toHaveBeenCalled()
-    expect(mockedWebSearchStream).toHaveBeenCalledWith(
-      { query: "今天天气", prompt: undefined },
-      db,
-      { ownerUserId: "user-1" },
-      10,
-      undefined,
-      undefined,
-    )
-  })
-  it("客户端传 _meta.progressToken 时透传给流式实现", async () => {
-    const encoder = new TextEncoder()
-    mockedDescribeImageStream.mockResolvedValue(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(encoder.encode("event: message\ndata: x\n\n"))
-          controller.close()
-        },
-      }),
-    )
-    await handleMcpRequest(
-      {
-        jsonrpc: "2.0",
-        id: 11,
-        method: "tools/call",
-        params: {
-          name: "describe_image",
-          arguments: { image: "https://example.com/a.png" },
-          _meta: { progressToken: "tok-123" },
-        },
-      },
-      db,
-      { ownerUserId: "user-1" },
-      { acceptEventStream: true },
-    )
-    expect(mockedDescribeImageStream).toHaveBeenCalledWith(
-      { images: ["https://example.com/a.png"], prompt: undefined },
-      db,
-      { ownerUserId: "user-1" },
-      11,
-      undefined,
-      { progressToken: "tok-123" },
-    )
-  })
   it("notifications/initialized 返回 202", async () => {
     const response = await handleMcpRequest({ jsonrpc: "2.0", method: "notifications/initialized" }, db, {
       ownerUserId: "user-1",

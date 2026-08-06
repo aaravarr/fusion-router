@@ -1,7 +1,6 @@
 import type { AppDatabase } from "@/server/db"
 import { authenticateApiKey } from "@/server/repository"
 import { describeImage, describeImageStream } from "./describe-image"
-import { webSearch, webSearchStream } from "./web-search"
 import { MCP_TOOL_DEFINITIONS } from "./mcp-tools"
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -32,21 +31,10 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
-/** 提取 MCP 标准进度通知 token：来自 params._meta.progressToken（string 或 number）。 */
-function extractProgressToken(params: Record<string, unknown>): string | number | undefined {
-  const meta = params._meta
-  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
-    const token = (meta as Record<string, unknown>).progressToken
-    if (typeof token === "string" || typeof token === "number") return token
-  }
-  return undefined
-}
-
-export const STREAM_HEADERS = {
+const STREAM_HEADERS = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache",
   Connection: "keep-alive",
-  "X-Accel-Buffering": "no",
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -87,8 +75,7 @@ export async function handleMcpRequest(
         capabilities: { tools: {} },
         serverInfo: MCP_SERVER_INFO,
         instructions:
-          "调用 describe_image 并传入 image（单图字符串或多图字符串数组，URL 或 data URI）与可选 prompt；使用调用者自己的 API Key 鉴权，识图消耗调用者账号池额度。prompt 不传时模型直接看图回答。\n" +
-          "调用 web_search 并传入 query（搜索问题或关键词）与可选 prompt；服务端使用配置的 Provider+模型通过 responses API 执行实时联网搜索并返回模型回答，消耗调用者账号池额度。",
+          "调用 describe_image 并传入 image（单图字符串或多图字符串数组，URL 或 data URI）与可选 prompt；使用调用者自己的 API Key 鉴权，识图消耗调用者账号池额度。prompt 不传时模型直接看图回答。",
       })
     }
     case "ping":
@@ -111,8 +98,6 @@ export async function handleMcpRequest(
       const definition = MCP_TOOL_DEFINITIONS.find((item) => item.name === name)
       if (!definition) return rpcError(id, -32602, "Unknown tool")
       const args = asRecord(paramsRecord.arguments)
-      // MCP 标准：客户端可在 params._meta.progressToken 请求进度通知。
-      const progressToken = extractProgressToken(paramsRecord)
       try {
         if (definition.toolType === "describe_image") {
           // image 兼容单图字符串与多图数组；统一归一化为 images 数组。
@@ -133,32 +118,10 @@ export async function handleMcpRequest(
               { ownerUserId: ctx.ownerUserId },
               id,
               callGateway,
-              progressToken !== undefined ? { progressToken } : undefined,
             )
             return new Response(stream, { status: 200, headers: STREAM_HEADERS })
           }
           const result = await describeImage({ images, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
-          return rpcResult(id, { content: [{ type: "text", text: result.text }] })
-        }
-        if (definition.toolType === "web_search") {
-          const query = typeof args.query === "string" ? args.query.trim() : ""
-          if (!query) {
-            return rpcResult(id, { content: [{ type: "text", text: "请提供搜索问题" }], isError: true })
-          }
-          const prompt = typeof args.prompt === "string" ? args.prompt : undefined
-          const wantStream = options?.acceptEventStream === true && args.stream !== false
-          if (wantStream) {
-            const stream = await webSearchStream(
-              { query, prompt },
-              db,
-              { ownerUserId: ctx.ownerUserId },
-              id,
-              callGateway,
-              progressToken !== undefined ? { progressToken } : undefined,
-            )
-            return new Response(stream, { status: 200, headers: STREAM_HEADERS })
-          }
-          const result = await webSearch({ query, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
           return rpcResult(id, { content: [{ type: "text", text: result.text }] })
         }
         return rpcError(id, -32601, "Method not found")

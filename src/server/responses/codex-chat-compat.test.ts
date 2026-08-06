@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapServerToolItemForCodex, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex, responsesToChatCompletions } from "./codex-chat-compat"
+import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex, responsesToChatCompletions } from "./codex-chat-compat"
 
 describe("chat to Responses reasoning compatibility", () => {
   it("preserves reasoning in non-stream responses", () => {
@@ -109,29 +109,6 @@ describe("chat to Responses reasoning compatibility", () => {
 })
 
 
-
-describe("server search item remap", () => {
-  it("normalizes DeepSeek web_search_call action.queries array into standard action.query", () => {
-    const result = remapServerToolItemForCodex({
-      type: "web_search_call",
-      id: "call_xx",
-      status: "completed",
-      action: {
-        type: "search",
-        queries: ["北京 今天 天气", "Beijing weather today", "ws_call_id=call_xx"],
-      },
-    }) as Record<string, any>
-
-    expect(result.type).toBe("web_search_call")
-    expect(result.action.type).toBe("search")
-    // Gateway prefixes the display query; the value must come from the first
-    // real query (skipping ws_call_id noise), not the fallback label.
-    expect(result.action.query).toBe("web_search: 北京 今天 天气")
-    expect(result.action.query).not.toContain("ws_call_id=")
-    expect(Array.isArray(result.action.sources)).toBe(true)
-  })
-})
-
 describe("responses to chat reasoning replay", () => {
   it("injects opts.reasoningItems onto the tool-call assistant message", () => {
     const { body } = responsesToChatCompletions(
@@ -175,80 +152,5 @@ describe("responses to chat reasoning replay", () => {
     )
     const messages = body.messages as Array<Record<string, unknown>>
     expect(messages.some((m) => typeof m.reasoning_content === "string")).toBe(false)
-  })
-
-  it("keeps plain-string input as a user message", () => {
-    const { body } = responsesToChatCompletions({
-      model: "deepseek-v4-flash",
-      input: "2026年冬奥会主办城市是哪里？",
-    })
-    const messages = body.messages as Array<{ role?: string; content?: unknown }>
-    const user = messages.find((m) => m.role === "user")
-    expect(user).toBeTruthy()
-    expect(String(user?.content)).toContain("2026年冬奥会主办城市是哪里？")
-    expect(messages.some((m) => m.role === "user" && String(m.content) === "Continue.")).toBe(false)
-  })
-})
-
-describe("responses to chat tool-call pairing", () => {
-  it("function_call 与 output 之间夹 message 时仍保持 assistant(tool_calls) 紧跟 tool 消息", () => {
-    const { body } = responsesToChatCompletions({
-      model: "deepseek-v4-flash",
-      input: [
-        { type: "message", role: "assistant", content: [{ type: "output_text", text: "我先调用工具" }] },
-        { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
-        { type: "message", role: "assistant", content: [{ type: "output_text", text: "正在执行" }] },
-        { type: "function_call_output", call_id: "call_1", output: "ok" },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
-      ],
-    })
-    const messages = body.messages as Array<Record<string, unknown>>
-    // 找到 assistant(tool_calls) 索引，其下一条必须是 tool 消息
-    const tcIdx = messages.findIndex((m) => m.role === "assistant" && Array.isArray(m.tool_calls))
-    expect(tcIdx).toBeGreaterThanOrEqual(0)
-    const next = messages[tcIdx + 1]
-    expect(next?.role).toBe("tool")
-    expect(next?.tool_call_id).toBe("call_1")
-    // 不出现孤儿 assistant(tool_calls)（tool_calls 后没有紧跟 tool）
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i]
-      if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
-        expect(messages[i + 1]?.role).toBe("tool")
-      }
-    }
-  })
-
-  it("并行多个 function_call 且 output 交错时，每个 (tool_calls, tool) 组相邻", () => {
-    const { body } = responsesToChatCompletions({
-      model: "deepseek-v4-flash",
-      input: [
-        { type: "function_call", id: "fc_a", call_id: "call_a", name: "web_search", arguments: "{\"query\":\"x\"}" },
-        { type: "function_call", id: "fc_b", call_id: "call_b", name: "code_search", arguments: "{}" },
-        { type: "function_call_output", call_id: "call_a", output: "search result" },
-        { type: "function_call_output", call_id: "call_b", output: "code result" },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
-      ],
-    })
-    const messages = body.messages as Array<Record<string, unknown>>
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i]
-      if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
-        expect(messages[i + 1]?.role).toBe("tool")
-      }
-    }
-    // 两个 output 都保留
-    const toolMsgs = messages.filter((m) => m.role === "tool")
-    expect(toolMsgs.map((m) => m.tool_call_id).sort()).toEqual(["call_a", "call_b"])
-  })
-
-  it("以 function_call 结尾（无 output）时丢弃孤儿调用，不生成孤立 assistant(tool_calls)", () => {
-    const { body } = responsesToChatCompletions({
-      model: "deepseek-v4-flash",
-      input: [
-        { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
-      ],
-    })
-    const messages = body.messages as Array<Record<string, unknown>>
-    expect(messages.some((m) => m.role === "assistant" && Array.isArray(m.tool_calls))).toBe(false)
   })
 })

@@ -188,18 +188,12 @@ export class OpenCodeGoProvider implements Provider {
     return { url: `${baseUrl}/${path}`, headers, body: input.body }
   }
 
-    classifyError(status: number, body: string, _headers: Headers): UpstreamErrorClassification | null {
+  classifyError(status: number, body: string, _headers: Headers): UpstreamErrorClassification | null {
     const limit = classifyGoUsageLimit(status, body)
     if (limit) return limit
     const lower = body.toLowerCase()
     if (/model .+ is not supported/.test(lower) || (lower.includes("not supported") && lower.includes("model"))) {
       return { shouldSwitchAccount: true, errorType: "ModelError" }
-    }
-    // Console Go 聚合上游的间歇性 403（包装成 400 bad_request_error 返回）：
-    // 例如 "invalid param: remote returned status 403 (2013)"。这类失败换一个
-    // 同池账号重试通常能成功，因此触发账号切换，而不是直接返回给客户端。
-    if (lower.includes("remote returned status 403") || lower.includes("returned status 403")) {
-      return { shouldSwitchAccount: true, errorType: "UpstreamForbidden" }
     }
     if (status === 401 || status === 403) return { shouldSwitchAccount: false, errorType: "AuthenticationError" }
     return null

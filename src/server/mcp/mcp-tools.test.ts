@@ -47,23 +47,6 @@ describe("mcp tools", () => {
     expect(listMcpTools(db).length).toBe(before)
   })
 
-  it("ensureDefaultMcpTools 初始化 web_search 默认配置", () => {
-    ensureDefaultMcpTools(db)
-    const tool = getMcpTool("web_search", db)
-    expect(tool).not.toBeNull()
-    expect(tool!.name).toBe("web_search")
-    expect(tool!.description).toContain("联网搜索")
-    expect(tool!.enabled).toBe(true)
-    expect(tool!.config).toEqual({
-      poolType: null,
-      model: "",
-      prompt: "请基于联网搜索结果回答用户的问题，并注明信息来源。",
-      maxTokens: 2048,
-      temperature: 0.3,
-      reasoningEnabled: false,
-      reasoningEffort: null,
-    })
-  })
   it("updateMcpTool 合并配置并校验字段", () => {
     ensureDefaultMcpTools(db)
     const updated = updateMcpTool(

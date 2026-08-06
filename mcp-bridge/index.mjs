@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
-import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import {
-  resolveImageSources,
-  callRemoteTool,
-  fetchRemoteToolList,
-  DEFAULT_BASE_URL,
-} from "./lib.mjs";
+import { resolveImageSources, callRemoteDescribe, DEFAULT_BASE_URL } from "./lib.mjs";
 
 const HELP_TEXT = `fusionrouter-mcp - 本地 stdio MCP 桥
 
@@ -18,10 +12,6 @@ const HELP_TEXT = `fusionrouter-mcp - 本地 stdio MCP 桥
   --base-url <url>  远程 opencode-api 的 MCP 端点地址 (默认环境变量 OPENCODE_MCP_BASE_URL 或 ${DEFAULT_BASE_URL})
   --api-key <key>   API Key (默认环境变量 OPENCODE_MCP_API_KEY，管理后台「API 密钥」页创建，格式如 ocg_xxx)
   --help            显示本帮助
-
-说明:
-  工具列表以远程 /mcp 为准（tools/list 实时透传），当前含 describe_image（识图）与 web_search（联网搜索）。
-  describe_image 的 image 支持本地图片路径，由本地桥自动转为 data URI 后转发。
 
 客户端接入示例 (Claude Desktop claude_desktop_config.json):
   {
@@ -64,13 +54,12 @@ function buildConfig(argv) {
 const SERVER_INFO = {
   protocolVersion: "2025-06-18",
   capabilities: { tools: {} },
-  serverInfo: { name: "fusionrouter-mcp", version: "0.1.6" },
+  serverInfo: { name: "fusionrouter-mcp", version: "0.1.0" },
   instructions:
-    "本地 stdio 桥：透传远程 opencode-api 的 MCP 工具，工具列表以远程为准。describe_image（识图，image 支持本地图片路径或 http(s) URL，本地路径自动转 data URI）与 web_search（联网搜索，传 query 与可选 prompt）等。",
+    "识图工具：传入本地图片路径或 http(s) URL，自动读取本地图片并调用远程 MCP 识图；prompt 可选",
 };
 
-// 远程不可用时的最小兜底列表（仅 describe_image）
-const FALLBACK_TOOLS = {
+const TOOLS_LIST = {
   tools: [
     {
       name: "describe_image",
@@ -115,55 +104,23 @@ async function handleMessage(msg, config) {
       return ok(msg.id, { ...SERVER_INFO });
     case "ping":
       return ok(msg.id, {});
-    case "tools/list": {
-      if (!config.apiKey) {
-        return ok(msg.id, { ...FALLBACK_TOOLS });
-      }
-      try {
-        const tools = await fetchRemoteToolList({
-          baseUrl: config.baseUrl,
-          apiKey: config.apiKey,
-          id: 1000,
-        });
-        // describe_image 由本地桥增强：支持本地图片路径，其余工具原样透传
-        const localTools = tools.map((tool) =>
-          tool.name === "describe_image"
-            ? {
-                ...tool,
-                description:
-                  "识图工具：向多模态大模型询问图片内容并返回描述。image 支持本地文件路径（如 C:\\xx\\a.png 或 /home/u/a.png）或 http(s) URL；本地路径由本地桥自动转 data URI",
-              }
-            : tool
-        );
-        return ok(msg.id, { tools: localTools });
-      } catch (err) {
-        process.stderr.write(`fusionrouter-mcp: tools/list 远程拉取失败，回退内置列表: ${err.message}\n`);
-        return ok(msg.id, { ...FALLBACK_TOOLS });
-      }
-    }
+    case "tools/list":
+      return ok(msg.id, { ...TOOLS_LIST });
     case "tools/call": {
       const { name, arguments: args } = msg.params ?? {};
-      if (!name) {
-        return rpcError(msg.id, -32602, "缺少工具名");
+      if (name !== "describe_image") {
+        return rpcError(msg.id, -32602, "Unknown tool");
       }
       try {
         if (!config.apiKey) {
           throw new Error("未配置 API Key，请设置 OPENCODE_MCP_API_KEY 或 --api-key");
         }
-        let finalArgs = args ?? {};
-        if (name === "describe_image") {
-          const images = resolveImageSources(args?.image);
-          finalArgs = { image: images };
-          if (args?.prompt) {
-            finalArgs.prompt = args.prompt;
-          }
-        }
-        // 其余工具（web_search 等）原样透传给远程
-        const text = await callRemoteTool({
+        const images = resolveImageSources(args?.image);
+        const text = await callRemoteDescribe({
           baseUrl: config.baseUrl,
           apiKey: config.apiKey,
-          name,
-          args: finalArgs,
+          image: images,
+          prompt: args?.prompt,
           id: msg.id,
         });
         return ok(msg.id, { content: [{ type: "text", text }] });
@@ -205,25 +162,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-/**
- * 判断当前模块是否作为入口脚本被直接运行。
- *
- * npm 在 macOS/Linux 上通过 .bin 符号链接启动 bin，此时 process.argv[1] 是链接路径，
- * 而 import.meta.url 是 Node 解析符号链接后的真实路径，直接比较会不相等，
- * 导致 main() 不执行、进程静默退出（MCP 客户端报 Connection closed）。
- * 这里先用 realpathSync 解析符号链接后再比较。
- */
-export function isDirectRun(argv1, metaUrl = import.meta.url) {
-  if (!argv1) return false;
-  try {
-    return metaUrl === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    // 路径解析失败时退化为原样比较，保持旧行为
-    return metaUrl === pathToFileURL(argv1).href;
-  }
-}
-
 // 直接作为脚本运行时启动；被 import（如测试）时不自动启动
-if (isDirectRun(process.argv[1])) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

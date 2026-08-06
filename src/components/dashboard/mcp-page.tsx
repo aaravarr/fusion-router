@@ -85,10 +85,9 @@ export function McpPage() {
     [origin, server?.endpoint]
   );
 
-  // 三种接入方式配置：stdio（本地桥）/ http（Streamable HTTP 直连）/ sse（流式传输）
-  const configByTab = useMemo(() => {
-    const baseUrl = endpoint.replace(/\/mcp$/, "");
-    const stdio = JSON.stringify(
+  const mcpServerConfig = useMemo(() => {
+    if (!endpoint) return "";
+    return JSON.stringify(
       {
         mcpServers: {
           [MCP_SERVER_NAME]: {
@@ -99,7 +98,7 @@ export function McpPage() {
               "-y",
               "fusionrouter-mcp",
               "--base-url",
-              baseUrl,
+              endpoint.replace(/\/mcp$/, ""),
               "--api-key",
               "<你的 API Key>",
             ],
@@ -109,24 +108,7 @@ export function McpPage() {
       null,
       2,
     );
-    const remote = JSON.stringify(
-      {
-        mcpServers: {
-          [MCP_SERVER_NAME]: {
-            url: endpoint,
-            headers: {
-              Authorization: "Bearer <你的 API Key>",
-            },
-          },
-        },
-      },
-      null,
-      2,
-    );
-    return { stdio, http: remote, sse: remote };
   }, [endpoint]);
-  const [configTab, setConfigTab] = useState<"stdio" | "http" | "sse">("http");
-  const mcpServerConfig = configByTab[configTab] || "";
   const [configCopied, setConfigCopied] = useState(false);
 
   async function copyServerConfig() {
@@ -164,22 +146,18 @@ export function McpPage() {
   const [testImages, setTestImages] = useState<string[]>([]);
   const [testUrlInput, setTestUrlInput] = useState("");
   const [testPrompt, setTestPrompt] = useState("");
-  const [testQuery, setTestQuery] = useState("");
   const [testLoading, setTestLoading] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ text?: string; model?: string } | null>(null);
 
   const selectedCatalog = catalogs.find((catalog) => catalog.poolType === provider) ?? null;
-  const isSearchTool = editing?.toolType === "web_search";
   const modelOptions = useMemo(() => {
-    // describe_image：只展示支持图片输入（多模态）的模型，避免误选 grok-4.5 / gpt-5.6-luna 等
-    // web_search：列出该 Provider 的全部模型（需 Provider/模型支持 web_search，如 DeepSeek v4-flash）
-    if (isSearchTool) return [...(selectedCatalog?.models ?? [])];
+    // 只展示支持图片输入（多模态）的模型，避免误选 grok-4.5 / gpt-5.6-luna 等
     const vision = selectedCatalog?.visionModels?.length
       ? selectedCatalog.visionModels
       : RECOMMENDED_VISION_MODELS.filter((model) => (selectedCatalog?.models ?? []).includes(model));
     return [...vision];
-  }, [selectedCatalog, isSearchTool]);
+  }, [selectedCatalog]);
 
   async function loadMeta() {
     setMetaLoading(true);
@@ -209,7 +187,7 @@ export function McpPage() {
     setProvider(config.poolType ?? "");
     setModelInput(config.model ?? "");
     setPrompt(config.prompt ?? "");
-    setMaxTokens(config.maxTokens != null ? String(config.maxTokens) : (tool.toolType === "web_search" ? "2048" : "1024"));
+    setMaxTokens(config.maxTokens != null ? String(config.maxTokens) : "1024");
     setTemperature(config.temperature != null ? String(config.temperature) : "0.3");
     setReasoningEnabled(config.reasoningEnabled === true);
     setReasoningEffort(config.reasoningEffort ?? "");
@@ -241,10 +219,10 @@ export function McpPage() {
     if (!editing) return;
     const model = modelInput.trim();
     if (!model) {
-      setFormError("请填写模型（可从下拉选择或直接输入模型名）");
+      setFormError("请填写识图模型（可从下拉选择或直接输入模型名）");
       return;
     }
-    const maxTokensValue = Math.min(32768, Math.max(1, Math.round(Number(maxTokens) || (editing.toolType === "web_search" ? 2048 : 1024))));
+    const maxTokensValue = Math.min(32768, Math.max(1, Math.round(Number(maxTokens) || 1024)));
     const temperatureValue = Math.min(2, Math.max(0, Number(temperature) || 0.3));
     setSaving(true);
     setFormError(null);
@@ -264,12 +242,12 @@ export function McpPage() {
         }),
       });
       const payload = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(errorMessage(payload, "保存配置失败"));
-      setMessage(`已保存 ${editing.name} 的配置`);
+      if (!response.ok) throw new Error(errorMessage(payload, "保存识图配置失败"));
+      setMessage(`已保存 ${editing.name} 的识图配置`);
       setEditing(null);
       await resource.refresh();
     } catch (cause) {
-      setFormError(cause instanceof Error ? cause.message : "保存配置失败");
+      setFormError(cause instanceof Error ? cause.message : "保存识图配置失败");
     } finally {
       setSaving(false);
     }
@@ -280,7 +258,6 @@ export function McpPage() {
     setTestImages([]);
     setTestUrlInput("");
     setTestPrompt("");
-    setTestQuery("");
     setTestError(null);
     setTestResult(null);
   }
@@ -355,12 +332,7 @@ export function McpPage() {
   async function runTest(event: FormEvent) {
     event.preventDefault();
     if (!testing) return;
-    if (testing.toolType === "web_search") {
-      if (!testQuery.trim()) {
-        setTestError("请输入搜索问题");
-        return;
-      }
-    } else if (!testImages.length) {
+    if (!testImages.length) {
       setTestError("请至少添加一张图片（URL、上传或粘贴）");
       return;
     }
@@ -368,18 +340,17 @@ export function McpPage() {
     setTestError(null);
     setTestResult(null);
     try {
-      const isSearch = testing.toolType === "web_search";
-      const body: Record<string, unknown> = isSearch ? { query: testQuery.trim() } : { images: testImages };
+      const body: Record<string, unknown> = { images: testImages };
       if (testPrompt.trim()) body.prompt = testPrompt.trim();
-      const response = await adminFetch(`/api/admin/mcp/tools/${encodeURIComponent(testing.toolType)}/test`, {
+      const response = await adminFetch("/api/admin/mcp/tools/describe_image/test", {
         method: "POST",
         body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => null) as { result?: { text?: string; model?: string } } | null;
-      if (!response.ok) throw new Error(errorMessage(payload, isSearch ? "搜索测试失败" : "识图测试失败"));
+      if (!response.ok) throw new Error(errorMessage(payload, "识图测试失败"));
       setTestResult(payload?.result ?? null);
     } catch (cause) {
-      setTestError(cause instanceof Error ? cause.message : (testing.toolType === "web_search" ? "搜索测试失败" : "识图测试失败"));
+      setTestError(cause instanceof Error ? cause.message : "识图测试失败");
     } finally {
       setTestLoading(false);
     }
@@ -425,43 +396,14 @@ export function McpPage() {
                     {configCopied ? "已复制" : "复制"}
                   </Button>
                 </div>
-                <div className="mt-2 inline-flex rounded-md border bg-[#fafafa] p-0.5" role="tablist" aria-label="接入方式">
-                  {([
-                    { key: "stdio", label: "stdio（本地桥）" },
-                    { key: "http", label: "http" },
-                    { key: "sse", label: "sse（流式）" },
-                  ] as const).map((tab) => (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      role="tab"
-                      aria-selected={configTab === tab.key}
-                      onClick={() => setConfigTab(tab.key)}
-                      className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        configTab === tab.key
-                          ? "bg-white text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
                 <pre className="mt-2 overflow-x-auto rounded-md bg-[#fafafa] p-3 font-mono text-[11px] leading-5">{mcpServerConfig || "…"}</pre>
                 <div className="mt-3 space-y-1.5 text-[11px] leading-5 text-muted-foreground">
-                  {configTab === "stdio" ? (
-                    <p>本地桥（npx fusionrouter-mcp）：支持传<strong>本地图片路径</strong>，适合 Claude Desktop / Cursor / Codex 等以 stdio 接入的客户端。建议先执行一次 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">npx -y fusionrouter-mcp</code> 建立缓存，避免首次启动超时。</p>
-                  ) : configTab === "http" ? (
-                    <p>HTTP 直连（MCP Streamable HTTP）：客户端直接请求 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code>，用 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Authorization: Bearer &lt;你的 API Key&gt;</code> 鉴权；传输格式由客户端按 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Accept</code> 头自动选择（JSON 或 SSE）。</p>
-                  ) : (
-                    <p>SSE 流式：与 http 共用同一个端点，客户端请求头带 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">Accept: text/event-stream</code> 时，服务端以 SSE 流式返回（先发初始 result，再推送内容增量），适合联网搜索等长耗时工具。</p>
-                  )}
-                  <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；工具调用使用该 Key 归属用户的账号池。</p>
+                  <p>本地桥（npx fusionrouter-mcp）支持传<strong>本地图片路径</strong>，推荐接入方式；远程 URL 直连（<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code> + Bearer 鉴权）不支持本地图片。</p>
+                  <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；识图请求使用该 Key 归属用户的账号池。</p>
                 </div>
               </div>
             </div>
-          </Panel>
-
+          </Panel>
 
           <Panel title="工具列表" description={`${tools.length} 个工具；停用后外部客户端无法调用。`}>
             {resource.loading ? (
@@ -473,7 +415,7 @@ export function McpPage() {
                     <TableHead className="px-4">名称</TableHead>
                     <TableHead>类型</TableHead>
                     <TableHead>描述</TableHead>
-                    <TableHead>模型配置</TableHead>
+                    <TableHead>识图模型</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead className="px-4 text-right">操作</TableHead>
                   </TableRow>
@@ -518,7 +460,7 @@ export function McpPage() {
                             <Pencil data-icon="inline-start" />
                             编辑
                           </Button>
-                          {tool.toolType === "describe_image" || tool.toolType === "web_search" ? (
+                          {tool.toolType === "describe_image" ? (
                             <Button variant="outline" size="sm" onClick={() => openTest(tool)}>
                               <Sparkles data-icon="inline-start" />
                               测试
@@ -541,14 +483,14 @@ export function McpPage() {
       <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open && !saving) setEditing(null); }}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{isSearchTool ? "编辑搜索配置" : "编辑识图配置"}</DialogTitle>
-            <DialogDescription>{editing ? `${editing.name}（${editing.toolType}）` : ""} — 配置{isSearchTool ? "联网搜索使用的" : "识图使用的"}模型与推理参数。</DialogDescription>
+            <DialogTitle>编辑识图配置</DialogTitle>
+            <DialogDescription>{editing ? `${editing.name}（${editing.toolType}）` : ""} — 配置识图使用的模型与推理参数。</DialogDescription>
           </DialogHeader>
           <form id="mcp-edit-form" onSubmit={(event) => void saveConfig(event)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="mcp-provider">{isSearchTool ? "搜索 Provider" : "识图 Provider"}</Label>
+              <Label htmlFor="mcp-provider">识图 Provider</Label>
               <Select value={provider || "auto"} onValueChange={(value) => { setProvider(value === "auto" ? "" : value); setModelInput(""); }}>
-                <SelectTrigger id="mcp-provider" className="w-full bg-white"><SelectValue placeholder={isSearchTool ? "选择搜索 Provider" : "选择识图 Provider"} /></SelectTrigger>
+                <SelectTrigger id="mcp-provider" className="w-full bg-white"><SelectValue placeholder="选择识图 Provider" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="auto">自动路由</SelectItem>
                   {catalogs.map((catalog) => (
@@ -559,7 +501,7 @@ export function McpPage() {
               <p className="text-[11px] leading-5 text-muted-foreground">留空表示自动路由；选择 Provider 后，下方模型下拉会更新为该 Provider 的模型列表。</p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="mcp-model">{isSearchTool ? "搜索模型" : "识图模型"}</Label>
+              <Label htmlFor="mcp-model">识图模型</Label>
               <Select value={modelInput || undefined} onValueChange={setModelInput}>
                 <SelectTrigger id="mcp-model" className="w-full bg-white"><SelectValue placeholder={provider ? "选择模型或手动输入模型名" : "自动路由下请直接输入模型名"} /></SelectTrigger>
                 <SelectContent>
@@ -571,16 +513,12 @@ export function McpPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Input value={modelInput} onChange={(event) => setModelInput(event.target.value)} placeholder={isSearchTool ? "例如 deepseek-v4-flash" : "例如 minimax-m3 / qwen3.7-plus"} className="font-mono text-xs" aria-label="自定义模型名" />
-              <p className="text-[11px] leading-5 text-muted-foreground">
-                {isSearchTool
-                  ? "下拉列出该 Provider 的全部模型；联网搜索需要 Provider 支持 web_search 内置工具（如 DeepSeek 的 deepseek-v4-flash）。"
-                  : "下拉只列出已验证可识图的多模态模型（minimax-m3、qwen3.7-plus）；如确有特殊模型需求，可在下方直接输入模型名（必填）。"}
-              </p>
+              <Input value={modelInput} onChange={(event) => setModelInput(event.target.value)} placeholder="例如 minimax-m3 / qwen3.7-plus" className="font-mono text-xs" aria-label="自定义模型名" />
+              <p className="text-[11px] leading-5 text-muted-foreground">下拉只列出已验证可识图的多模态模型（minimax-m3、qwen3.7-plus）；如确有特殊模型需求，可在下方直接输入模型名（必填）。</p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="mcp-prompt">{isSearchTool ? "默认搜索指令（可选）" : "默认提示词（可选）"}</Label>
-              <Textarea id="mcp-prompt" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={isSearchTool ? "留空则使用调用方传入的搜索问题；例如：请基于联网搜索结果回答用户的问题，并注明信息来源" : "留空则使用调用方 AI 传入的问题；调用方也未传时模型直接看图回答"} />
+              <Label htmlFor="mcp-prompt">默认提示词（可选）</Label>
+              <Textarea id="mcp-prompt" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="留空则使用调用方 AI 传入的问题；调用方也未传时模型直接看图回答" />
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
@@ -629,81 +567,65 @@ export function McpPage() {
       <Dialog open={Boolean(testing)} onOpenChange={(open) => { if (!open && !testLoading) setTesting(null); }}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{testing?.toolType === "web_search" ? "测试搜索" : "测试识图"}</DialogTitle>
-            <DialogDescription>{testing ? `${testing.name}（${testing.toolType}）` : ""} — {testing?.toolType === "web_search" ? "输入搜索问题，验证联网搜索效果。" : "提交一张图片，验证模型识别效果。"}</DialogDescription>
+            <DialogTitle>测试识图</DialogTitle>
+            <DialogDescription>{testing ? `${testing.name}（${testing.toolType}）` : ""} — 提交一张图片，验证模型识别效果。</DialogDescription>
           </DialogHeader>
           <form id="mcp-test-form" onSubmit={(event) => void runTest(event)} className="space-y-4">
-            {testing?.toolType === "web_search" ? (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="mcp-test-query">搜索问题</Label>
-                  <Textarea id="mcp-test-query" rows={3} value={testQuery} onChange={(event) => setTestQuery(event.target.value)} placeholder="输入要搜索的问题或关键词，例如：2026年奥运会主办城市是哪里？" />
-                  <p className="text-[11px] leading-5 text-muted-foreground">将使用配置的 Provider+模型通过 responses API 执行实时联网搜索。</p>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="mcp-test-prompt">附加指令（可选）</Label>
-                  <Textarea id="mcp-test-prompt" rows={2} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} placeholder="留空则使用默认搜索指令；例如：请用中文回答并注明信息来源" />
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="space-y-2">
-                  <Label>图片（可多张）</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      className="font-mono text-xs"
-                      value={testUrlInput}
-                      onChange={(event) => setTestUrlInput(event.target.value)}
-                      onPaste={onTestPaste}
-                      onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addTestUrl(); } }}
-                      placeholder="粘贴图片或输入 URL，回车添加；也支持 Ctrl+V 直接粘贴剪贴板截图"
-                    />
-                    <Button type="button" variant="outline" size="icon" className="shrink-0" onClick={addTestUrl} aria-label="添加图片 URL">
-                      <Upload />
-                    </Button>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Input
-                      id="mcp-test-file"
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      onChange={onTestFileChange}
-                      className="h-auto w-auto py-1.5 text-xs"
-                    />
-                    <span className="text-[11px] leading-5 text-muted-foreground">可多选上传；在输入框内 Ctrl+V 粘贴截图，支持一次粘贴多张。</span>
-                  </div>
-                  {testImages.length ? (
-                    <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-                      {testImages.map((src, index) => (
-                        <div key={`${index}-${src.slice(0, 24)}`} className="group relative aspect-square overflow-hidden rounded-md border bg-muted/30">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={src} alt={`图片 ${index + 1}`} className="h-full w-full object-cover" />
-                          <button
-                            type="button"
-                            onClick={() => removeTestImage(index)}
-                            className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
-                            aria-label={`移除图片 ${index + 1}`}
-                          >
-                            <X className="size-3" />
-                          </button>
-                          <span className="absolute bottom-1 left-1 rounded-sm bg-black/50 px-1 text-[10px] text-white">{index + 1}</span>
-                        </div>
-                      ))}
+            <div className="space-y-2">
+              <Label>图片（可多张）</Label>
+              <div className="flex gap-2">
+                <Input
+                  className="font-mono text-xs"
+                  value={testUrlInput}
+                  onChange={(event) => setTestUrlInput(event.target.value)}
+                  onPaste={onTestPaste}
+                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addTestUrl(); } }}
+                  placeholder="粘贴图片或输入 URL，回车添加；也支持 Ctrl+V 直接粘贴剪贴板截图"
+                />
+                <Button type="button" variant="outline" size="icon" className="shrink-0" onClick={addTestUrl} aria-label="添加图片 URL">
+                  <Upload />
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  id="mcp-test-file"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={onTestFileChange}
+                  className="h-auto w-auto py-1.5 text-xs"
+                />
+                <span className="text-[11px] leading-5 text-muted-foreground">可多选上传；在输入框内 Ctrl+V 粘贴截图，支持一次粘贴多张。</span>
+              </div>
+              {testImages.length ? (
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                  {testImages.map((src, index) => (
+                    <div key={`${index}-${src.slice(0, 24)}`} className="group relative aspect-square overflow-hidden rounded-md border bg-muted/30">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={src} alt={`图片 ${index + 1}`} className="h-full w-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => removeTestImage(index)}
+                        className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-label={`移除图片 ${index + 1}`}
+                      >
+                        <X className="size-3" />
+                      </button>
+                      <span className="absolute bottom-1 left-1 rounded-sm bg-black/50 px-1 text-[10px] text-white">{index + 1}</span>
                     </div>
-                  ) : null}
+                  ))}
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="mcp-test-prompt">提示词（可选）</Label>
-                  <Textarea id="mcp-test-prompt" rows={2} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} placeholder="留空则不附带提示词，模型直接看图回答；多图时可在这里说明对比/分析要求" />
-                </div>
-              </>
-            )}
+              ) : null}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mcp-test-prompt">提示词（可选）</Label>
+              <Textarea id="mcp-test-prompt" rows={2} value={testPrompt} onChange={(event) => setTestPrompt(event.target.value)} placeholder="留空则不附带提示词，模型直接看图回答；多图时可在这里说明对比/分析要求" />
+            </div>
             {testError ? <p className="text-sm text-destructive" role="alert">{testError}</p> : null}
             {testResult ? (
               <div className="space-y-2 rounded-lg border bg-[#fbfbfa] p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-sm bg-success-soft px-1.5 py-0.5 text-[10px] text-success">{testing?.toolType === "web_search" ? "搜索完成" : "识别完成"}</span>
+                  <span className="rounded-sm bg-success-soft px-1.5 py-0.5 text-[10px] text-success">识别完成</span>
                   {testResult.model ? <Badge variant="outline" className="font-mono text-[11px]">{testResult.model}</Badge> : null}
                 </div>
                 <pre className="max-h-72 overflow-y-auto text-xs leading-6 whitespace-pre-wrap break-words">{testResult.text || "（没有返回文本）"}</pre>
@@ -714,7 +636,7 @@ export function McpPage() {
             <Button variant="outline" onClick={() => setTesting(null)} disabled={testLoading}>关闭</Button>
             <Button type="submit" form="mcp-test-form" disabled={testLoading}>
               {testLoading ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-              {testLoading ? (testing?.toolType === "web_search" ? "搜索中" : "识别中") : (testing?.toolType === "web_search" ? "运行搜索" : "运行识图")}
+              {testLoading ? "识别中" : "运行识图"}
             </Button>
           </DialogFooter>
         </DialogContent>

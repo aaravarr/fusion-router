@@ -4,7 +4,7 @@ import { injectDefaultServerTools, normalizeToolsInBody } from "./tool-schema"
 import { prepareResponsesRequestBody, rememberResponsesTurn } from "./pipeline"
 import { buildChatFallbackFromResponsesWithContext } from "./responses-fallback"
 import { responseToolCallItemFromChatName } from "./codex-chat-compat"
-import { sanitizeResponsesInputItems, reorderResponsesInputItems, rememberConversationTurn, extractContinuityKeysFromRequest, loadConversationReasoning } from "./conversation-store"
+import { sanitizeResponsesInputItems, rememberConversationTurn, extractContinuityKeysFromRequest, loadConversationReasoning } from "./conversation-store"
 import { shouldEagerFallbackResponses } from "./responses-fallback"
 
 describe("sanitizeResponsesInputItems 归一化历史消息 part", () => {
@@ -291,71 +291,5 @@ describe("namespace tools survive chat fallback", () => {
       ctx: converted.toolContext,
     })
     expect(item).toMatchObject({ type: "function_call", name: "spawn_agent", namespace: "multi_agent_v1" })
-  })
-})
-
-describe("reorderResponsesInputItems 重排 function_call 配对", () => {
-  it("function_call 与 output 之间夹 message 时重排为相邻", () => {
-    const { body, modified } = reorderResponsesInputItems({
-      input: [
-        { type: "function_call", call_id: "call_1", name: "calc", arguments: "{}" },
-        { type: "message", role: "assistant", content: [{ type: "output_text", text: "正在计算" }] },
-        { type: "function_call_output", call_id: "call_1", output: "2" },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "结果" }] },
-      ],
-    })
-    expect(modified).toBe(true)
-    const input = (body as any).input as Array<{ type: string; call_id?: string }>
-    const types = input.map((i) => i.type)
-    expect(types).toEqual(["function_call", "function_call_output", "message", "message"])
-    expect(input[0].call_id).toBe("call_1")
-    expect(input[1].call_id).toBe("call_1")
-  })
-
-  it("并行多个 call 且 output 交错时拆成相邻组", () => {
-    const { body, modified } = reorderResponsesInputItems({
-      input: [
-        { type: "function_call", call_id: "call_a", name: "a", arguments: "{}" },
-        { type: "function_call", call_id: "call_b", name: "b", arguments: "{}" },
-        { type: "message", role: "assistant", content: [{ type: "output_text", text: "并行中" }] },
-        { type: "function_call_output", call_id: "call_a", output: "A" },
-        { type: "function_call_output", call_id: "call_b", output: "B" },
-      ],
-    })
-    expect(modified).toBe(true)
-    const input = (body as any).input as Array<{ type: string; call_id?: string }>
-    const types = input.map((i) => i.type)
-    // call_a 与其 output 相邻，call_b 与其 output 相邻，message 移到末尾
-    expect(types).toEqual(["function_call", "function_call_output", "function_call", "function_call_output", "message"])
-    expect(input[0].call_id).toBe("call_a")
-    expect(input[1].call_id).toBe("call_a")
-    expect(input[2].call_id).toBe("call_b")
-    expect(input[3].call_id).toBe("call_b")
-  })
-
-  it("已相邻的配对保持不变（modified=false）", () => {
-    const { body, modified } = reorderResponsesInputItems({
-      input: [
-        { type: "function_call", call_id: "call_1", name: "calc", arguments: "{}" },
-        { type: "function_call_output", call_id: "call_1", output: "2" },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "结果" }] },
-      ],
-    })
-    expect(modified).toBe(false)
-    const input = (body as any).input as Array<{ type: string }>
-    expect(input.map((i) => i.type)).toEqual(["function_call", "function_call_output", "message"])
-  })
-
-  it("未配对的 function_call 被丢弃，其余正常", () => {
-    const { body, modified } = reorderResponsesInputItems({
-      input: [
-        { type: "function_call", call_id: "call_1", name: "calc", arguments: "{}" },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
-      ],
-    })
-    expect(modified).toBe(true)
-    const input = (body as any).input as Array<{ type: string }>
-    // call_1 无 output → 丢弃，message 保留
-    expect(input.map((i) => i.type)).toEqual(["message"])
   })
 })

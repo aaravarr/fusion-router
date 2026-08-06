@@ -2,13 +2,8 @@ import { randomUUID } from "node:crypto"
 import type { AppDatabase } from "@/server/db"
 
 export const DEFAULT_DESCRIBE_IMAGE_PROMPT = ""
-export const DEFAULT_WEB_SEARCH_PROMPT = "请基于联网搜索结果回答用户的问题，并注明信息来源。"
 
-/**
- * MCP 工具通用配置：与 describe_image 共用字段，保持兼容。
- * web_search 中 prompt 用作"搜索指令"。
- */
-export interface McpToolConfig {
+export interface DescribeImageConfig {
   poolType: string | null
   model: string
   prompt: string
@@ -18,16 +13,13 @@ export interface McpToolConfig {
   reasoningEffort: "low" | "medium" | "high" | null
 }
 
-/** 向后兼容：旧的 DescribeImageConfig 即通用 McpToolConfig。 */
-export type DescribeImageConfig = McpToolConfig
-
 export interface McpToolRecord {
   id: string
   toolType: string
   name: string
   description: string
   enabled: boolean
-  config: McpToolConfig
+  config: DescribeImageConfig
   createdAt: string
   updatedAt: string
 }
@@ -37,7 +29,7 @@ export interface McpToolDefinition {
   name: string
   description: string
   inputSchema: Record<string, unknown>
-  defaultConfig: McpToolConfig
+  defaultConfig: DescribeImageConfig
 }
 
 export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
@@ -73,32 +65,6 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       reasoningEffort: null,
     },
   },
-  {
-    toolType: "web_search",
-    name: "web_search",
-    description: "联网搜索工具：使用配置的 Provider+模型执行实时网络搜索并返回结果",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "搜索问题或关键词" },
-        prompt: {
-          type: "string",
-          description: "可选：本次调用的附加指令；不传则使用默认提示词",
-        },
-      },
-      required: ["query"],
-      additionalProperties: false,
-    },
-    defaultConfig: {
-      poolType: null,
-      model: "",
-      prompt: DEFAULT_WEB_SEARCH_PROMPT,
-      maxTokens: 2048,
-      temperature: 0.3,
-      reasoningEnabled: false,
-      reasoningEffort: null,
-    },
-  },
 ]
 
 interface McpToolRow {
@@ -112,7 +78,7 @@ interface McpToolRow {
   updated_at: string
 }
 
-function defaultConfigFor(toolType: string): McpToolConfig {
+function defaultConfigFor(toolType: string): DescribeImageConfig {
   return (
     MCP_TOOL_DEFINITIONS.find((definition) => definition.toolType === toolType)?.defaultConfig ?? {
       poolType: null,
@@ -127,9 +93,9 @@ function defaultConfigFor(toolType: string): McpToolConfig {
 }
 
 function rowToRecord(row: McpToolRow): McpToolRecord {
-  let config: McpToolConfig
+  let config: DescribeImageConfig
   try {
-    config = JSON.parse(row.config_json) as McpToolConfig
+    config = JSON.parse(row.config_json) as DescribeImageConfig
   } catch {
     config = defaultConfigFor(row.tool_type)
   }
@@ -179,7 +145,7 @@ export function getMcpTool(toolType: string, db: AppDatabase): McpToolRecord | n
 
 export function updateMcpTool(
   toolType: string,
-  input: { name?: string; description?: string; enabled?: boolean; config?: Partial<McpToolConfig> },
+  input: { name?: string; description?: string; enabled?: boolean; config?: Partial<DescribeImageConfig> },
   db: AppDatabase,
 ): McpToolRecord {
   const existing = getMcpTool(toolType, db)

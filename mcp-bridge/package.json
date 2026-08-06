@@ -12,7 +12,7 @@
     "stdio",
     "opencode"
   ],
-  "description": "本地 stdio MCP 桥：动态透传远程 opencode-api 的 MCP 工具（describe_image 识图 / web_search 联网搜索），本地图片路径自动转 data URI",
+  "description": "本地 stdio MCP 桥：让 Claude Desktop / Cursor / Codex 通过本地图片路径或 URL 调用远程 opencode-api 识图",
   "bin": {
     "fusionrouter-mcp": "index.mjs"
   },
@@ -23,9 +23,9 @@
     "install.mjs",
     "README.md"
   ],
-  "version": "0.1.6",
+  "version": "0.1.3",
   "scripts": {
-    "test": "node --test ./install.test.mjs ./lib.test.mjs ./index.test.mjs"
+    "test": "node --test ./install.test.mjs ./lib.test.mjs"
   },
   "license": "MIT"
 }
