@@ -13,13 +13,23 @@ export interface DescribeImageConfig {
   reasoningEffort: "low" | "medium" | "high" | null
 }
 
+export interface DeepseekWebSearchConfig {
+  /** 明确指定的 Provider（poolType，内置或自定义）；不做按模型自动路由。 */
+  provider: string | null
+  model: string
+  maxTokens: number
+  temperature: number
+}
+
+export type McpToolConfig = DescribeImageConfig | DeepseekWebSearchConfig
+
 export interface McpToolRecord {
   id: string
   toolType: string
   name: string
   description: string
   enabled: boolean
-  config: DescribeImageConfig
+  config: McpToolConfig
   createdAt: string
   updatedAt: string
 }
@@ -29,7 +39,7 @@ export interface McpToolDefinition {
   name: string
   description: string
   inputSchema: Record<string, unknown>
-  defaultConfig: DescribeImageConfig
+  defaultConfig: McpToolConfig
 }
 
 export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
@@ -65,6 +75,28 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       reasoningEffort: null,
     },
   },
+  {
+    toolType: "deepseek_web_search",
+    name: "deepseek_web_search",
+    description: "网页搜索工具：把内容交给配置的 Provider 模型，调用其原生 web search 能力，把搜索结果原样返回",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "string",
+          description: "要搜索的内容/问题；模型会调用原生 web search 获取结果",
+        },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+    defaultConfig: {
+      provider: null,
+      model: "",
+      maxTokens: 1024,
+      temperature: 0.3,
+    },
+  },
 ]
 
 interface McpToolRow {
@@ -78,7 +110,7 @@ interface McpToolRow {
   updated_at: string
 }
 
-function defaultConfigFor(toolType: string): DescribeImageConfig {
+function defaultConfigFor(toolType: string): McpToolConfig {
   return (
     MCP_TOOL_DEFINITIONS.find((definition) => definition.toolType === toolType)?.defaultConfig ?? {
       poolType: null,
@@ -93,7 +125,7 @@ function defaultConfigFor(toolType: string): DescribeImageConfig {
 }
 
 function rowToRecord(row: McpToolRow): McpToolRecord {
-  let config: DescribeImageConfig
+  let config: McpToolConfig
   try {
     config = JSON.parse(row.config_json) as DescribeImageConfig
   } catch {
@@ -145,7 +177,12 @@ export function getMcpTool(toolType: string, db: AppDatabase): McpToolRecord | n
 
 export function updateMcpTool(
   toolType: string,
-  input: { name?: string; description?: string; enabled?: boolean; config?: Partial<DescribeImageConfig> },
+  input: {
+    name?: string
+    description?: string
+    enabled?: boolean
+    config?: Partial<DescribeImageConfig> & Partial<DeepseekWebSearchConfig>
+  },
   db: AppDatabase,
 ): McpToolRecord {
   const existing = getMcpTool(toolType, db)
@@ -167,13 +204,20 @@ export function updateMcpTool(
         throw new Error("temperature 必须是 0 到 2 之间的数字")
       }
     }
-    if ("reasoningEnabled" in input.config && typeof input.config.reasoningEnabled !== "boolean") {
-      throw new Error("reasoningEnabled 必须是布尔值")
-    }
-    if ("reasoningEffort" in input.config) {
-      const value = input.config.reasoningEffort
-      if (value !== null && value !== "low" && value !== "medium" && value !== "high") {
-        throw new Error("reasoningEffort 必须是 low、medium、high 之一或 null")
+    if (existing.toolType === "deepseek_web_search") {
+      // 搜索工具必须明确指定 Provider，不允许自动路由
+      if ("provider" in input.config && input.config.provider !== null && typeof input.config.provider !== "string") {
+        throw new Error("provider 必须是字符串或 null")
+      }
+    } else {
+      if ("reasoningEnabled" in input.config && typeof input.config.reasoningEnabled !== "boolean") {
+        throw new Error("reasoningEnabled 必须是布尔值")
+      }
+      if ("reasoningEffort" in input.config) {
+        const value = input.config.reasoningEffort
+        if (value !== null && value !== "low" && value !== "medium" && value !== "high") {
+          throw new Error("reasoningEffort 必须是 low、medium、high 之一或 null")
+        }
       }
     }
   }

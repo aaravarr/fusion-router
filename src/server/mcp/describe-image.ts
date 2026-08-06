@@ -86,7 +86,7 @@ function buildDescribeRequestBody(
 
   const definition = MCP_TOOL_DEFINITIONS.find((item) => item.toolType === "describe_image")
   const defaultConfig: DescribeImageConfig =
-    definition?.defaultConfig ?? {
+    (definition?.defaultConfig as DescribeImageConfig | undefined) ?? {
       poolType: null,
       model: "",
       prompt: "",
@@ -95,7 +95,7 @@ function buildDescribeRequestBody(
       reasoningEnabled: false,
       reasoningEffort: null,
     }
-  const config: DescribeImageConfig = { ...defaultConfig, ...tool.config }
+  const config: DescribeImageConfig = { ...defaultConfig, ...(tool.config as DescribeImageConfig) }
   if (!config.model) throw new Error("尚未配置识图模型，请先在管理后台 MCP 页面选择模型")
 
   const promptText = (input.prompt ?? config.prompt ?? "").trim()

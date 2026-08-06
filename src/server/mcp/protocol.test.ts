@@ -9,6 +9,7 @@ import { ApiKeyHasher } from "@/server/crypto"
 import { getSystemSecret, initializeSystemSettings } from "@/server/settings"
 import { ensureDefaultMcpTools } from "./mcp-tools"
 import { describeImage, describeImageStream } from "./describe-image"
+import { deepseekWebSearch } from "./deepseek-web-search"
 import {
   authenticateMcpRequest,
   handleMcpRequest,
@@ -21,8 +22,13 @@ vi.mock("./describe-image", () => ({
   describeImageStream: vi.fn(),
 }))
 
+vi.mock("./deepseek-web-search", () => ({
+  deepseekWebSearch: vi.fn(),
+}))
+
 const mockedDescribeImage = vi.mocked(describeImage)
 const mockedDescribeImageStream = vi.mocked(describeImageStream)
+const mockedDeepseekWebSearch = vi.mocked(deepseekWebSearch)
 
 let db: AppDatabase
 let directory: string
@@ -89,13 +95,19 @@ describe("MCP protocol", () => {
       ownerUserId: "user-1",
     })
     const body = await response.json()
-    expect(body.result.tools).toHaveLength(1)
+    expect(body.result.tools).toHaveLength(2)
     const describeImageTool = body.result.tools.find((tool: { name: string }) => tool.name === "describe_image")
     expect(describeImageTool).toMatchObject({
       name: "describe_image",
       inputSchema: { type: "object" },
     })
     expect(describeImageTool!.inputSchema.required).toContain("image")
+    const webSearchTool = body.result.tools.find((tool: { name: string }) => tool.name === "deepseek_web_search")
+    expect(webSearchTool).toMatchObject({
+      name: "deepseek_web_search",
+      inputSchema: { type: "object" },
+    })
+    expect(webSearchTool!.inputSchema.required).toContain("content")
   })
 
   it("tools/call describe_image 成功返回内容", async () => {
@@ -174,6 +186,62 @@ describe("MCP protocol", () => {
     const body = await response.json()
     expect(body.result.content).toEqual([{ type: "text", text: "图片描述" }])
     expect(mockedDescribeImageStream).not.toHaveBeenCalled()
+  })
+
+  it("tools/call deepseek_web_search 成功返回内容", async () => {
+    mockedDeepseekWebSearch.mockResolvedValue({ text: "根据搜索结果……", model: "deepseek-v4-flash", accountName: null })
+    const response = await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: { name: "deepseek_web_search", arguments: { content: "比特币当前价格" } },
+      },
+      db,
+      { ownerUserId: "user-1" },
+    )
+    const body = await response.json()
+    expect(body.error).toBeUndefined()
+    expect(body.result.content).toEqual([{ type: "text", text: "根据搜索结果……" }])
+    expect(mockedDeepseekWebSearch).toHaveBeenCalledWith(
+      { content: "比特币当前价格" },
+      db,
+      { ownerUserId: "user-1" },
+      undefined,
+    )
+  })
+
+  it("tools/call deepseek_web_search 内容为空返回 isError", async () => {
+    const response = await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 9,
+        method: "tools/call",
+        params: { name: "deepseek_web_search", arguments: { content: "  " } },
+      },
+      db,
+      { ownerUserId: "user-1" },
+    )
+    const body = await response.json()
+    expect(body.result.isError).toBe(true)
+    expect(mockedDeepseekWebSearch).not.toHaveBeenCalled()
+  })
+
+  it("tools/call deepseek_web_search 执行错误在成功信封内返回 isError", async () => {
+    mockedDeepseekWebSearch.mockRejectedValue(new Error("未配置 Provider：请先在管理后台 MCP 页面选择 Provider"))
+    const response = await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: { name: "deepseek_web_search", arguments: { content: "测试" } },
+      },
+      db,
+      { ownerUserId: "user-1" },
+    )
+    const body = await response.json()
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toContain("Provider")
   })
 
   it("tools/call 未知工具返回 -32602", async () => {

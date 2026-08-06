@@ -6,6 +6,8 @@ import {
   getMcpTool,
   listMcpTools,
   updateMcpTool,
+  type DeepseekWebSearchConfig,
+  type DescribeImageConfig,
 } from "./mcp-tools"
 
 let db: AppDatabase
@@ -47,6 +49,46 @@ describe("mcp tools", () => {
     expect(listMcpTools(db).length).toBe(before)
   })
 
+  it("ensureDefaultMcpTools 初始化 deepseek_web_search 默认配置且幂等", () => {
+    ensureDefaultMcpTools(db)
+    const tool = getMcpTool("deepseek_web_search", db)
+    expect(tool).not.toBeNull()
+    expect(tool!.name).toBe("deepseek_web_search")
+    expect(tool!.description).toContain("网页搜索")
+    expect(tool!.enabled).toBe(true)
+    expect(tool!.config).toEqual({
+      provider: null,
+      model: "",
+      maxTokens: 1024,
+      temperature: 0.3,
+    })
+
+    const before = listMcpTools(db).length
+    ensureDefaultMcpTools(db)
+    expect(listMcpTools(db).length).toBe(before)
+  })
+
+  it("deepseek_web_search 支持配置 provider 并校验字段", () => {
+    ensureDefaultMcpTools(db)
+    const updated = updateMcpTool(
+      "deepseek_web_search",
+      { config: { provider: "custom:deepseek-official", model: "deepseek-v4-flash", maxTokens: 2048 } },
+      db,
+    )
+    expect((updated.config as DeepseekWebSearchConfig).provider).toBe("custom:deepseek-official")
+    expect((updated.config as DeepseekWebSearchConfig).model).toBe("deepseek-v4-flash")
+    expect((updated.config as DeepseekWebSearchConfig).maxTokens).toBe(2048)
+    // 未提供的字段保持原值
+    expect((updated.config as DeepseekWebSearchConfig).temperature).toBe(0.3)
+  })
+
+  it("deepseek_web_search 拒绝非法 provider", () => {
+    ensureDefaultMcpTools(db)
+    expect(() =>
+      updateMcpTool("deepseek_web_search", { config: { provider: 123 as unknown as string } }, db),
+    ).toThrow(/provider/)
+  })
+
   it("updateMcpTool 合并配置并校验字段", () => {
     ensureDefaultMcpTools(db)
     const updated = updateMcpTool(
@@ -60,16 +102,16 @@ describe("mcp tools", () => {
     )
     expect(updated.description).toBe("新描述")
     expect(updated.enabled).toBe(false)
-    expect(updated.config.model).toBe("grok-4")
-    expect(updated.config.maxTokens).toBe(2048)
+    expect((updated.config as DescribeImageConfig).model).toBe("grok-4")
+    expect((updated.config as DescribeImageConfig).maxTokens).toBe(2048)
     // 未提供的字段保持原值
-    expect(updated.config.prompt).toBe(DEFAULT_DESCRIBE_IMAGE_PROMPT)
-    expect(updated.config.temperature).toBe(0.3)
+    expect((updated.config as DescribeImageConfig).prompt).toBe(DEFAULT_DESCRIBE_IMAGE_PROMPT)
+    expect((updated.config as DescribeImageConfig).temperature).toBe(0.3)
 
     // 继续更新会基于上次合并
     const again = updateMcpTool("describe_image", { config: { temperature: 1 } }, db)
-    expect(again.config.model).toBe("grok-4")
-    expect(again.config.temperature).toBe(1)
+    expect((again.config as DescribeImageConfig).model).toBe("grok-4")
+    expect((again.config as DescribeImageConfig).temperature).toBe(1)
   })
 
   it("updateMcpTool 对非法配置抛错", () => {
