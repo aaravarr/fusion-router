@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { createDatabase } from "../db"
 import { injectDefaultServerTools, normalizeToolsInBody } from "./tool-schema"
-import { prepareResponsesRequestBody, rememberResponsesTurn } from "./pipeline"
+import { prepareChatRequestBody, prepareResponsesRequestBody, rememberResponsesTurn } from "./pipeline"
 import { buildChatFallbackFromResponsesWithContext } from "./responses-fallback"
 import { responseToolCallItemFromChatName } from "./codex-chat-compat"
 import { sanitizeResponsesInputItems, rememberConversationTurn, extractContinuityKeysFromRequest, loadConversationReasoning } from "./conversation-store"
@@ -43,6 +43,34 @@ describe("responses tool-schema", () => {
     const body = injectDefaultServerTools({ model: "grok-4.5", input: "hi" }, { enabled: true, tools: ["web_search", "x_search"] }) as any
     expect(body.tools).toEqual(expect.arrayContaining([{ type: "web_search" }, { type: "x_search" }]))
   })
+
+describe("prepareChatRequestBody developer role 归一化", () => {
+  it("把 messages 里的 developer role 映射为 system", () => {
+    const body = prepareChatRequestBody({
+      model: "minimax-m3",
+      messages: [
+        { role: "developer", content: "你是识图助手" },
+        { role: "user", content: "看看这张图" },
+      ],
+    }) as { messages: Array<{ role: string; content: string }> }
+    expect(body.messages.map((m) => m.role)).toEqual(["system", "user"])
+    // 不改写其它字段
+    expect(body.messages[0]).toEqual({ role: "system", content: "你是识图助手" })
+  })
+
+  it("没有 developer role 时原样返回", () => {
+    const input = { model: "minimax-m3", messages: [{ role: "user", content: "hi" }] }
+    const body = prepareChatRequestBody(input) as { messages: Array<{ role: string }> }
+    expect(body.messages[0].role).toBe("user")
+  })
+
+  it("非对象消息（如畸形输入）不崩溃", () => {
+    const body = prepareChatRequestBody({ model: "minimax-m3", messages: [null, "x", { role: "developer", content: "d" }] }) as { messages: unknown[] }
+    expect(body.messages[1]).toBe("x")
+    expect((body.messages[2] as { role: string }).role).toBe("system")
+  })
+})
+
 
   it("flattens nested function tools for responses mode", () => {
     const body = normalizeToolsInBody({

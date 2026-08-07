@@ -230,10 +230,26 @@ export async function prepareResponsesRequestBody(
   }
 }
 
+/**
+ * OpenAI 客户端（Codex CLI / MiniMax Code 等）常发 `developer` role，但 MiniMax
+ * Console Go 等上游只接受 system/user/assistant/tool。`developer` 与 `system`
+ * 语义等价（OpenAI 对 reasoning 模型的新叫法），统一归一化为 `system`，兼容面最广。
+ */
+function normalizeChatMessageRoles(body: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(body.messages)) return body
+  let changed = false
+  const messages = body.messages.map((message) => {
+    if (!isObj(message) || message.role !== "developer") return message
+    changed = true
+    return { ...message, role: "system" }
+  })
+  return changed ? { ...body, messages } : body
+}
+
 export function prepareChatRequestBody(body: unknown): unknown {
   const normalized = normalizeToolsInBody(body, { mode: "chat" })
   if (!isObj(normalized)) return normalized
-  const b = { ...normalized }
+  const b = normalizeChatMessageRoles(normalized)
   if (b.stream === true) {
     const prev =
       b.stream_options && typeof b.stream_options === "object"

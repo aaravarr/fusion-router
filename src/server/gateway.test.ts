@@ -329,6 +329,26 @@ describe("gateway", () => {
     expect(disabled).toEqual({ admin_state: "DISABLED", auth_state: "AUTH_ERROR", disabled_reason: "XAI_ACCOUNT_BANNED" })
   })
 
+  it("chat 请求中的 developer role 在转发前归一化为 system（MiniMax Console Go 兼容）", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ id: "ok" }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "minimax-m3",
+        messages: [
+          { role: "developer", content: "你是识图助手" },
+          { role: "user", content: "hi" },
+        ],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(200)
+    const sent = JSON.parse(new TextDecoder().decode(fetcher.mock.calls[0][1]?.body as Uint8Array)) as { messages: Array<{ role: string }> }
+    expect(sent.messages.map((m) => m.role)).toEqual(["system", "user"])
+  })
+
   it("用户停用后其统一 API key 立即失效", async () => {
     const { db, apiKey, credentials, hasher } = setup(); db.prepare("UPDATE users SET status='DISABLED' WHERE id=?").run(ownerUserId)
     const fetcher = vi.fn(); const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
