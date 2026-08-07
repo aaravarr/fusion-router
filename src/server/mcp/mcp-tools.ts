@@ -218,9 +218,10 @@ export function updateMcpTool(
         throw new Error("provider 必须是字符串或 null")
       }
       if ("reasoningEffort" in input.config) {
-        const value = input.config.reasoningEffort
+        const value = input.config.reasoningEffort as DeepseekWebSearchReasoningEffort | null | undefined
         if (
           value !== null &&
+          value !== undefined &&
           value !== "none" &&
           value !== "low" &&
           value !== "medium" &&
