@@ -71,13 +71,16 @@ function classifyGoUsageLimit(status: number, body: string): UpstreamErrorClassi
 
 // Parse the first SSE event to detect GoUsageLimitError in streaming responses.
 function classifyFirstSseEvent(chunk: string): UpstreamErrorClassification | null {
-  const lf = chunk.indexOf("\n\n")
-  const crlf = chunk.indexOf("\r\n\r\n")
-  const boundaries = [lf, crlf].filter((v) => v >= 0)
-  const event = boundaries.length ? chunk.slice(0, Math.min(...boundaries)) : chunk
-  const data = event.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n")
-  if (!data || data === "[DONE]") return null
-  return classifyGoUsageLimit(429, data)
+  const normalized = chunk.replace(/\r\n/g, "\n")
+  const parts = normalized.split("\n\n")
+  const complete = normalized.endsWith("\n\n") ? parts : parts.slice(0, -1)
+  for (const event of complete) {
+    if (!event.trim()) continue
+    const data = event.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n")
+    if (!data || data === "[DONE]") continue
+    return classifyGoUsageLimit(429, data)
+  }
+  return null
 }
 
 export { classifyGoUsageLimit, classifyFirstSseEvent }

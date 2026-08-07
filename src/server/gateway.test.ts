@@ -186,6 +186,19 @@ describe("gateway", () => {
     expect(db.prepare("SELECT COUNT(*) AS value FROM gateway_attempts").get()).toEqual({ value: 0 })
   })
 
+  it("OpenCode 前导空 SSE 帧后的额度错误仍能切号", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const encoder = new TextEncoder()
+    const event = "\n\n\n\n" + `data: ${JSON.stringify({ error: { type: "GoUsageLimitError", message: "blank-prefix-quota" }, metadata: { limitName: "weekly" } })}\n\n`
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(event)); controller.close() } })
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(stream, { headers: { "content-type": "text/event-stream", "retry-after": "60" } }))
+      .mockResolvedValueOnce(Response.json({ id: "ok" }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
   it("超过 64K 的首个 SSE 额度事件跨 chunk 时仍完整保存并内部切号", async () => {
     const { db, apiKey, credentials, hasher } = setup()
     const encoder = new TextEncoder()

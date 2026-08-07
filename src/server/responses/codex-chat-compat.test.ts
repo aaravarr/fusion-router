@@ -153,4 +153,48 @@ describe("responses to chat reasoning replay", () => {
     const messages = body.messages as Array<Record<string, unknown>>
     expect(messages.some((m) => typeof m.reasoning_content === "string")).toBe(false)
   })
+
+  it("merges assistant content + function_call into one DeepSeek tool message", () => {
+    const { body } = responsesToChatCompletions({
+      model: "deepseek-v4-flash",
+      input: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "need weather tool" }] },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Let me check the weather." }],
+        },
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "get_weather", arguments: "{\"city\":\"HZ\"}" },
+        { type: "function_call_output", call_id: "call_1", output: "cloudy" },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "thanks" }] },
+      ],
+    })
+    const messages = body.messages as Array<Record<string, unknown>>
+    const assistants = messages.filter((m) => m.role === "assistant")
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].content).toBe("Let me check the weather.")
+    expect(assistants[0].reasoning_content).toBe("need weather tool")
+    expect(Array.isArray(assistants[0].tool_calls)).toBe(true)
+    expect((assistants[0].tool_calls as unknown[]).length).toBe(1)
+  })
+})
+
+describe("chat stream id stability", () => {
+  it("keeps response.created id when later chunks change chat completion id", async () => {
+    const source = [
+      'data: {"id":"chat_a","choices":[{"delta":{"content":"hi"}}]}\n\n',
+      'data: {"id":"chat_b","choices":[{"delta":{"content":"!"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ]
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const value of source) controller.enqueue(new TextEncoder().encode(value))
+        controller.close()
+      },
+    })
+    const output = await new Response(transformChatSseToResponsesSse(stream)).text()
+    expect(output).toContain('"id":"resp_chat_a"')
+    expect(output).not.toContain('"id":"resp_chat_b"')
+    expect(output).toContain('"type":"response.completed"')
+  })
 })

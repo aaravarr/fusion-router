@@ -208,6 +208,7 @@ export function normalizeOpenCodeGoResponsesSse(stream: ReadableStream<Uint8Arra
                 ensureStarted(controller, isObj(parsed.response) ? parsed.response.model : undefined, isObj(parsed.response) ? parsed.response.id : parsed.id)
                 ensureMessage(controller, parsed.item_id)
                 if (typeof parsed.text === "string") text = parsed.text
+                messageDone = true
                 emit(controller, type, parsed)
                 continue
               }

@@ -468,16 +468,31 @@ type ReasoningQueue = Array<{ reasoning_content: string }>;
 
 function flushPendingToolCalls(messages: Obj[], pending: PendingToolCall[], reasoningQueue: ReasoningQueue = []) {
   if (!pending.length) return;
-  const message: Obj = {
-    role: 'assistant',
-    content: null,
-    tool_calls: pending.map((tc) => clone(tc)),
-  };
-  const reasoning = reasoningQueue.shift();
-  if (reasoning && typeof reasoning.reasoning_content === 'string' && reasoning.reasoning_content.trim()) {
-    message.reasoning_content = reasoning.reasoning_content;
+  // DeepSeek thinking + tools requires a SINGLE assistant message carrying
+  // content + tool_calls + reasoning_content. Responses splits that turn into
+  // a message item followed by function_call items; merge them back here.
+  const last = messages.length ? messages[messages.length - 1] : null;
+  const canMerge =
+    isObj(last) &&
+    last.role === 'assistant' &&
+    !Array.isArray(last.tool_calls);
+  const message: Obj = canMerge
+    ? last
+    : {
+        role: 'assistant',
+        content: null,
+      };
+  message.tool_calls = pending.map((tc) => clone(tc));
+  if (!canMerge) messages.push(message);
+  if (typeof message.reasoning_content !== 'string' || !message.reasoning_content.trim()) {
+    const reasoning = reasoningQueue.shift();
+    if (reasoning && typeof reasoning.reasoning_content === 'string' && reasoning.reasoning_content.trim()) {
+      message.reasoning_content = reasoning.reasoning_content;
+    }
+  } else if (reasoningQueue.length) {
+    // Client already attached reasoning on the content message; drop one queued copy.
+    reasoningQueue.shift();
   }
-  messages.push(message);
   pending.length = 0;
 }
 
@@ -664,9 +679,16 @@ export function responsesToChatCompletions(
   const src = isObj(responsesBody) ? responsesBody : {};
   const toolContext = buildCodexToolContextFromRequest(src);
   const messages: Obj[] = [];
-  const reasoningQueue: ReasoningQueue = Array.isArray(opts?.reasoningItems)
-    ? opts.reasoningItems.map((item) => ({ reasoning_content: item.reasoning_content }))
-    : [];
+  const inputItems = Array.isArray(src.input) ? src.input : src.input != null ? [src.input] : [];
+  const clientHasReasoning = inputItems.some(
+    (item) => isObj(item) && String(item.type || '').toLowerCase().includes('reasoning'),
+  );
+  // Prefer client-supplied reasoning items; only seed from store when absent to
+  // avoid double-attaching reasoning_content on DeepSeek tool turns.
+  const reasoningQueue: ReasoningQueue =
+    !clientHasReasoning && Array.isArray(opts?.reasoningItems)
+      ? opts.reasoningItems.map((item) => ({ reasoning_content: item.reasoning_content }))
+      : [];
 
   if (typeof src.instructions === 'string' && src.instructions.trim()) {
     messages.push({ role: 'system', content: src.instructions });
@@ -675,7 +697,6 @@ export function responsesToChatCompletions(
   // Codex usually sends full history in input. Prepending our stored transcript
   // double-counts history and DESTROYS prompt-cache prefix stability.
   // Only use stored messages when client input is empty/minimal.
-  const inputItems = Array.isArray(src.input) ? src.input : src.input != null ? [src.input] : [];
   const clientHasHistory = inputItems.length > 0;
   if (!clientHasHistory) {
     for (const m of storedMessages || []) {
@@ -1146,9 +1167,13 @@ export function transformChatSseToResponsesSse(
             }
             try {
               const obj = JSON.parse(data);
-              if (typeof obj?.id === 'string') {
+              // Lock response id from the first chunk only. Mid-stream id changes
+              // (cost trailers / proxy rewrites) would desync created vs completed
+              // and cause Codex clients to abort the SSE session.
+              if (!started && typeof obj?.id === 'string') {
                 responseId = obj.id.startsWith('resp_') ? obj.id : 'resp_' + obj.id;
-                if (!messageAdded) messageId = 'msg_' + responseId;
+                messageId = 'msg_' + responseId;
+                reasoningId = 'reasoning_' + responseId;
               }
               if (obj?.usage && typeof obj.usage === 'object') usageRaw = obj.usage;
               const choice = Array.isArray(obj?.choices) ? obj.choices[0] : undefined;
@@ -1203,7 +1228,12 @@ export function transformChatSseToResponsesSse(
         finish(controller);
         controller.close();
       } catch (e) {
-        controller.error(e);
+        try {
+          finish(controller);
+          controller.close();
+        } catch {
+          controller.error(e);
+        }
       }
     },
   });

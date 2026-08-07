@@ -175,12 +175,18 @@ function classifyFirstSseEvent(headers: Headers, chunk: string): GoLimit | null 
 }
 
 function firstSseData(chunk: string): string | null {
-  const lf = chunk.indexOf("\n\n")
-  const crlf = chunk.indexOf("\r\n\r\n")
-  const boundaries = [lf, crlf].filter((value) => value >= 0)
-  const event = boundaries.length ? chunk.slice(0, Math.min(...boundaries)) : chunk
-  const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
-  return !data || data === "[DONE]" ? null : data
+  // OpenCode Go often prefixes streams with blank SSE frames ("\n\n").
+  // Skipping only the first boundary would miss the real first data event
+  // (including embedded quota errors), which then leaks into Codex as a cut stream.
+  const normalized = chunk.replace(/\r\n/g, "\n")
+  const parts = normalized.split("\n\n")
+  const complete = normalized.endsWith("\n\n") ? parts : parts.slice(0, -1)
+  for (const event of complete) {
+    if (!event.trim()) continue
+    const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
+    if (data && data !== "[DONE]") return data
+  }
+  return null
 }
 
 function embeddedSseErrorStatus(data: string): number | null {
@@ -219,7 +225,9 @@ async function readFirstSseEvent(reader: ReadableStreamDefaultReader<Uint8Array>
   let total = 0
   let text = ""
   const decoder = new TextDecoder()
-  while (!text.includes("\n\n") && !text.includes("\r\n\r\n")) {
+  // Keep reading past leading blank/ping frames until the first real data event
+  // is complete (or the upstream stream ends).
+  while (!firstSseData(text)) {
     const next = await reader.read()
     if (next.done) break
     chunks.push(next.value)

@@ -161,7 +161,9 @@ export async function prepareResponsesRequestBody(
     const stored = await loadConversationMessages(continuityKeys, db)
     // Use bodyForRoute so any injected server tools survive decision metadata;
     // chat conversion itself still only keeps function tools (xAI chat has no x_search).
-    const converted = buildChatFallbackFromResponsesWithContext(bodyForRoute, stored)
+    const converted = buildChatFallbackFromResponsesWithContext(bodyForRoute, stored, {
+      reasoningItems: reasoningItems.map((reasoning_content) => ({ reasoning_content })),
+    })
     const chatBody = prepareChatRequestBody(converted.body)
     return {
       body: chatBody,
