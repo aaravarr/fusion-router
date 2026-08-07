@@ -1,4 +1,5 @@
  import { getDatabase } from "@/server/db";
+ import { listPoolTypeOptions } from "@/server/pool-type-options";
  import { requireSession } from "../_auth";
  
  export const runtime = "nodejs";
@@ -69,5 +70,5 @@
        metadata,
      };
    });
-   return Response.json({ items, total, page, pageSize });
+   return Response.json({ items, total, page, pageSize, poolTypes: listPoolTypeOptions(user.id, db) });
  }

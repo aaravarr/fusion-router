@@ -24,6 +24,10 @@ export function OverviewPage() {
   const resource = useAdminResource<OverviewPayload>("/api/admin/overview");
   const usageResource = useAdminResource<UsageStats>("/api/admin/usage?hours=24&granularity=auto");
   const data = resource.data;
+  const poolLabels = useMemo(
+    () => Object.fromEntries((data?.poolTypes ?? []).map((item) => [item.type, item.label])),
+    [data?.poolTypes],
+  );
 
   return (
     <>
@@ -52,7 +56,7 @@ export function OverviewPage() {
             <Panel title="按号池类型统计" description="每种号池的账号健康度分布。">
               <div className="grid gap-px bg-border sm:grid-cols-2 xl:grid-cols-3">
                 {Object.entries(data.counts.byPoolType).map(([poolType, counts]) => (
-                  <PoolTypeStatCard key={poolType} poolType={poolType} counts={counts} />
+                  <PoolTypeStatCard key={poolType} poolType={poolType} label={poolLabels[poolType]} counts={counts} />
                 ))}
               </div>
             </Panel>
@@ -145,8 +149,8 @@ function Metric({ icon: Icon, label, value, note, tone }: { icon: typeof UsersRo
   );
 }
 
-function PoolTypeStatCard({ poolType, counts }: { poolType: string; counts: { total: number; ready: number; blocked: number; inactive: number } }) {
-  const label = getPoolLabel(poolType);
+function PoolTypeStatCard({ poolType, label: poolLabel, counts }: { poolType: string; label?: string; counts: { total: number; ready: number; blocked: number; inactive: number } }) {
+  const label = getPoolLabel(poolType, poolLabel);
   return (
     <div className="space-y-3 bg-white p-4">
       <div className="flex items-center justify-between">

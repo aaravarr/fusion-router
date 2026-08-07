@@ -155,7 +155,7 @@ export function RoutingPage() {
                 const isUpdating = updatingPool === poolType;
                 return (
                   <div key={poolType} className="flex items-center justify-between gap-3 py-2">
-                    <PoolTypeBadge poolType={poolType} />
+                    <PoolTypeBadge poolType={poolType} label={poolTypeLabels[poolType]} />
                     {poolAccounts.length === 0 ? (
                       <span className="text-xs text-muted-foreground">暂无账号</span>
                     ) : (

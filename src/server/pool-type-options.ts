@@ -33,3 +33,19 @@ export function listPoolTypeOptions(ownerUserId: string, db: AppDatabase = getDa
     })),
   ]
 }
+
+export function listPoolTypeLabelMap(ownerUserId: string, db: AppDatabase = getDatabase()): Map<string, string> {
+  return new Map(listPoolTypeOptions(ownerUserId, db).map((option) => [option.type, option.label]))
+}
+
+/** Resolve a human-readable provider/pool name. Never returns raw custom:<uuid>. */
+export function resolvePoolTypeLabel(
+  poolType: string,
+  ownerUserId: string,
+  db: AppDatabase = getDatabase(),
+  preferred?: string | null,
+  labels?: Map<string, string>,
+): string | null {
+  if (preferred && preferred !== poolType && !preferred.startsWith("custom:")) return preferred
+  return (labels ?? listPoolTypeLabelMap(ownerUserId, db)).get(poolType) ?? null
+}

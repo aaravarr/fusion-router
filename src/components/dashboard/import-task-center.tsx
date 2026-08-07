@@ -92,6 +92,7 @@ export function ImportJobProgress({
   onPause,
   onResume,
   changingState = false,
+  poolTypeLabels,
 }: {
   job: ImportJob;
   detailed?: boolean;
@@ -104,6 +105,7 @@ export function ImportJobProgress({
   onPause?: () => void;
   onResume?: () => void;
   changingState?: boolean;
+  poolTypeLabels?: Record<string, string>;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const progress = job.totalItems ? Math.round((job.processedItems / job.totalItems) * 100) : 0;
@@ -118,7 +120,7 @@ export function ImportJobProgress({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <PoolTypeBadge poolType={job.poolType} />
+              <PoolTypeBadge poolType={job.poolType} label={poolTypeLabels?.[job.poolType]} />
               <span className="text-xs font-medium">{formatLabels[job.format] || job.format}</span>
               <StatusBadge status={job.status} />
               {collapsible ? (
@@ -240,6 +242,7 @@ function LiveJob({
   onPause,
   onResume,
   changingState,
+  poolTypeLabels,
 }: {
   initial: ImportJob;
   onCompleted: () => void;
@@ -250,6 +253,7 @@ function LiveJob({
   onPause: (job: ImportJob) => void;
   onResume: (job: ImportJob) => void;
   changingState: boolean;
+  poolTypeLabels?: Record<string, string>;
 }) {
   const job = useImportJobStream(initial, onCompleted);
   if (!job) return null;
@@ -266,6 +270,7 @@ function LiveJob({
       onPause={() => onPause(job)}
       onResume={() => onResume(job)}
       changingState={changingState}
+      poolTypeLabels={poolTypeLabels}
     />
   );
 }
@@ -274,10 +279,12 @@ export function ImportTaskCenter({
   version,
   onAccountsChanged,
   poolType = "all",
+  poolTypeLabels,
 }: {
   version: number;
   onAccountsChanged: () => void;
   poolType?: string;
+  poolTypeLabels?: Record<string, string>;
 }) {
   const confirm = useConfirm();
   const { adminFetch } = useAdmin();
@@ -456,6 +463,7 @@ export function ImportTaskCenter({
               onPause={(item) => void changeJobState(item, "pause")}
               onResume={(item) => void changeJobState(item, "resume")}
               changingState={changingStateJobId === job.id}
+              poolTypeLabels={poolTypeLabels}
             />
           ))}
         </div>

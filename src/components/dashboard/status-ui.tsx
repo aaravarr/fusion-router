@@ -26,18 +26,27 @@ function shortCustomId(poolType: string): string {
   return `custom-${(id || "x").slice(0, 8)}`;
 }
 
+/** Ignore labels that are missing or themselves a raw custom:<id> / poolType. */
+function usablePoolLabel(poolType: string, label?: string | null): string | null {
+  if (!label) return null;
+  if (label === poolType) return null;
+  if (label.startsWith("custom:")) return null;
+  return label;
+}
+
 /**
  * Display label for a pool type. Custom pools always resolve to a readable
- * value: the provider label when known (slugified), otherwise a short
- * custom-<id> fallback — never the raw custom:<uuid> string.
+ * provider name when known; otherwise a short custom-<id> fallback — never the
+ * raw custom:<uuid> string.
  */
 export function poolDisplayLabel(poolType?: string | null, label?: string | null): { text: string; title?: string } {
   const type = poolType || "opencode-go";
+  const resolved = usablePoolLabel(type, label);
   if (type.startsWith("custom:")) {
-    if (label) return { text: slugifyName(label), title: label };
+    if (resolved) return { text: resolved, title: resolved };
     return { text: shortCustomId(type), title: type };
   }
-  return { text: label ?? POOL_TYPE_META[type]?.label ?? type };
+  return { text: resolved ?? POOL_TYPE_META[type]?.label ?? type };
 }
 
 export function getPoolLabel(poolType?: string | null, label?: string | null) {
@@ -211,7 +220,8 @@ export function displayWorkspaceId(poolType: string | null | undefined, poolLabe
   if (segments.length < 3 || !segments[0].startsWith("custom:")) return workspaceId;
   const ownerId = segments[1].slice(0, 8);
   const id = segments[2].slice(0, 8);
-  const poolSegment = poolLabel ? slugifyName(poolLabel) : shortCustomId(segments[0]);
+  const resolvedLabel = usablePoolLabel(segments[0], poolLabel);
+  const poolSegment = resolvedLabel ? slugifyName(resolvedLabel) : shortCustomId(segments[0]);
   return `${poolSegment}_${ownerId}_${id}`;
 }
 

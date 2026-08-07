@@ -279,7 +279,7 @@ export function UsagePage() {
               <div className="grid gap-4 xl:grid-cols-2">
                 <Panel title="按服务账号" description="各账号的 Token 分段对比。">
                   {data.byAccount.length ? (
-                    <AccountChart buckets={data.byAccount} />
+                    <AccountChart buckets={data.byAccount} poolLabels={Object.fromEntries((apiPoolTypes ?? []).map((pool) => [pool.type, pool.label]))} />
                   ) : (
                     <EmptyState title="暂无账号数据" description="没有按账号维度的统计数据。" />
                   )}
@@ -468,7 +468,7 @@ function ModelDistributionChart({ buckets }: { buckets: Bucket[] }) {
   );
 }
 
-function AccountChart({ buckets }: { buckets: Bucket[] }) {
+function AccountChart({ buckets, poolLabels = {} }: { buckets: Bucket[]; poolLabels?: Record<string, string> }) {
   const sorted = useMemo(
     () =>
       buckets
@@ -507,12 +507,12 @@ function AccountChart({ buckets }: { buckets: Bucket[] }) {
           <Bar dataKey="reasoning" stackId="tokens" fill={palette[1]} />
         </BarChart>
       </ChartContainer>
-      <AccountPoolList buckets={buckets} />
+      <AccountPoolList buckets={buckets} poolLabels={poolLabels} />
     </div>
   );
 }
 
-function AccountPoolList({ buckets }: { buckets: Bucket[] }) {
+function AccountPoolList({ buckets, poolLabels = {} }: { buckets: Bucket[]; poolLabels?: Record<string, string> }) {
   const rows = useMemo(
     () =>
       [...buckets]
@@ -527,7 +527,7 @@ function AccountPoolList({ buckets }: { buckets: Bucket[] }) {
           <div key={bucket.key} className="contents">
             <span className="flex items-center gap-1.5 truncate font-mono text-muted-foreground" title={bucket.label}>
               {bucket.label}
-              <PoolTypeBadge poolType={bucket.poolType} />
+              <PoolTypeBadge poolType={bucket.poolType} label={bucket.poolType ? poolLabels[bucket.poolType] : undefined} />
             </span>
             <span className="tabular text-right font-mono text-muted-foreground">{formatNumber(bucket.totalTokens || 0)}</span>
             <span className="tabular text-right font-mono text-muted-foreground">{formatNumber(bucket.requests)}</span>

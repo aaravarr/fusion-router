@@ -1,4 +1,5 @@
 import { getDatabase } from "@/server/db"
+import { listPoolTypeOptions } from "@/server/pool-type-options"
 import { RoutingService } from "@/server/routing"
 import { requireSession } from "../_auth"
 
@@ -128,5 +129,6 @@ export function GET(request: Request) {
     recentRequests,
     recentEvents,
     recentAttempts: recentAttemptsPayload,
+    poolTypes: listPoolTypeOptions(user.id, db),
   })
 }

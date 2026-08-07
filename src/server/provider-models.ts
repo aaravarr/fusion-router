@@ -1,6 +1,7 @@
 import type { AppDatabase } from "./db"
 import { getDatabase } from "./db"
 import { AccountRepository } from "./repository"
+import { listPoolTypeLabelMap } from "./pool-type-options"
 import { ensureProvidersRegistered, getProviderRegistry, tryGetProvider, type PoolType } from "./providers"
 import { customPoolType } from "./custom-providers"
 
@@ -99,7 +100,7 @@ export function writeProviderModelCache(
 export function getProviderModelCatalog(poolType: PoolType, db: AppDatabase = getDatabase()): ProviderModelCatalog {
   ensureProvidersRegistered()
   const provider = tryGetProvider(poolType)
-  const label = provider?.displayName ?? poolType
+  const label = provider?.displayName ?? (poolType.startsWith("custom:") ? `custom-${poolType.slice(7, 15)}` : poolType)
   const defaultModels = getDefaultModels(poolType)
   const row = readCacheRow(db, poolType)
   let cachedModels: string[] | null = null

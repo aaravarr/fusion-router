@@ -3,7 +3,7 @@ import { getDatabase } from "@/server/db"
 import { requireSession } from "../_auth"
 import { RoutingService } from "@/server/routing"
 import { tryGetProvider } from "@/server/providers"
-import { listPoolTypeOptions } from "@/server/pool-type-options"
+import { listPoolTypeLabelMap, listPoolTypeOptions } from "@/server/pool-type-options"
 import type { AccountListSort, AccountListStatusFilter } from "@/server/repository"
 import { CustomProviderRepository } from "@/server/custom-providers"
 import { deriveAccountRouteStatus } from "@/server/account-route-state"
@@ -48,6 +48,7 @@ export async function GET(request: Request) {
     windowsByAccount.set(window.accountId, list)
   }
   const now = Date.now()
+  const poolLabels = listPoolTypeLabelMap(user.id, db)
 
   const accounts = listed.items.map((account) => {
     const provider = tryGetProvider(account.poolType)
@@ -60,7 +61,7 @@ export async function GET(request: Request) {
     const routeStatus = deriveAccountRouteStatus(account, accountWindows, now, { providerReady, providerUnavailableReason })
     return {
       ...account,
-      poolLabel: provider?.displayName ?? account.poolType,
+      poolLabel: provider?.displayName ?? poolLabels.get(account.poolType) ?? null,
       enabled: account.adminState === "ENABLED",
       isCurrent: routing.currentAccountId === account.id,
       isPreferred: routing.preferredAccountId === account.id,

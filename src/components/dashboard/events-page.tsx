@@ -9,7 +9,7 @@ import { PoolTypeBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import type { EventRecord } from "./types";
 
-interface EventsPayload { items?: EventRecord[]; total?: number; page?: number; pageSize?: number }
+interface EventsPayload { items?: EventRecord[]; total?: number; page?: number; pageSize?: number; poolTypes?: Array<{ type: string; label: string }> }
 
 const levelStatus: Record<string, string> = {
   INFO: "active",
@@ -31,6 +31,10 @@ export function EventsPage() {
   const resource = useAdminResource<EventsPayload>(path);
   const events = resource.data?.items ?? [];
   const total = resource.data?.total ?? events.length;
+  const poolLabels = useMemo(
+    () => Object.fromEntries((resource.data?.poolTypes ?? []).map((item) => [item.type, item.label])),
+    [resource.data?.poolTypes],
+  );
 
   return (
     <>
@@ -55,7 +59,7 @@ export function EventsPage() {
                   <time className="font-mono text-[11px] text-muted-foreground">{formatDate(event.createdAt)}</time>
                   <span className="inline-flex items-center gap-1.5 truncate font-mono text-[11px]">
                     {event.accountName || event.accountId || "SYSTEM"}
-                    {poolTypeOf(event) ? <PoolTypeBadge poolType={poolTypeOf(event)} /> : null}
+                    {(() => { const pt = poolTypeOf(event); return pt ? <PoolTypeBadge poolType={pt} label={poolLabels[pt]} /> : null; })()}
                   </span>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{event.message || event.type || "系统事件"}</p>

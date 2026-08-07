@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAdmin } from "./admin-context";
 import { copyToClipboard } from "@/lib/utils";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel } from "./page-kit";
+import { PoolTypeBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 
 interface MCPToolConfig {
@@ -186,11 +187,15 @@ export function McpPage() {
   }
 
   useEffect(() => {
-    if (!editing) return;
     const timer = window.setTimeout(() => void loadMeta(), 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing]);
+  }, []);
+
+  const providerLabels = useMemo(
+    () => Object.fromEntries(catalogs.map((catalog) => [catalog.poolType, catalog.label])),
+    [catalogs],
+  );
 
   function openEdit(tool: MCPTool) {
     const config = tool.config ?? {};
@@ -470,7 +475,7 @@ export function McpPage() {
                           {tool.toolType === "deepseek_web_search" ? (
                             <>
                               {tool.config?.provider ? (
-                                <Badge variant="outline" className="text-[10px]">{tool.config.provider}</Badge>
+                                <PoolTypeBadge poolType={tool.config.provider} label={providerLabels[tool.config.provider]} />
                               ) : (
                                 <Badge variant="outline" className="border-warning/20 bg-warning-soft text-warning text-[10px]">未选 Provider</Badge>
                               )}

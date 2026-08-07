@@ -5,6 +5,7 @@ import { getGoCredential } from "@/server/opencode-web/service"
 import { getDatabase } from "@/server/db"
 import { AccountRepository } from "@/server/repository"
 import { listProviderModelCatalogs } from "@/server/provider-models"
+import { listPoolTypeLabelMap } from "@/server/pool-type-options"
 import { tryGetProvider } from "@/server/providers"
 import type { PoolType } from "@/server/types"
 
@@ -34,6 +35,7 @@ export async function GET(request: Request) {
 
   const db = getDatabase()
   const repo = new AccountRepository(user.id, db)
+  const poolLabels = listPoolTypeLabelMap(user.id, db)
   const blockedIds = new Set((db.prepare(`SELECT DISTINCT account_id FROM quota_windows
     WHERE owner_user_id=? AND usage_percent>=100 AND (reset_at IS NULL OR reset_at>?)`)
     .all(user.id, new Date().toISOString()) as Array<{ account_id: string }>).map((row) => row.account_id))
@@ -42,7 +44,7 @@ export async function GET(request: Request) {
     name: account.name,
     email: account.email,
     poolType: account.poolType,
-    poolLabel: tryGetProvider(account.poolType)?.displayName ?? account.poolType,
+    poolLabel: tryGetProvider(account.poolType)?.displayName ?? poolLabels.get(account.poolType) ?? (account.poolType.startsWith("custom:") ? account.poolType.slice(7, 15) : account.poolType),
     ready: (tryGetProvider(account.poolType)?.isAccountReady(account) ?? false) && !blockedIds.has(account.id),
     blocked: blockedIds.has(account.id),
   }))

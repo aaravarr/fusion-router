@@ -535,7 +535,7 @@ export function AccountsPage() {
       {actionError ? <div className="mb-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive" role="alert">{actionError}</div> : null}
       {actionNotice ? <div className="mb-4 rounded-md border border-success/20 bg-success-soft px-4 py-3 text-sm text-success" role="status">{actionNotice}</div> : null}
 
-      <ImportTaskCenter version={jobVersion} poolType={poolFilter} onAccountsChanged={() => void resource.refresh()} />
+      <ImportTaskCenter version={jobVersion} poolType={poolFilter} poolTypeLabels={Object.fromEntries(poolOptions.filter((item) => item.key !== "all").map((item) => [item.key, item.label]))} onAccountsChanged={() => void resource.refresh()} />
 
       <Panel
         title="账号"

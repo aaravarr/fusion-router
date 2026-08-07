@@ -347,6 +347,7 @@ export interface AdminSettings {
 }
 
 export interface OverviewPayload {
+  poolTypes?: Array<{ type: string; label: string }>;
   counts?: {
     totalAccounts?: number;
     readyAccounts?: number;
