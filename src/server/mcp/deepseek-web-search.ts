@@ -11,6 +11,14 @@ import { ensureDefaultMcpTools, getMcpTool, type DeepseekWebSearchConfig } from 
  */
 const WEB_SEARCH_TOOL = { type: "web_search" }
 
+/**
+ * 实测（DeepSeek /responses）：强制 tool_choice={type:"web_search"} 或 "required"
+ * 时，模型往往只产出 web_search_call、不生成最终 message，导致空内容。
+ * 用 instructions 引导检索，让模型自行决定何时结束并作答。
+ */
+const SEARCH_INSTRUCTIONS =
+  "使用 web_search 检索最新公开信息，并基于检索结果给出完整、可核对的中文回答。"
+
 const REQUEST_TIMEOUT_MS = 120_000
 
 export interface DeepseekWebSearchResult {
@@ -51,19 +59,27 @@ function pushResult(results: SearchResultEntry[], title: unknown, url: unknown) 
   const nextTitle = typeof title === "string" ? title.trim() : ""
   if (!nextUrl && !nextTitle) return
   if (results.some((item) => item.url === nextUrl && item.title === nextTitle)) return
-  results.push({ title: nextTitle, url: nextUrl })
+  results.push({ title: nextTitle || nextUrl, url: nextUrl })
+}
+
+/** DeepSeek open_page URL 常带 #ws_call_id=... 跟踪碎片，展示前去掉。 */
+export function cleanSearchUrl(url: string): string {
+  return url.replace(/#ws_call_id=.*$/i, "").trim()
 }
 
 /**
  * 解析 Responses API 响应：从 output 里取 message.output_text 与来源。
- * 来源优先取 output_text.annotations(url_citation)，其次 web_search_call.action。
+ * DeepSeek 会在检索过程中多次产出短 message（进度话术），最终答案在最后一条；
+ * 来源优先取 output_text.annotations(url_citation)，其次 web_search_call.action
+ * （含 open_page.url / sources / results）。
  */
 export function parseResponsesSearchResult(data: unknown): { answer: string; results: SearchResultEntry[] } {
   const record = data && typeof data === "object" ? (data as { output?: unknown; output_text?: unknown }) : {}
-  let answer = typeof record.output_text === "string" ? record.output_text : ""
+  const topLevelAnswer = typeof record.output_text === "string" ? record.output_text : ""
   const results: SearchResultEntry[] = []
+  const messageAnswers: string[] = []
 
-  if (!Array.isArray(record.output)) return { answer, results }
+  if (!Array.isArray(record.output)) return { answer: topLevelAnswer, results }
 
   for (const item of record.output) {
     if (!item || typeof item !== "object") continue
@@ -75,6 +91,7 @@ export function parseResponsesSearchResult(data: unknown): { answer: string; res
     const type = String(row.type || "").toLowerCase()
 
     if (type === "message" && Array.isArray(row.content)) {
+      const parts: string[] = []
       for (const part of row.content) {
         if (!part || typeof part !== "object") continue
         const block = part as {
@@ -84,7 +101,8 @@ export function parseResponsesSearchResult(data: unknown): { answer: string; res
         }
         const partType = String(block.type || "").toLowerCase()
         if ((partType === "output_text" || partType === "text") && typeof block.text === "string") {
-          answer = answer ? `${answer}\n\n${block.text}` : block.text
+          const text = block.text.trim()
+          if (text) parts.push(block.text)
         }
         if (Array.isArray(block.annotations)) {
           for (const ann of block.annotations) {
@@ -92,38 +110,55 @@ export function parseResponsesSearchResult(data: unknown): { answer: string; res
             const a = ann as { type?: unknown; title?: unknown; url?: unknown }
             const annType = String(a.type || "").toLowerCase()
             if (annType === "url_citation" || annType === "citation" || a.url != null) {
-              pushResult(results, a.title, a.url)
+              const url = typeof a.url === "string" ? cleanSearchUrl(a.url) : a.url
+              pushResult(results, a.title, url)
             }
           }
         }
       }
+      if (parts.length) messageAnswers.push(parts.join("\n\n"))
       continue
     }
 
     if (type === "web_search_call") {
       const action =
         row.action && typeof row.action === "object"
-          ? (row.action as { query?: unknown; sources?: unknown; results?: unknown })
+          ? (row.action as {
+              type?: unknown
+              query?: unknown
+              url?: unknown
+              title?: unknown
+              sources?: unknown
+              results?: unknown
+            })
           : null
       if (action) {
         if (Array.isArray(action.sources)) {
           for (const source of action.sources) {
             if (!source || typeof source !== "object") continue
             const s = source as { title?: unknown; url?: unknown }
-            pushResult(results, s.title, s.url)
+            const url = typeof s.url === "string" ? cleanSearchUrl(s.url) : s.url
+            pushResult(results, s.title, url)
           }
         }
         if (Array.isArray(action.results)) {
           for (const entry of action.results) {
             if (!entry || typeof entry !== "object") continue
             const s = entry as { title?: unknown; url?: unknown }
-            pushResult(results, s.title, s.url)
+            const url = typeof s.url === "string" ? cleanSearchUrl(s.url) : s.url
+            pushResult(results, s.title, url)
           }
+        }
+        if (typeof action.url === "string" && action.url.trim()) {
+          const url = cleanSearchUrl(action.url)
+          pushResult(results, action.title, url)
         }
       }
     }
   }
 
+  // 多轮 message 时取最后一条（最终汇总）；没有 message 时退回顶层 output_text。
+  const answer = messageAnswers.length > 0 ? messageAnswers[messageAnswers.length - 1]! : topLevelAnswer
   return { answer, results }
 }
 
@@ -192,10 +227,9 @@ export async function deepseekWebSearch(
     model: config.model,
     max_output_tokens: config.maxTokens,
     temperature: config.temperature,
+    instructions: SEARCH_INSTRUCTIONS,
     input: content,
     tools: [WEB_SEARCH_TOOL],
-    // MCP 工具语义就是“去搜”，强制走 web_search，避免模型空答。
-    tool_choice: { type: "web_search" },
     max_tool_calls: maxToolCalls,
   }
   if (config.reasoningEffort) {

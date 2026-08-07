@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CustomProviderRepository } from "@/server/custom-providers"
 import { createDatabase, type AppDatabase } from "@/server/db"
 import { AccountRepository, ProviderCredentialRepository } from "@/server/repository"
-import { deepseekWebSearch, parseResponsesSearchResult } from "./deepseek-web-search"
+import { cleanSearchUrl, deepseekWebSearch, parseResponsesSearchResult } from "./deepseek-web-search"
 import { ensureDefaultMcpTools, updateMcpTool } from "./mcp-tools"
 
 const ownerUserId = "custom-owner"
@@ -88,6 +88,14 @@ const RESPONSES_PAYLOAD = {
   ],
 }
 
+describe("cleanSearchUrl", () => {
+  it("去掉 DeepSeek open_page 的 ws_call_id 碎片", () => {
+    expect(
+      cleanSearchUrl("https://example.com/a#ws_call_id=call_01_abc"),
+    ).toBe("https://example.com/a")
+  })
+})
+
 describe("parseResponsesSearchResult", () => {
   it("提取 output_text 与 url_citation 来源", () => {
     const parsed = parseResponsesSearchResult(RESPONSES_PAYLOAD)
@@ -95,6 +103,35 @@ describe("parseResponsesSearchResult", () => {
     expect(parsed.results).toEqual([
       { title: "CoinMarketCap", url: "https://coinmarketcap.com/currencies/bitcoin/" },
       { title: "CNBC Quotes", url: "https://www.cnbc.com/quotes/BTC%3D-USS" },
+    ])
+  })
+
+  it("多轮 message 时取最后一条作为答案，并收集 open_page URL", () => {
+    const parsed = parseResponsesSearchResult({
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "我来帮你搜索。" }],
+        },
+        {
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "open_page",
+            url: "https://news.example.com/deepseek#ws_call_id=call_01_x",
+          },
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "最终汇总：DeepSeek 发布了 V4-Flash。" }],
+        },
+      ],
+    })
+    expect(parsed.answer).toBe("最终汇总：DeepSeek 发布了 V4-Flash。")
+    expect(parsed.results).toEqual([
+      { title: "https://news.example.com/deepseek", url: "https://news.example.com/deepseek" },
     ])
   })
 })
@@ -110,9 +147,10 @@ describe("deepseekWebSearch", () => {
         model: string
         max_output_tokens: number
         temperature: number
+        instructions?: string
         input: string
         tools: Array<{ type: string }>
-        tool_choice: { type: string }
+        tool_choice?: unknown
         max_tool_calls?: number
         reasoning?: { effort: string }
       }
@@ -121,7 +159,10 @@ describe("deepseekWebSearch", () => {
       expect(body.temperature).toBe(0.3)
       expect(body.input).toBe("比特币当前价格是多少？")
       expect(body.tools).toEqual([{ type: "web_search" }])
-      expect(body.tool_choice).toEqual({ type: "web_search" })
+      // 强制 tool_choice=web_search 在 DeepSeek 上会导致只有搜索调用、无最终 message
+      expect(body.tool_choice).toBeUndefined()
+      expect(typeof body.instructions).toBe("string")
+      expect(body.instructions).toMatch(/web_search/)
       expect(body.max_tool_calls).toBe(5)
       expect(body.reasoning).toEqual({ effort: "high" })
       return new Response(JSON.stringify(RESPONSES_PAYLOAD), { status: 200 })
@@ -188,5 +229,30 @@ describe("deepseekWebSearch", () => {
     await expect(
       deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, callGateway),
     ).rejects.toThrow(/模型未返回内容/)
+  })
+
+  it("仅有 web_search_call 无 message 时，仍可通过 open_page URL 返回来源", async () => {
+    const callGateway = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          status: "completed",
+          output: [
+            {
+              type: "web_search_call",
+              status: "completed",
+              action: {
+                type: "open_page",
+                url: "https://example.com/news#ws_call_id=call_00_x",
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      )
+    })
+    const result = await deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, callGateway)
+    expect(result.text).toContain("搜索结果来源：")
+    expect(result.text).toContain("https://example.com/news")
+    expect(result.text).not.toContain("ws_call_id")
   })
 })
