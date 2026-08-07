@@ -5,14 +5,12 @@ import type { AccountRecord } from "@/server/types"
 import { ensureDefaultMcpTools, getMcpTool, type DeepseekWebSearchConfig } from "./mcp-tools"
 
 /**
- * 原生 web search 工具，格式与 DeepSeek Anthropic-compatible messages API
- * 实测可用的一致（2026-08-07 实测：OpenAI 兼容端点不支持该工具类型，仅
- * Anthropic messages 端点支持）。
+ * Responses API 无版本号 web_search（服务端执行）。
+ * DeepSeek / OpenAI / 多数兼容实现都认这个形态，比 Anthropic 的
+ * web_search_20260209 兼容面更广。
  */
-const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: 3 }
+const WEB_SEARCH_TOOL = { type: "web_search" }
 
-/** Anthropic messages 端点的鉴权/版本头。 */
-const ANTHROPIC_VERSION = "2023-06-01"
 const REQUEST_TIMEOUT_MS = 120_000
 
 export interface DeepseekWebSearchResult {
@@ -43,42 +41,89 @@ async function extractUpstreamErrorMessage(response: Response, fallback: string)
     const parsed = (await response.json()) as { error?: { message?: unknown } }
     if (typeof parsed.error?.message === "string" && parsed.error.message) return parsed.error.message
   } catch {
-    // 保留默认错误信息
+    // keep fallback
   }
   return fallback
 }
 
-/**
- * 解析 Anthropic messages 响应，提取模型最终文本与搜索结果条目。
- * content 块类型（实测）：thinking / server_tool_use / web_search_tool_result
- * （内含 web_search_result：title + url + encrypted_content，正文加密不可读）。
- */
-function parseSearchResponse(data: unknown): { answer: string; results: SearchResultEntry[] } {
-  const record = data && typeof data === "object" ? (data as { content?: unknown }) : {}
-  if (!Array.isArray(record.content)) return { answer: "", results: [] }
+function pushResult(results: SearchResultEntry[], title: unknown, url: unknown) {
+  const nextUrl = typeof url === "string" ? url.trim() : ""
+  const nextTitle = typeof title === "string" ? title.trim() : ""
+  if (!nextUrl && !nextTitle) return
+  if (results.some((item) => item.url === nextUrl && item.title === nextTitle)) return
+  results.push({ title: nextTitle, url: nextUrl })
+}
 
-  let answer = ""
+/**
+ * 解析 Responses API 响应：从 output 里取 message.output_text 与来源。
+ * 来源优先取 output_text.annotations(url_citation)，其次 web_search_call.action。
+ */
+export function parseResponsesSearchResult(data: unknown): { answer: string; results: SearchResultEntry[] } {
+  const record = data && typeof data === "object" ? (data as { output?: unknown; output_text?: unknown }) : {}
+  let answer = typeof record.output_text === "string" ? record.output_text : ""
   const results: SearchResultEntry[] = []
-  for (const block of record.content) {
-    if (!block || typeof block !== "object") continue
-    const item = block as { type?: unknown; text?: unknown; content?: unknown }
-    if (item.type === "text" && typeof item.text === "string") {
-      answer = answer ? `${answer}\n\n${item.text}` : item.text
+
+  if (!Array.isArray(record.output)) return { answer, results }
+
+  for (const item of record.output) {
+    if (!item || typeof item !== "object") continue
+    const row = item as {
+      type?: unknown
+      content?: unknown
+      action?: unknown
+    }
+    const type = String(row.type || "").toLowerCase()
+
+    if (type === "message" && Array.isArray(row.content)) {
+      for (const part of row.content) {
+        if (!part || typeof part !== "object") continue
+        const block = part as {
+          type?: unknown
+          text?: unknown
+          annotations?: unknown
+        }
+        const partType = String(block.type || "").toLowerCase()
+        if ((partType === "output_text" || partType === "text") && typeof block.text === "string") {
+          answer = answer ? `${answer}\n\n${block.text}` : block.text
+        }
+        if (Array.isArray(block.annotations)) {
+          for (const ann of block.annotations) {
+            if (!ann || typeof ann !== "object") continue
+            const a = ann as { type?: unknown; title?: unknown; url?: unknown }
+            const annType = String(a.type || "").toLowerCase()
+            if (annType === "url_citation" || annType === "citation" || a.url != null) {
+              pushResult(results, a.title, a.url)
+            }
+          }
+        }
+      }
       continue
     }
-    if (item.type === "web_search_tool_result" && Array.isArray(item.content)) {
-      for (const entry of item.content) {
-        if (!entry || typeof entry !== "object") continue
-        const result = entry as { type?: unknown; title?: unknown; url?: unknown }
-        if (result.type === "web_search_result") {
-          results.push({
-            title: typeof result.title === "string" ? result.title : "",
-            url: typeof result.url === "string" ? result.url : "",
-          })
+
+    if (type === "web_search_call") {
+      const action =
+        row.action && typeof row.action === "object"
+          ? (row.action as { query?: unknown; sources?: unknown; results?: unknown })
+          : null
+      if (action) {
+        if (Array.isArray(action.sources)) {
+          for (const source of action.sources) {
+            if (!source || typeof source !== "object") continue
+            const s = source as { title?: unknown; url?: unknown }
+            pushResult(results, s.title, s.url)
+          }
+        }
+        if (Array.isArray(action.results)) {
+          for (const entry of action.results) {
+            if (!entry || typeof entry !== "object") continue
+            const s = entry as { title?: unknown; url?: unknown }
+            pushResult(results, s.title, s.url)
+          }
         }
       }
     }
   }
+
   return { answer, results }
 }
 
@@ -96,8 +141,8 @@ function formatResult(parsed: { answer: string; results: SearchResultEntry[] }):
 }
 
 /**
- * 调用配置的 Provider 的原生 web search（Anthropic messages 端点，
- * `${baseUrl}/anthropic/v1/messages`，x-api-key 鉴权）并把搜索结果原样返回。
+ * 调用配置 Provider 的 Responses API 原生 web_search（`${baseUrl}/responses`，
+ * Bearer 鉴权），并把最终文本 + 来源原样返回。
  *
  * Provider 必须由用户明确指定（不按模型自动路由——同一模型在不同 Provider
  * 支持的能力可能不同），选哪些 Provider/模型不做限制，由用户配置后自行测试。
@@ -133,20 +178,30 @@ export async function deepseekWebSearch(
 
   const credential = await provider.getCredential(account)
   const baseUrl = provider.getUpstreamBaseUrl(account).replace(/\/+$/, "")
-  const endpoint = `${baseUrl}/anthropic/v1/messages`
+  const endpoint = `${baseUrl}/responses`
   const headers = {
     "content-type": "application/json",
-    "x-api-key": credential.token,
-    "anthropic-version": ANTHROPIC_VERSION,
+    authorization: `Bearer ${credential.token}`,
     accept: "application/json",
   }
-  const body = JSON.stringify({
+  const maxToolCalls =
+    typeof config.maxToolCalls === "number" && Number.isInteger(config.maxToolCalls) && config.maxToolCalls > 0
+      ? Math.min(20, config.maxToolCalls)
+      : 3
+  const requestBody: Record<string, unknown> = {
     model: config.model,
-    max_tokens: config.maxTokens,
+    max_output_tokens: config.maxTokens,
     temperature: config.temperature,
-    messages: [{ role: "user", content: [{ type: "text", text: content }] }],
+    input: content,
     tools: [WEB_SEARCH_TOOL],
-  })
+    // MCP 工具语义就是“去搜”，强制走 web_search，避免模型空答。
+    tool_choice: { type: "web_search" },
+    max_tool_calls: maxToolCalls,
+  }
+  if (config.reasoningEffort) {
+    requestBody.reasoning = { effort: config.reasoningEffort }
+  }
+  const body = JSON.stringify(requestBody)
 
   let response: Response
   if (callGateway) {
@@ -164,7 +219,7 @@ export async function deepseekWebSearch(
   }
 
   const data = await response.json().catch(() => null)
-  const parsed = parseSearchResponse(data)
+  const parsed = parseResponsesSearchResult(data)
   const text = formatResult(parsed)
   if (!text) throw new Error("模型未返回内容")
 

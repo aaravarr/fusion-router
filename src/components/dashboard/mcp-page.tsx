@@ -33,7 +33,8 @@ interface MCPToolConfig {
   maxTokens?: number;
   temperature?: number;
   reasoningEnabled?: boolean;
-  reasoningEffort?: "low" | "medium" | "high" | null;
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "max" | null;
+  maxToolCalls?: number;
 }
 interface MCPTool {
   toolType: string;
@@ -136,6 +137,7 @@ export function McpPage() {
   const [prompt, setPrompt] = useState("");
   const [maxTokens, setMaxTokens] = useState("1024");
   const [temperature, setTemperature] = useState("0.3");
+  const [maxToolCalls, setMaxToolCalls] = useState("3");
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<string>("");
   const [catalogs, setCatalogs] = useState<ModelCatalog[]>([]);
@@ -198,6 +200,7 @@ export function McpPage() {
     setPrompt(config.prompt ?? "");
     setMaxTokens(config.maxTokens != null ? String(config.maxTokens) : "1024");
     setTemperature(config.temperature != null ? String(config.temperature) : "0.3");
+    setMaxToolCalls(config.maxToolCalls != null ? String(config.maxToolCalls) : "3");
     setReasoningEnabled(config.reasoningEnabled === true);
     setReasoningEffort(config.reasoningEffort ?? "");
     setFormError(null);
@@ -238,11 +241,19 @@ export function McpPage() {
     }
     const maxTokensValue = Math.min(32768, Math.max(1, Math.round(Number(maxTokens) || 1024)));
     const temperatureValue = Math.min(2, Math.max(0, Number(temperature) || 0.3));
+    const maxToolCallsValue = Math.min(20, Math.max(1, Math.round(Number(maxToolCalls) || 3)));
     setSaving(true);
     setFormError(null);
     try {
       const config = isSearch
-        ? { provider: provider || null, model, maxTokens: maxTokensValue, temperature: temperatureValue }
+        ? {
+            provider: provider || null,
+            model,
+            maxTokens: maxTokensValue,
+            temperature: temperatureValue,
+            reasoningEffort: reasoningEffort || null,
+            maxToolCalls: maxToolCallsValue,
+          }
         : {
             poolType: provider || '',
             model,
@@ -457,13 +468,16 @@ export function McpPage() {
                             <Badge variant="outline" className="border-warning/20 bg-warning-soft text-warning">未配置</Badge>
                           )}
                           {tool.toolType === "deepseek_web_search" ? (
-                            tool.config?.provider ? (
-                              <Badge variant="outline" className="text-[10px]">{tool.config.provider}</Badge>
-                            ) : (
-                              <Badge variant="outline" className="border-warning/20 bg-warning-soft text-warning text-[10px]">未选 Provider</Badge>
-                            )
-                          ) : null}
-                          {tool.config?.reasoningEnabled ? (
+                            <>
+                              {tool.config?.provider ? (
+                                <Badge variant="outline" className="text-[10px]">{tool.config.provider}</Badge>
+                              ) : (
+                                <Badge variant="outline" className="border-warning/20 bg-warning-soft text-warning text-[10px]">未选 Provider</Badge>
+                              )}
+                              <Badge variant="outline" className="text-[10px]">思考 {tool.config?.reasoningEffort || "默认"}</Badge>
+                              <Badge variant="outline" className="text-[10px]">工具×{tool.config?.maxToolCalls ?? 3}</Badge>
+                            </>
+                          ) : tool.config?.reasoningEnabled ? (
                             <Badge variant="outline" className="text-[10px]">思考 {tool.config.reasoningEffort || "默认"}</Badge>
                           ) : null}
                         </div>
@@ -530,7 +544,7 @@ export function McpPage() {
                 </SelectContent>
               </Select>
               {isSearchEditing ? (
-                <p className="text-[11px] leading-5 text-muted-foreground">Provider 必选：不按模型自动路由，同一模型在不同 Provider 支持的能力可能不同，请明确指定后自行测试。该工具直连 Provider 的 Anthropic messages 端点（<code className="rounded-md border bg-[#fafafa] px-1 py-0.5 font-mono text-[10px]">/anthropic/v1/messages</code>），需 Provider 支持原生 web search 工具（如 DeepSeek 官方：在「自定义 Provider」添加，baseUrl 填 <code className="rounded-md border bg-[#fafafa] px-1 py-0.5 font-mono text-[10px]">https://api.deepseek.com</code>）。</p>
+                <p className="text-[11px] leading-5 text-muted-foreground">Provider 必选：不按模型自动路由，同一模型在不同 Provider 支持的能力可能不同，请明确指定后自行测试。该工具直连 Provider 的 Responses 端点（<code className="rounded-md border bg-[#fafafa] px-1 py-0.5 font-mono text-[10px]">/responses</code>）并使用无版本号 <code className="rounded-md border bg-[#fafafa] px-1 py-0.5 font-mono text-[10px]">web_search</code>（如 DeepSeek 官方：在「自定义 Provider」添加，baseUrl 填 <code className="rounded-md border bg-[#fafafa] px-1 py-0.5 font-mono text-[10px]">https://api.deepseek.com</code>，模型建议 deepseek-v4-flash）。</p>
               ) : (
                 <p className="text-[11px] leading-5 text-muted-foreground">留空表示自动路由；选择 Provider 后，下方模型下拉会更新为该 Provider 的模型列表。</p>
               )}
@@ -571,7 +585,32 @@ export function McpPage() {
                 <Input id="mcp-temperature" type="number" min={0} max={2} step={0.1} value={temperature} onChange={(event) => setTemperature(event.target.value)} />
               </div>
             </div>
-            {!isSearchEditing ? (
+            {isSearchEditing ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="mcp-search-reasoning-effort">思考强度</Label>
+                  <Select value={reasoningEffort || "default"} onValueChange={(value) => setReasoningEffort(value === "default" ? "" : value)}>
+                    <SelectTrigger id="mcp-search-reasoning-effort" className="w-full bg-white">
+                      <SelectValue placeholder="模型默认" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">模型默认</SelectItem>
+                      <SelectItem value="none">关闭 (none)</SelectItem>
+                      <SelectItem value="low">低 (low)</SelectItem>
+                      <SelectItem value="medium">中 (medium)</SelectItem>
+                      <SelectItem value="high">高 (high)</SelectItem>
+                      <SelectItem value="max">最大 (max)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] leading-5 text-muted-foreground">透传 Responses API 的 <code className="rounded-md border bg-[#fafafa] px-1 py-0.5 font-mono text-[10px]">reasoning.effort</code>；选「模型默认」则不传该字段。</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="mcp-max-tool-calls">最大工具调用次数</Label>
+                  <Input id="mcp-max-tool-calls" type="number" min={1} max={20} value={maxToolCalls} onChange={(event) => setMaxToolCalls(event.target.value)} />
+                  <p className="text-[11px] leading-5 text-muted-foreground">对应 <code className="rounded-md border bg-[#fafafa] px-1 py-0.5 font-mono text-[10px]">max_tool_calls</code>，限制本轮 web_search 等服务端工具调用次数。</p>
+                </div>
+              </div>
+            ) : (
               <>
                 <div className="flex items-center gap-2">
                   <Checkbox id="mcp-reasoning" checked={reasoningEnabled} onCheckedChange={(value) => setReasoningEnabled(value === true)} />
@@ -579,12 +618,12 @@ export function McpPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="mcp-reasoning-effort">思考等级（可选）</Label>
-                  <Select value={reasoningEffort} onValueChange={setReasoningEffort}>
+                  <Select value={reasoningEffort || "default"} onValueChange={(value) => setReasoningEffort(value === "default" ? "" : value)}>
                     <SelectTrigger id="mcp-reasoning-effort" className="w-full bg-white" disabled={!reasoningEnabled}>
                       <SelectValue placeholder="不指定（默认）" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">不指定（默认）</SelectItem>
+                      <SelectItem value="default">不指定（默认）</SelectItem>
                       <SelectItem value="low">低 (low)</SelectItem>
                       <SelectItem value="medium">中 (medium)</SelectItem>
                       <SelectItem value="high">高 (high)</SelectItem>
@@ -593,7 +632,7 @@ export function McpPage() {
                   <p className="text-[11px] leading-5 text-muted-foreground">开启思考后透传 reasoning_effort 给模型；部分模型不支持该参数时请保持不指定。</p>
                 </div>
               </>
-            ) : null}
+            )}
             {metaLoading ? <p className="text-xs text-muted-foreground">正在加载 Provider 选项…</p> : null}
             {metaError ? <p className="text-sm text-destructive" role="alert">{metaError}</p> : null}
             {formError ? <p className="text-sm text-destructive" role="alert">{formError}</p> : null}

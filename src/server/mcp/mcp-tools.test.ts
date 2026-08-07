@@ -61,6 +61,8 @@ describe("mcp tools", () => {
       model: "",
       maxTokens: 1024,
       temperature: 0.3,
+      reasoningEffort: null,
+      maxToolCalls: 3,
     })
 
     const before = listMcpTools(db).length
@@ -72,14 +74,34 @@ describe("mcp tools", () => {
     ensureDefaultMcpTools(db)
     const updated = updateMcpTool(
       "deepseek_web_search",
-      { config: { provider: "custom:deepseek-official", model: "deepseek-v4-flash", maxTokens: 2048 } },
+      {
+        config: {
+          provider: "custom:deepseek-official",
+          model: "deepseek-v4-flash",
+          maxTokens: 2048,
+          reasoningEffort: "high",
+          maxToolCalls: 5,
+        },
+      },
       db,
     )
     expect((updated.config as DeepseekWebSearchConfig).provider).toBe("custom:deepseek-official")
     expect((updated.config as DeepseekWebSearchConfig).model).toBe("deepseek-v4-flash")
     expect((updated.config as DeepseekWebSearchConfig).maxTokens).toBe(2048)
+    expect((updated.config as DeepseekWebSearchConfig).reasoningEffort).toBe("high")
+    expect((updated.config as DeepseekWebSearchConfig).maxToolCalls).toBe(5)
     // 未提供的字段保持原值
     expect((updated.config as DeepseekWebSearchConfig).temperature).toBe(0.3)
+  })
+
+  it("deepseek_web_search 拒绝非法 reasoningEffort / maxToolCalls", () => {
+    ensureDefaultMcpTools(db)
+    expect(() =>
+      updateMcpTool("deepseek_web_search", { config: { reasoningEffort: "ultra" as "high" } }, db),
+    ).toThrow(/reasoningEffort/)
+    expect(() =>
+      updateMcpTool("deepseek_web_search", { config: { maxToolCalls: 0 } }, db),
+    ).toThrow(/maxToolCalls/)
   })
 
   it("deepseek_web_search 拒绝非法 provider", () => {

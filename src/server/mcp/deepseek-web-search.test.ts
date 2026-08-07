@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CustomProviderRepository } from "@/server/custom-providers"
 import { createDatabase, type AppDatabase } from "@/server/db"
 import { AccountRepository, ProviderCredentialRepository } from "@/server/repository"
-import { deepseekWebSearch } from "./deepseek-web-search"
+import { deepseekWebSearch, parseResponsesSearchResult } from "./deepseek-web-search"
 import { ensureDefaultMcpTools, updateMcpTool } from "./mcp-tools"
 
 const ownerUserId = "custom-owner"
@@ -20,11 +20,11 @@ beforeEach(() => {
      VALUES (?, ?, ?, ?, 'USER', 'ACTIVE', 'hash', ?, ?)`,
   ).run(ownerUserId, "custom", "custom", "Custom", now, now)
   setGlobalDatabase(db)
-  // 自定义 Provider：模拟 DeepSeek 官方（baseUrl 为根，/anthropic/v1/messages 拼在后面）
+  // 自定义 Provider：模拟 DeepSeek 官方（baseUrl 为根，/responses 拼在后面）
   const provider = new CustomProviderRepository(ownerUserId, db).create({
     name: "DeepSeek 官方",
     baseUrl: "https://api.deepseek.com",
-    interfaceType: "chat",
+    interfaceType: "responses",
     models: ["deepseek-v4-flash"],
   })
   const account = new AccountRepository(ownerUserId, db).createProviderAccount({
@@ -48,49 +48,88 @@ afterEach(() => {
   db.close()
 })
 
-const ANTHROPIC_RESPONSE = {
-  id: "msg-1",
-  type: "message",
-  role: "assistant",
+const RESPONSES_PAYLOAD = {
+  id: "resp_1",
+  object: "response",
+  status: "completed",
   model: "deepseek-v4-flash",
-  content: [
-    { type: "thinking", thinking: "searching", signature: "s1" },
-    { type: "server_tool_use", id: "call_1", name: "web_search", input: { query: "bitcoin price" } },
+  output: [
+    { type: "reasoning", id: "rs_1", summary: [] },
     {
-      type: "web_search_tool_result",
-      tool_use_id: "call_1",
+      type: "web_search_call",
+      id: "ws_1",
+      status: "completed",
+      action: { type: "search", query: "bitcoin price" },
+    },
+    {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      status: "completed",
       content: [
-        { type: "web_search_result", title: "CoinMarketCap", url: "https://coinmarketcap.com/currencies/bitcoin/" },
-        { type: "web_search_result", title: "CNBC Quotes", url: "https://www.cnbc.com/quotes/BTC%3D-USS" },
+        {
+          type: "output_text",
+          text: "Bitcoin is trading at approximately **$65,000 USD**.",
+          annotations: [
+            {
+              type: "url_citation",
+              title: "CoinMarketCap",
+              url: "https://coinmarketcap.com/currencies/bitcoin/",
+            },
+            {
+              type: "url_citation",
+              title: "CNBC Quotes",
+              url: "https://www.cnbc.com/quotes/BTC%3D-USS",
+            },
+          ],
+        },
       ],
     },
-    { type: "text", text: "Bitcoin is trading at approximately **$65,000 USD**." },
   ],
-  stop_reason: "end_turn",
-  usage: { input_tokens: 10, output_tokens: 20 },
 }
 
+describe("parseResponsesSearchResult", () => {
+  it("提取 output_text 与 url_citation 来源", () => {
+    const parsed = parseResponsesSearchResult(RESPONSES_PAYLOAD)
+    expect(parsed.answer).toBe("Bitcoin is trading at approximately **$65,000 USD**.")
+    expect(parsed.results).toEqual([
+      { title: "CoinMarketCap", url: "https://coinmarketcap.com/currencies/bitcoin/" },
+      { title: "CNBC Quotes", url: "https://www.cnbc.com/quotes/BTC%3D-USS" },
+    ])
+  })
+})
+
 describe("deepseekWebSearch", () => {
-  it("直连 Provider 的 Anthropic messages 端点并原样返回答案与搜索来源", async () => {
+  it("直连 Provider 的 Responses 端点并原样返回答案与搜索来源", async () => {
     const callGateway = vi.fn(async (request: Request) => {
-      expect(request.url).toBe("https://api.deepseek.com/anthropic/v1/messages")
-      expect(request.headers.get("x-api-key")).toBe("sk-deepseek")
-      expect(request.headers.get("anthropic-version")).toBe("2023-06-01")
+      expect(request.url).toBe("https://api.deepseek.com/responses")
+      expect(request.headers.get("authorization")).toBe("Bearer sk-deepseek")
       expect(request.headers.get("accept")).toBe("application/json")
+      expect(request.headers.get("anthropic-version")).toBeNull()
       const body = JSON.parse(await request.text()) as {
         model: string
-        max_tokens: number
+        max_output_tokens: number
         temperature: number
-        messages: Array<{ role: string; content: Array<{ type: string; text?: string }> }>
-        tools: Array<{ type: string; name: string; max_uses: number }>
+        input: string
+        tools: Array<{ type: string }>
+        tool_choice: { type: string }
+        max_tool_calls?: number
+        reasoning?: { effort: string }
       }
       expect(body.model).toBe("deepseek-v4-flash")
-      expect(body.max_tokens).toBe(1024)
+      expect(body.max_output_tokens).toBe(1024)
       expect(body.temperature).toBe(0.3)
-      expect(body.messages[0].content[0]).toEqual({ type: "text", text: "比特币当前价格是多少？" })
-      expect(body.tools).toEqual([{ type: "web_search_20260209", name: "web_search", max_uses: 3 }])
-      return new Response(JSON.stringify(ANTHROPIC_RESPONSE), { status: 200 })
+      expect(body.input).toBe("比特币当前价格是多少？")
+      expect(body.tools).toEqual([{ type: "web_search" }])
+      expect(body.tool_choice).toEqual({ type: "web_search" })
+      expect(body.max_tool_calls).toBe(5)
+      expect(body.reasoning).toEqual({ effort: "high" })
+      return new Response(JSON.stringify(RESPONSES_PAYLOAD), { status: 200 })
     })
+
+    updateMcpTool("deepseek_web_search", {
+      config: { reasoningEffort: "high", maxToolCalls: 5 },
+    }, db)
 
     const result = await deepseekWebSearch(
       { content: "比特币当前价格是多少？" },
@@ -125,7 +164,6 @@ describe("deepseekWebSearch", () => {
   })
 
   it("Provider 没有可用账号时报错", async () => {
-    // 把所有账号置为无效
     db.prepare("UPDATE accounts SET auth_state='AUTH_ERROR'").run()
     await expect(
       deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, vi.fn()),
@@ -134,16 +172,16 @@ describe("deepseekWebSearch", () => {
 
   it("上游非 200 时抛出上游错误信息", async () => {
     const callGateway = vi.fn(async () => {
-      return new Response(JSON.stringify({ error: { message: "invalid x-api-key" } }), { status: 401 })
+      return new Response(JSON.stringify({ error: { message: "invalid api key" } }), { status: 401 })
     })
     await expect(
       deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, callGateway),
-    ).rejects.toThrow(/invalid x-api-key/)
+    ).rejects.toThrow(/invalid api key/)
   })
 
   it("响应既无文本也无搜索结果时报错", async () => {
     const callGateway = vi.fn(async () => {
-      return new Response(JSON.stringify({ type: "message", content: [{ type: "thinking", thinking: "..." }] }), {
+      return new Response(JSON.stringify({ output: [{ type: "reasoning", summary: [] }] }), {
         status: 200,
       })
     })

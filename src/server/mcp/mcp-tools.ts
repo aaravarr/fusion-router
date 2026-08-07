@@ -13,12 +13,18 @@ export interface DescribeImageConfig {
   reasoningEffort: "low" | "medium" | "high" | null
 }
 
+export type DeepseekWebSearchReasoningEffort = "none" | "low" | "medium" | "high" | "max"
+
 export interface DeepseekWebSearchConfig {
   /** 明确指定的 Provider（poolType，内置或自定义）；不做按模型自动路由。 */
   provider: string | null
   model: string
   maxTokens: number
   temperature: number
+  /** Responses API reasoning.effort；null 表示不传，走模型默认。 */
+  reasoningEffort: DeepseekWebSearchReasoningEffort | null
+  /** Responses API max_tool_calls，限制本轮服务端工具（含 web_search）调用次数。 */
+  maxToolCalls: number
 }
 
 export type McpToolConfig = DescribeImageConfig | DeepseekWebSearchConfig
@@ -78,7 +84,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     toolType: "deepseek_web_search",
     name: "deepseek_web_search",
-    description: "网页搜索工具：把内容交给配置的 Provider 模型，调用其原生 web search 能力，把搜索结果原样返回",
+    description: "网页搜索工具：把内容交给配置的 Provider 模型（Responses API + 无版本号 web_search），把搜索结果原样返回",
     inputSchema: {
       type: "object",
       properties: {
@@ -95,6 +101,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       model: "",
       maxTokens: 1024,
       temperature: 0.3,
+      reasoningEffort: null,
+      maxToolCalls: 3,
     },
   },
 ]
@@ -208,6 +216,25 @@ export function updateMcpTool(
       // 搜索工具必须明确指定 Provider，不允许自动路由
       if ("provider" in input.config && input.config.provider !== null && typeof input.config.provider !== "string") {
         throw new Error("provider 必须是字符串或 null")
+      }
+      if ("reasoningEffort" in input.config) {
+        const value = input.config.reasoningEffort
+        if (
+          value !== null &&
+          value !== "none" &&
+          value !== "low" &&
+          value !== "medium" &&
+          value !== "high" &&
+          value !== "max"
+        ) {
+          throw new Error("reasoningEffort 必须是 none、low、medium、high、max 之一或 null")
+        }
+      }
+      if ("maxToolCalls" in input.config) {
+        const value = input.config.maxToolCalls
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 20) {
+          throw new Error("maxToolCalls 必须是 1 到 20 之间的整数")
+        }
       }
     } else {
       if ("reasoningEnabled" in input.config && typeof input.config.reasoningEnabled !== "boolean") {
