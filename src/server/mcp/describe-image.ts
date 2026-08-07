@@ -35,7 +35,7 @@ interface DescribeRequestBody {
     }>
     max_tokens: number
     temperature: number
-    reasoning_effort?: "none" | "low" | "medium" | "high"
+    reasoning_effort?: "none" | "low" | "medium" | "high" | "max"
     thinking?: { type: string }
   }
 }

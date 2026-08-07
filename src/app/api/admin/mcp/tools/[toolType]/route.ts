@@ -18,7 +18,9 @@ export const configSchema = z
     maxTokens: z.number().int().min(1).max(32768).optional(),
     temperature: z.number().min(0).max(2).optional(),
     reasoningEnabled: z.boolean().optional(),
-    reasoningEffort: z.enum(["low", "medium", "high"]).nullable().optional(),
+    // describe_image: low/medium/high；deepseek_web_search 另支持 none/max
+    reasoningEffort: z.enum(["none", "low", "medium", "high", "max"]).nullable().optional(),
+    maxToolCalls: z.number().int().min(1).max(20).optional(),
   })
   .strict()
 

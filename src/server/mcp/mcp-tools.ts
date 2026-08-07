@@ -10,7 +10,8 @@ export interface DescribeImageConfig {
   maxTokens: number
   temperature: number
   reasoningEnabled: boolean
-  reasoningEffort: "low" | "medium" | "high" | null
+  // 与搜索工具共享 update 入参类型；识图校验仍只接受 low/medium/high
+  reasoningEffort: "none" | "low" | "medium" | "high" | "max" | null
 }
 
 export type DeepseekWebSearchReasoningEffort = "none" | "low" | "medium" | "high" | "max"
