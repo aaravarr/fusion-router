@@ -27,6 +27,42 @@ describe("parseKimiUsagePayload", () => {
     })
     expect(parsed.summary).toMatchObject({ used: 80, limit: 100 })
   })
+
+  it("parses official boosterWallet payload (string numbers + fixed-point amounts)", () => {
+    // 结构对齐官方 kimi-code packages/oauth/src/managed-usage.ts 的 /usages 响应。
+    const parsed = parseKimiUsagePayload({
+      usage: { used: "40", limit: "1000", resetTime: "2026-08-03T05:20:51Z" },
+      limits: [
+        { window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { used: "1", limit: "100", resetTime: "2026-08-03T05:20:51Z" } },
+      ],
+      boosterWallet: {
+        balance: { type: "BOOSTER", amount: "1000000000", amountLeft: "800000000" },
+        monthlyChargeLimit: { priceInCents: 10000, currency: "USD" },
+        monthlyUsed: { priceInCents: 1234, currency: "USD" },
+        monthlyChargeLimitEnabled: true,
+      },
+    })
+    expect(parsed.summary).toMatchObject({ used: 40, limit: 1000 })
+    expect(parsed.limits[0]?.label).toMatch(/5h/i)
+    // amount ÷ 1_000_000 → cents：1000000000 → 1000¢ = $10；amountLeft → 800¢ = $8
+    expect(parsed.wallet).toEqual({
+      balanceCents: 800,
+      totalCents: 1000,
+      monthlyChargeLimitEnabled: true,
+      monthlyChargeLimitCents: 10000,
+      monthlyUsedCents: 1234,
+      currency: "USD",
+    })
+  })
+
+  it("returns wallet=null when boosterWallet is absent or not BOOSTER type", () => {
+    expect(parseKimiUsagePayload({ usage: { used: 1, limit: 10 } }).wallet).toBeNull()
+    const nonBooster = parseKimiUsagePayload({
+      usage: { used: 1, limit: 10 },
+      boosterWallet: { balance: { type: "PAYG", amount: "100", amountLeft: "50" } },
+    })
+    expect(nonBooster.wallet).toBeNull()
+  })
 })
 
 describe("kimiExternalId", () => {

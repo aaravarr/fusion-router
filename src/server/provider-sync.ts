@@ -38,6 +38,7 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
           limit_value=excluded.limit_value,
           remaining_value=excluded.remaining_value,
           unit=excluded.unit,
+          wallet_json=excluded.wallet_json,
           observation_version=observation_version+1,last_observed_at=excluded.last_observed_at`
           : `usage_percent=MAX(usage_percent, excluded.usage_percent),
           reset_at=excluded.reset_at,
@@ -49,11 +50,12 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
             ELSE MIN(remaining_value, excluded.remaining_value)
           END,
           unit=COALESCE(excluded.unit, unit),
+          wallet_json=COALESCE(excluded.wallet_json, wallet_json),
           observation_version=observation_version+1,last_observed_at=excluded.last_observed_at`
-        db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit)
-          VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
+        db.prepare(`INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit,wallet_json)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,account_id,kind) DO UPDATE SET
           ${conflictUpdate}`)
-          .run(ownerUserId, accountId, window.kind, window.usagePercent, window.resetAt, window.source, window.lastObservedAt, window.limitValue ?? null, window.remainingValue ?? null, window.unit ?? null)
+          .run(ownerUserId, accountId, window.kind, window.usagePercent, window.resetAt, window.source, window.lastObservedAt, window.limitValue ?? null, window.remainingValue ?? null, window.unit ?? null, window.wallet ? JSON.stringify(window.wallet) : null)
       }
       if (account.poolType === "xai-grok") {
         upsertLocalRollingUsage(ownerUserId, accountId, db)
@@ -73,7 +75,7 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
   }
 
   const refreshed = accounts.get(accountId)
-  const quotaWindows = db.prepare(`SELECT kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit
+  const quotaWindows = db.prepare(`SELECT kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit,wallet_json
     FROM quota_windows WHERE owner_user_id=? AND account_id=? ORDER BY last_observed_at DESC`).all(ownerUserId, accountId) as Record<string, unknown>[]
   return {
     account: refreshed ? {
@@ -87,6 +89,7 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
         limitValue: window.limit_value,
         remainingValue: window.remaining_value,
         unit: window.unit,
+        ...(window.wallet_json ? { wallet: JSON.parse(String(window.wallet_json)) } : {}),
       })),
     } : null,
   }

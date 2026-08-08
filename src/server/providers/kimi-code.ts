@@ -9,6 +9,7 @@
 import type {
   Provider,
   QuotaWindow,
+  QuotaWallet,
   ProviderCredential,
   ForwardRequestInput,
   ForwardTarget,
@@ -27,12 +28,24 @@ import {
   KIMI_CODE_CLIENT_ID,
   refreshKimiAccessToken,
   type KimiUsageRow,
+  type KimiWalletInfo,
 } from "../kimi-oauth"
 
 const REQUEST_TIMEOUT_MS = 30_000
 const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
 const DEFAULT_MODELS = ["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"] as const
 const PASSTHROUGH_HEADERS = ["accept-language", "anthropic-version", "anthropic-beta"] as const
+
+function walletToQuota(wallet: KimiWalletInfo): QuotaWallet {
+  return {
+    balanceCents: wallet.balanceCents,
+    totalCents: wallet.totalCents,
+    monthlyChargeLimitEnabled: wallet.monthlyChargeLimitEnabled,
+    monthlyChargeLimitCents: wallet.monthlyChargeLimitCents,
+    monthlyUsedCents: wallet.monthlyUsedCents,
+    currency: wallet.currency,
+  }
+}
 
 function roundPercent(value: number): number {
   if (!Number.isFinite(value)) return 0
@@ -183,7 +196,14 @@ export class KimiCodeProvider implements Provider {
     void _accountId
     const credential = await this.getCredential(account)
     const usage = await fetchKimiUsage(credential.token, account)
-    return windowsFromUsage(usage.summary, usage.limits)
+    const windows = windowsFromUsage(usage.summary, usage.limits)
+    // Booster 钱包余额挂在周额度窗口上（usage.summary 即周额度）。
+    if (usage.wallet && windows.length > 0) {
+      const wallet = walletToQuota(usage.wallet)
+      const target = windows.find((window) => window.kind === "WEEKLY") ?? windows[0]
+      target.wallet = wallet
+    }
+    return windows
   }
 
   getAvailableModels(): string[] {

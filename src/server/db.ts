@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS quota_windows (
   limit_value INTEGER,
   remaining_value INTEGER,
   unit TEXT,
+  wallet_json TEXT,
   observation_version INTEGER NOT NULL DEFAULT 1,
   last_observed_at TEXT NOT NULL,
   PRIMARY KEY(owner_user_id, account_id, kind)
@@ -408,6 +409,7 @@ function ensureCurrentQuotaColumns(db: AppDatabase): void {
   if (!cols.has("limit_value")) db.exec("ALTER TABLE quota_windows ADD COLUMN limit_value INTEGER")
   if (!cols.has("remaining_value")) db.exec("ALTER TABLE quota_windows ADD COLUMN remaining_value INTEGER")
   if (!cols.has("unit")) db.exec("ALTER TABLE quota_windows ADD COLUMN unit TEXT")
+  if (!cols.has("wallet_json")) db.exec("ALTER TABLE quota_windows ADD COLUMN wallet_json TEXT")
 }
 
 function ensureCurrentApiKeyColumns(db: AppDatabase): void {

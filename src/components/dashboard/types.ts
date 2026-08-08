@@ -1,5 +1,15 @@
 export type QuotaState = "available" | "blocked" | "unknown";
 
+/** 账户钱包余额（美分），来自上游 /usages 类余额接口。 */
+export interface QuotaWallet {
+  balanceCents: number;
+  totalCents: number;
+  monthlyChargeLimitEnabled: boolean;
+  monthlyChargeLimitCents: number;
+  monthlyUsedCents: number;
+  currency: string;
+}
+
 export interface QuotaWindow {
   kind?: string;
   status?: QuotaState;
@@ -14,6 +24,7 @@ export interface QuotaWindow {
   limitValue?: number | null;
   remainingValue?: number | null;
   unit?: string | null;
+  wallet?: QuotaWallet | null;
 }
 
 export interface Account {

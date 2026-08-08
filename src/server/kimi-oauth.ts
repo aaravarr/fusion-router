@@ -64,9 +64,32 @@ export interface KimiUsageRow {
   resetAt: string | null
 }
 
+/**
+ * Booster 钱包余额，来自官方 /usages 响应的 boosterWallet。
+ * amount / amountLeft 是 fixed-point 数值（÷1_000_000 = 美分）；
+ * monthlyChargeLimit / monthlyUsed 的 priceInCents 直接就是美分。
+ * 参见官方 kimi-code 仓库 packages/oauth/src/managed-usage.ts。
+ */
+export interface KimiWalletInfo {
+  /** 剩余余额（美分）。 */
+  balanceCents: number
+  /** 总余额（美分）。 */
+  totalCents: number
+  /** 是否启用了月度消费上限。 */
+  monthlyChargeLimitEnabled: boolean
+  /** 月度消费上限（美分）；0 表示不限额。 */
+  monthlyChargeLimitCents: number
+  /** 本月已消费（美分）。 */
+  monthlyUsedCents: number
+  /** ISO 货币代码，如 USD / CNY。 */
+  currency: string
+}
+
 export interface KimiParsedUsage {
   summary: KimiUsageRow | null
   limits: KimiUsageRow[]
+  /** Booster 钱包余额；无钱包（非 BOOSTER 类型）时为 null。 */
+  wallet: KimiWalletInfo | null
 }
 
 type DeviceHeaders = Record<string, string>
@@ -376,8 +399,55 @@ function toUsageRow(raw: unknown, defaultLabel: string): KimiUsageRow | null {
   return { label, used: used ?? 0, limit: limit ?? 0, resetAt: resetAtFrom(record) }
 }
 
+const FIXED_POINT_CENTS = 1_000_000
+
+function fixedPointToCents(value: number): number {
+  const cents = value / FIXED_POINT_CENTS
+  if (cents > 0 && cents < 1) return 1
+  return Math.round(cents)
+}
+
+function parseMoney(raw: unknown): { cents: number; currency: string } | null {
+  if (!raw || typeof raw !== "object") return null
+  const record = raw as Record<string, unknown>
+  const cents = toInt(record.priceInCents)
+  if (cents === null) return null
+  const currency = typeof record.currency === "string" ? record.currency : ""
+  return { cents, currency }
+}
+
+function parseBoosterWallet(raw: unknown): KimiWalletInfo | null {
+  if (!raw || typeof raw !== "object") return null
+  const record = raw as Record<string, unknown>
+  const balance = record.balance
+  if (!balance || typeof balance !== "object") return null
+  const balanceRecord = balance as Record<string, unknown>
+  if (balanceRecord.type !== "BOOSTER") return null
+  const amount = toInt(balanceRecord.amount)
+  if (amount === null || amount <= 0) return null
+  const totalCents = fixedPointToCents(amount)
+  const amountLeft = toInt(balanceRecord.amountLeft)
+  const balanceCents = amountLeft !== null ? fixedPointToCents(amountLeft) : 0
+  const monthlyLimit = parseMoney(record.monthlyChargeLimit)
+  const monthlyUsed = parseMoney(record.monthlyUsed)
+  const currency =
+    monthlyLimit && monthlyLimit.currency
+      ? monthlyLimit.currency
+      : monthlyUsed && monthlyUsed.currency
+        ? monthlyUsed.currency
+        : "USD"
+  return {
+    balanceCents,
+    totalCents,
+    monthlyChargeLimitEnabled: record.monthlyChargeLimitEnabled === true,
+    monthlyChargeLimitCents: monthlyLimit?.cents ?? 0,
+    monthlyUsedCents: monthlyUsed?.cents ?? 0,
+    currency,
+  }
+}
+
 export function parseKimiUsagePayload(payload: unknown): KimiParsedUsage {
-  if (!payload || typeof payload !== "object") return { summary: null, limits: [] }
+  if (!payload || typeof payload !== "object") return { summary: null, limits: [], wallet: null }
   const record = payload as Record<string, unknown>
   const summary = toUsageRow(record.usage, "Weekly limit")
   const limits: KimiUsageRow[] = []
@@ -403,7 +473,7 @@ export function parseKimiUsagePayload(payload: unknown): KimiParsedUsage {
       if (row) limits.push(row)
     }
   }
-  return { summary, limits }
+  return { summary, limits, wallet: parseBoosterWallet(record.boosterWallet) }
 }
 
 export async function fetchKimiUsage(accessToken: string, account?: MirrorSelectionAccount): Promise<KimiParsedUsage> {

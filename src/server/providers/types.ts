@@ -15,6 +15,22 @@ export const POOL_TYPE_LABELS: Record<BuiltinPoolType, string> = {
 
 // Quota
 
+/** 账户钱包余额（美分），来自上游 /usages 类余额接口；非金额类窗口为 null。 */
+export interface QuotaWallet {
+  /** 剩余余额（美分）。 */
+  balanceCents: number
+  /** 总余额（美分）。 */
+  totalCents: number
+  /** 是否启用了月度消费上限。 */
+  monthlyChargeLimitEnabled: boolean
+  /** 月度消费上限（美分）；0 表示不限额。 */
+  monthlyChargeLimitCents: number
+  /** 本月已消费（美分）。 */
+  monthlyUsedCents: number
+  /** ISO 货币代码，如 USD / CNY。 */
+  currency: string
+}
+
 export interface QuotaWindow {
   kind: QuotaKind
   usagePercent: number
@@ -25,6 +41,8 @@ export interface QuotaWindow {
   limitValue?: number | null
   remainingValue?: number | null
   unit?: string | null
+  /** 附加的钱包余额；仅当该窗口同时携带账户余额时存在。 */
+  wallet?: QuotaWallet | null
 }
 
 // Credential

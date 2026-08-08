@@ -38,7 +38,7 @@ import { QuotaForecastPanel } from "./quota-forecast-panel";
 import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
-import type { Account } from "./types";
+import type { Account, QuotaWallet } from "./types";
 import { ImportJobProgress, ImportTaskCenter, type ImportJob, useImportJobStream } from "./import-task-center";
 import { PoolTypeFilterBar, type PoolFilterOption } from "./pool-type-filter";
 import { useConfirm } from "@/components/ui/confirm-provider";
@@ -825,6 +825,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                   {!isCustomPool && quotaKinds.includes("rolling24h") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="滚动 24 小时" quota={getQuota(account, "rolling24h")} variant="card" /></div> : null}
                   {quotaKinds.includes("permanent") && getQuota(account, "permanent") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="永久余额" quota={getQuota(account, "permanent")} variant="card" /></div> : null}
                   {quotaKinds.includes("customPeriod") && getQuota(account, "customPeriod") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="自定义周期" quota={getQuota(account, "customPeriod")} variant="card" /></div> : null}
+                  {poolOf(account) === "kimi-code" ? (() => { const wallet = getQuota(account, "weekly")?.wallet; return wallet ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><WalletCard wallet={wallet} /></div> : null; })() : null}
                   {isCustomPool && !getQuota(account, "permanent") && !getQuota(account, "customPeriod") ? <div className="rounded-md border bg-[#fafafa] px-3.5 py-3 text-xs leading-5 text-muted-foreground">尚未探测到余额，点击下方「立即同步」获取。</div> : null}
                 </div>
               </DetailSection>
@@ -890,6 +891,29 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
 
 function DetailSection({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return <section><div className="mb-2.5"><h3 className="text-xs font-medium text-foreground">{title}</h3>{description ? <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{description}</p> : null}</div>{children}</section>;
+}
+
+function formatCents(cents: number, currency: string): string {
+  const symbol = currency === "USD" || currency === "CNY" ? { USD: "$", CNY: "¥" }[currency] : `${currency} `;
+  return `${symbol}${(cents / 100).toFixed(2)}`;
+}
+
+function WalletCard({ wallet }: { wallet: QuotaWallet }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">钱包余额</p>
+      <p className="text-sm font-semibold tabular-nums" title={`总额 ${formatCents(wallet.totalCents, wallet.currency)}`}>
+        {formatCents(wallet.balanceCents, wallet.currency)}
+        <span className="ml-1 text-[10px] font-normal text-muted-foreground">/ {formatCents(wallet.totalCents, wallet.currency)}</span>
+      </p>
+      {wallet.monthlyChargeLimitEnabled ? (
+        <p className="text-[11px] text-muted-foreground">
+          本月已用 {formatCents(wallet.monthlyUsedCents, wallet.currency)}
+          {wallet.monthlyChargeLimitCents > 0 ? ` / 上限 ${formatCents(wallet.monthlyChargeLimitCents, wallet.currency)}` : ""}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function DetailRow({ label, value, mono, title }: { label: string; value: string; mono?: boolean; title?: string }) {
@@ -1423,7 +1447,6 @@ function KimiRefreshTokenDialog({ open, onOpenChange, onCreated }: { open: boole
 }
 
 function KimiApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
-  const { adminFetch } = useAdmin();
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1434,9 +1457,15 @@ function KimiApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; on
     setError(null);
     setSuccess(false);
     try {
-      const response = await adminFetch("/api/admin/accounts/kimi-apikey", {
+      // 用裸 fetch：adminFetch 会把任何 401 当会话过期跳登录页，而业务校验
+      // 错误（如 key 无效）不能触发跳转。后端对 key 无效已返回 400，这里
+      // 再加一层保险，确保录入流程的错误永远在对话框内呈现。
+      const response = await fetch("/api/admin/accounts/kimi-apikey", {
         method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey: apiKey.trim() }),
+        cache: "no-store",
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error?.message || "录入 API Key 失败");

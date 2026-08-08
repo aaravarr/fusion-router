@@ -43,15 +43,25 @@ describe("POST /api/admin/accounts/kimi-apikey", () => {
     expect(mocks.fetchKimiModels).not.toHaveBeenCalled()
   })
 
-  it("key 无效（401）时返回 401 且不建账户", async () => {
+  it("key 无效（上游 401）时返回 400（非 401，避免前端误判未登录跳转）且不建账户", async () => {
     mocks.fetchKimiModels.mockRejectedValue(new Error("Kimi /models failed (HTTP 401): invalid key"))
     const response = await POST(new Request("http://x/api/admin/accounts/kimi-apikey", {
       method: "POST",
       body: JSON.stringify({ apiKey: "sk-invalid" }),
     }))
-    expect(response.status).toBe(401)
+    expect(response.status).toBe(400)
     const payload = (await response.json()) as { error: { type: string } }
     expect(payload.error.type).toBe("kimi_apikey_invalid")
+    expect(mocks.createProviderAccount).not.toHaveBeenCalled()
+  })
+
+  it("key 无效（上游 403）时返回 400 且不建账户", async () => {
+    mocks.fetchKimiModels.mockRejectedValue(new Error("Kimi /models failed (HTTP 403): forbidden"))
+    const response = await POST(new Request("http://x/api/admin/accounts/kimi-apikey", {
+      method: "POST",
+      body: JSON.stringify({ apiKey: "sk-invalid" }),
+    }))
+    expect(response.status).toBe(400)
     expect(mocks.createProviderAccount).not.toHaveBeenCalled()
   })
 

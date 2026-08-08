@@ -30,16 +30,19 @@ export async function POST(request: Request) {
   }
 
   // 先实测验证 key：拉 /models 确认有效，无效直接拒绝。
+  // 注意：key 无效必须用非 401 状态码（如 400）。前端 sessionFetch 会把 401
+  // 当作会话过期跳转登录页，业务错误码用 401 会导致「验证并录入 → 跳登录」。
   let models: string[] = []
   try {
     models = await fetchKimiModels(apiKey)
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause)
-    // 401/403 明确是 key 无效；其余（网络/5xx）按上游故障处理。
-    if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired/i.test(message)) {
+    // 401/402/403 明确是 key 无效或计划不可用（官方 kimi-code 将三者均视为
+    // auth 类错误）；其余（网络/5xx）按上游故障处理。
+    if (/\b(401|402|403)\b/.test(message) || /invalid|unauthorized|expired/i.test(message)) {
       return Response.json(
         { error: { type: "kimi_apikey_invalid", message: `Kimi API Key 验证失败：${message}` } },
-        { status: 401 },
+        { status: 400 },
       )
     }
     return Response.json(
