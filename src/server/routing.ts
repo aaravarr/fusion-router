@@ -7,6 +7,7 @@ import type { AccountRecord, PoolType, QuotaKind, RouteSelection } from "./types
 import { tryGetProvider } from "./providers"
 import { ModelRoutingRepository } from "./repository"
 import { refreshStaleLocalRollingUsage, resolveXaiBlockSeconds } from "./quota-usage"
+import { isBuiltinProviderEnabled } from "./builtin-provider-state"
 
 type Row = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
@@ -106,7 +107,7 @@ export class RoutingService {
       this.db.prepare("DELETE FROM route_leases WHERE owner_user_id = ? AND (completed_at IS NOT NULL OR expires_at <= ?)").run(this.ownerUserId, timestamp)
       const state = this.getState()
       const poolPrefs = this.getPoolPreferences()
-      const all = this.accounts.list()
+      const all = this.accounts.list().filter((account) => isBuiltinProviderEnabled(account.poolType, this.db))
       // Repair rows written by versions that treated every xAI 429 as daily
       // token exhaustion. A positive persisted token remainder proves the 429
       // was only a temporary throttle; keep that cooldown separate and restore

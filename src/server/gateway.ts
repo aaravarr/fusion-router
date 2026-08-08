@@ -20,6 +20,7 @@ import { buildChatFallbackFromResponsesWithContext } from "./responses/responses
 import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
 import { normalizeOpenCodeGoResponsesSse } from "./responses/opencode-go-compat"
 import { hasImageInBody, modelSupportsImage, rewriteImagesToText } from "./mcp/openrouter-models"
+import { isBuiltinProviderEnabled } from "./builtin-provider-state"
 
 export interface AccessCredential { accountId: string; goApiKey: string; credentialVersion: number }
 export interface CredentialProvider { get(ownerUserId: string, accountId: string): Promise<AccessCredential> }
@@ -922,7 +923,7 @@ export class GatewayService {
   private handleModels(ownerUserId: string): Response {
     const accounts = new AccountRepository(ownerUserId, this.db).list()
     const registry = getProviderRegistry()
-    const activePoolTypes = registry.activePoolTypes(accounts)
+    const activePoolTypes = registry.activePoolTypes(accounts).filter((poolType) => isBuiltinProviderEnabled(poolType, this.db))
     const modelSet = new Set<string>()
     for (const poolType of activePoolTypes) {
       const provider = registry.tryGet(poolType)
@@ -932,6 +933,7 @@ export class GatewayService {
     }
     if (modelSet.size === 0) {
       for (const provider of registry.all()) {
+        if (!isBuiltinProviderEnabled(provider.poolType, this.db)) continue
         for (const model of provider.getAvailableModels([])) modelSet.add(model)
       }
     }

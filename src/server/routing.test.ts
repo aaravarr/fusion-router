@@ -3,6 +3,7 @@ import { createDatabase } from "./db"
 import { SecretVault } from "./crypto"
 import { AccountRepository, ModelRoutingRepository } from "./repository"
 import { NoEligibleAccountError, RoutingService } from "./routing"
+import { setBuiltinProviderEnabled } from "./builtin-provider-state"
 import { upsertLocalRollingUsage } from "./quota-usage"
 
 const encryptionKey = Buffer.alloc(32, 4).toString("base64")
@@ -60,6 +61,21 @@ describe("routing", () => {
       expect((cause as NoEligibleAccountError).reason).toBe("EXHAUSTED")
       expect((cause as NoEligibleAccountError).retryAfterSeconds).toBeGreaterThanOrEqual(600)
     }
+  })
+
+  it("禁用内置 provider 后其账号退出调度，重新启用后恢复", () => {
+    const { db, routing, add } = make()
+    const first = add("one")
+    const selected = routing.select("request-1", "responses", new Set())
+    expect(selected.account.id).toBe(first)
+    routing.releaseLease(selected.leaseId)
+
+    setBuiltinProviderEnabled("opencode-go", false, db)
+    expect(() => routing.select("request-2", "responses", new Set())).toThrowError(NoEligibleAccountError)
+
+    // 账号数据保留，重新启用后立即恢复调度
+    setBuiltinProviderEnabled("opencode-go", true, db)
+    expect(routing.select("request-3", "responses", new Set()).account.id).toBe(first)
   })
 
   it("永远不路由其他用户的账号", () => {

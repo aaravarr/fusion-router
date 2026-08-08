@@ -24,6 +24,10 @@ interface CustomProvider {
   models: string[] | null; balanceConfig: BalanceConfig | null; enabled: boolean; createdAt: string; updatedAt: string; keyCount?: number;
 }
 interface ProviderKey { id: string; name: string; adminState: "ENABLED" | "DISABLED"; authState: string; maxConcurrency: number; lastSuccessAt: string | null; createdAt: string }
+interface BuiltinProvider {
+  poolType: string; label: string; description: string; quotaKinds: string[];
+  accountCount: number; readyAccountCount: number; enabled: boolean; updatedAt: string | null;
+}
 
 const DEFAULT_EXTRACTOR = `function(response) {
   return {
@@ -98,6 +102,7 @@ export function CustomProvidersPage() {
     <>
       <PageIntro eyebrow="CUSTOM UPSTREAMS" title="自定义 Provider" description="配置 OpenAI 兼容上游、接口类型和 API Key。未填写模型列表时，系统从上游 /models 自动发现。" actions={<Button size="sm" onClick={() => setEditing(null)}><Plus data-icon="inline-start" />新建 Provider</Button>} />
       {message ? <p className="mb-4 rounded-md border bg-white px-3 py-2 text-xs text-muted-foreground" role="status">{message}</p> : null}
+      <BuiltinProvidersPanel onMessage={setMessage} />
       {resource.error ? <Panel><ErrorState message={resource.error} onRetry={() => void resource.refresh()} /></Panel> : null}
       {!resource.error ? <Panel title="Provider 列表" description={`${providers.length} 个自定义上游；停用后其全部 Key 立即退出调度。`}>
         {resource.loading ? <LoadingTable rows={4} columns={5} /> : providers.length ? (
@@ -127,6 +132,56 @@ export function CustomProvidersPage() {
       {editing !== undefined ? <ProviderEditor provider={editing} onClose={() => setEditing(undefined)} onSaved={async () => { setEditing(undefined); await resource.refresh(); }} /> : null}
       {keyProvider ? <KeyManager provider={keyProvider} onClose={() => setKeyProvider(null)} adminFetch={adminFetch} /> : null}
     </>
+  );
+}
+
+function BuiltinProvidersPanel({ onMessage }: { onMessage: (message: string | null) => void }) {
+  const { adminFetch } = useAdmin();
+  const resource = useAdminResource<{ providers: BuiltinProvider[] }>("/api/admin/builtin-providers");
+  const providers = resource.data?.providers ?? [];
+  const [busyPoolType, setBusyPoolType] = useState<string | null>(null);
+
+  async function toggle(provider: BuiltinProvider) {
+    setBusyPoolType(provider.poolType); onMessage(null);
+    try {
+      const response = await adminFetch("/api/admin/builtin-providers", { method: "PATCH", body: JSON.stringify({ poolType: provider.poolType, enabled: !provider.enabled }) });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(errorMessage(payload, "切换失败"));
+      onMessage(provider.enabled
+        ? `已禁用 ${provider.label}：该 Provider 已退出路由调度，账号数据保留，可随时重新启用恢复。`
+        : `已启用 ${provider.label}：该 Provider 恢复参与路由调度。`);
+      await resource.refresh();
+    } catch (cause) { onMessage(cause instanceof Error ? cause.message : "切换失败"); }
+    finally { setBusyPoolType(null); }
+  }
+
+  return (
+    <Panel title="内置 Provider" description="系统内置的上游 Provider。禁用后该 Provider 退出路由调度、不再出现在账号池页面；账号数据保留，可随时重新启用恢复——禁用不是删除。">
+      {resource.loading ? <LoadingTable rows={2} columns={4} /> : resource.error ? <ErrorState message={resource.error} onRetry={() => void resource.refresh()} /> : (
+        <div className="divide-y">
+          {providers.map((provider) => (
+            <div key={provider.poolType} className="grid gap-4 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(180px,1fr)_minmax(240px,1.4fr)_auto] lg:items-center">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2"><p className="truncate text-sm font-medium">{provider.label}</p><span className={`rounded-sm px-1.5 py-0.5 text-[10px] ${provider.enabled ? "bg-success-soft text-success" : "bg-muted text-muted-foreground"}`}>{provider.enabled ? "ACTIVE" : "DISABLED"}</span></div>
+                <p className="mt-1 truncate text-xs text-muted-foreground">{provider.description}</p>
+              </div>
+              <div className="min-w-0 text-xs">
+                <div className="flex flex-wrap gap-1">
+                  {provider.quotaKinds.map((kind) => <span key={kind} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{kind}</span>)}
+                </div>
+                <p className="mt-1 text-muted-foreground">{provider.accountCount} 个账号{provider.readyAccountCount > 0 ? ` · ${provider.readyAccountCount} 个就绪` : ""}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" disabled={busyPoolType === provider.poolType} aria-label={`${provider.enabled ? "禁用" : "启用"} ${provider.label}`} onClick={() => void toggle(provider)}>
+                  {busyPoolType === provider.poolType ? <LoaderCircle className="animate-spin" /> : null}
+                  {provider.enabled ? "禁用" : "启用"}
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
   );
 }
 

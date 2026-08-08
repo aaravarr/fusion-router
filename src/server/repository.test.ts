@@ -86,6 +86,23 @@ describe("account list pagination", () => {
     expect(searched.stats.byPoolType["xai-grok"]?.total).toBe(1)
     expect(go.id).toBeTruthy()
   })
+
+  it("excludePoolTypes 同时从列表和 stats 中排除（禁用内置 provider 场景）", () => {
+    const db = createDatabase(":memory:")
+    const now = new Date("2026-07-24T08:00:00.000Z")
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("owner", "owner", "owner", "Owner", "USER", "hash", now.toISOString(), now.toISOString())
+    const repository = new AccountRepository("owner", db, new SecretVault(encryptionKey))
+    repository.createProviderAccount({ name: "xai", poolType: "xai-grok", externalId: "x1" })
+    repository.createProviderAccount({ name: "openai", poolType: "openai", externalId: "o1" })
+
+    const filtered = repository.listPage({ page: 1, pageSize: 50, excludePoolTypes: ["xai-grok"] })
+    expect(filtered.total).toBe(1)
+    expect(filtered.items.map((item) => item.poolType)).toEqual(["openai"])
+    expect(filtered.stats.total).toBe(1)
+    expect(filtered.stats.byPoolType["xai-grok"]).toBeUndefined()
+    expect(filtered.stats.byPoolType["openai"]?.total).toBe(1)
+  })
 })
 
 describe("bulk account operations", () => {

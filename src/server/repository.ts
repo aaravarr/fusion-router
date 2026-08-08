@@ -7,6 +7,7 @@ import type { AccountCredential, AccountRecord, AdminState, AuthState, BillingGu
 import type { ModelRouteRule, PoolType } from "./types"
 import type { ParsedUsage } from "./opencode-web/parser"
 import { deriveAccountRouteStatus } from "./account-route-state"
+import { isBuiltinProviderEnabled } from "./builtin-provider-state"
 
 type Row = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
@@ -66,6 +67,8 @@ export interface AccountListQuery {
   sort?: AccountListSort | null
   page?: number
   pageSize?: number | null
+  /** Pool types to hide entirely (e.g. disabled builtin providers). Excluded from items AND stats. */
+  excludePoolTypes?: string[] | null
 }
 
 export interface AccountPoolStats {
@@ -164,6 +167,13 @@ export class AccountRepository {
     const where = conditions.join(" AND ")
     const rows = this.db.prepare(`SELECT * FROM accounts WHERE ${where}`).all(...params) as Row[]
     let accounts = rows.map(accountFromRow)
+
+    // Disabled builtin providers exit the account pool UI entirely: their
+    // accounts count neither in the list nor in stats/byPoolType chips.
+    const excludedPoolTypes = new Set((query.excludePoolTypes ?? []).filter(Boolean))
+    if (excludedPoolTypes.size > 0) {
+      accounts = accounts.filter((account) => !excludedPoolTypes.has(account.poolType))
+    }
 
     const timestamp = nowIso()
     const blockedRows = this.db.prepare(`SELECT DISTINCT account_id FROM quota_windows
@@ -642,6 +652,8 @@ export function listDueUsageCandidates(db: AppDatabase = getDatabase(), now = ne
       AND a.last_request_at>=?
     ORDER BY a.next_usage_check_at LIMIT ?`).all(now.toISOString(), activeSince, limit) as { owner_user_id: string; id: string; pool_type: string }[])
     .map((row) => ({ ownerUserId: row.owner_user_id, accountId: row.id, poolType: row.pool_type ?? "opencode-go" }))
+    // Disabled builtin providers exit scheduling entirely; skip their upstream quota probes too.
+    .filter((candidate) => isBuiltinProviderEnabled(candidate.poolType, db))
 }
 
 export interface ApiKeyRecord { id: string; ownerUserId: string; name: string; prefix: string; enabled: boolean; allowedModels: string[] | null; expiresAt: string | null; lastUsedAt: string | null; createdAt: string; revealable: boolean; requestCount?: number }

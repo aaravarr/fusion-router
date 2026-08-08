@@ -1,6 +1,7 @@
 import { CustomProviderRepository } from "@/server/custom-providers"
 import type { AppDatabase } from "@/server/db"
 import { getDatabase } from "@/server/db"
+import { isBuiltinProviderEnabled } from "@/server/builtin-provider-state"
 import { POOL_TYPE_METADATA } from "@/server/providers"
 
 export interface PoolTypeOption {
@@ -11,31 +12,45 @@ export interface PoolTypeOption {
   credentialFields?: Array<{ key: string; label: string; required: boolean; type: string }>
 }
 
+function listBuiltinPoolTypeOptions(db: AppDatabase, includeDisabled: boolean): PoolTypeOption[] {
+  return Object.keys(POOL_TYPE_METADATA).map((key): PoolTypeOption | null => {
+    const meta = POOL_TYPE_METADATA[key as keyof typeof POOL_TYPE_METADATA]
+    if (!meta) return null
+    if (!includeDisabled && !isBuiltinProviderEnabled(meta.type, db)) return null
+    return {
+      type: meta.type,
+      label: meta.label,
+      description: meta.description,
+      quotaKinds: [...meta.quotaKinds],
+      credentialFields: meta.credentialFields,
+    }
+  }).filter((option): option is PoolTypeOption => option !== null)
+}
+
+function listCustomPoolTypeOptions(ownerUserId: string, db: AppDatabase): PoolTypeOption[] {
+  return new CustomProviderRepository(ownerUserId, db).list().map((provider) => ({
+    type: provider.poolType,
+    label: provider.name,
+    description: provider.description || `${provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · ${provider.baseUrl}`,
+    quotaKinds: provider.balanceConfig ? ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD"] : [],
+    credentialFields: [{ key: "token", label: "API Key", required: true, type: "password" }],
+  }))
+}
+
 export function listPoolTypeOptions(ownerUserId: string, db: AppDatabase = getDatabase()): PoolTypeOption[] {
   return [
-    ...Object.keys(POOL_TYPE_METADATA).map((key): PoolTypeOption | null => {
-      const meta = POOL_TYPE_METADATA[key as keyof typeof POOL_TYPE_METADATA]
-      if (!meta) return null
-      return {
-        type: meta.type,
-        label: meta.label,
-        description: meta.description,
-        quotaKinds: [...meta.quotaKinds],
-        credentialFields: meta.credentialFields,
-      }
-    }).filter((option): option is PoolTypeOption => option !== null),
-    ...new CustomProviderRepository(ownerUserId, db).list().map((provider) => ({
-      type: provider.poolType,
-      label: provider.name,
-      description: provider.description || `${provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · ${provider.baseUrl}`,
-      quotaKinds: provider.balanceConfig ? ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD"] : [],
-      credentialFields: [{ key: "token", label: "API Key", required: true, type: "password" }],
-    })),
+    ...listBuiltinPoolTypeOptions(db, false),
+    ...listCustomPoolTypeOptions(ownerUserId, db),
   ]
 }
 
 export function listPoolTypeLabelMap(ownerUserId: string, db: AppDatabase = getDatabase()): Map<string, string> {
-  return new Map(listPoolTypeOptions(ownerUserId, db).map((option) => [option.type, option.label]))
+  // Label map must stay complete even for disabled builtin providers, otherwise
+  // existing accounts of a disabled pool would lose their human-readable label.
+  return new Map([
+    ...listBuiltinPoolTypeOptions(db, true),
+    ...listCustomPoolTypeOptions(ownerUserId, db),
+  ].map((option) => [option.type, option.label]))
 }
 
 /** Resolve a human-readable provider/pool name. Never returns raw custom:<uuid>. */

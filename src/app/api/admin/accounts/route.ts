@@ -7,6 +7,8 @@ import { listPoolTypeLabelMap, listPoolTypeOptions } from "@/server/pool-type-op
 import type { AccountListSort, AccountListStatusFilter } from "@/server/repository"
 import { CustomProviderRepository } from "@/server/custom-providers"
 import { deriveAccountRouteStatus } from "@/server/account-route-state"
+import { isBuiltinProviderEnabled } from "@/server/builtin-provider-state"
+import { POOL_TYPES } from "@/server/providers/types"
 
 export const runtime = "nodejs"
 
@@ -38,7 +40,10 @@ export async function GET(request: Request) {
   const repo = new AccountRepository(user.id, db)
   const customProviders = new CustomProviderRepository(user.id, db).list()
   const customProviderEnabled = new Map(customProviders.map((customProvider) => [customProvider.poolType, customProvider.enabled]))
-  const listed = repo.listPage({ page, pageSize, q, poolType, status, sort })
+  // Disabled builtin providers are hidden from the account pool page entirely
+  // (items + stats); their accounts stay intact and return when re-enabled.
+  const disabledBuiltinPoolTypes = POOL_TYPES.filter((poolType) => !isBuiltinProviderEnabled(poolType, db))
+  const listed = repo.listPage({ page, pageSize, q, poolType, status, sort, excludePoolTypes: disabledBuiltinPoolTypes })
   const routing = new RoutingService(user.id, db).getState()
   const windows = repo.listQuotaWindows(listed.items.map((account) => account.id))
   const windowsByAccount = new Map<string, typeof windows>()

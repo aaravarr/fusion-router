@@ -7,6 +7,7 @@ import { AccountRepository } from "@/server/repository"
 import { listProviderModelCatalogs } from "@/server/provider-models"
 import { listPoolTypeLabelMap } from "@/server/pool-type-options"
 import { tryGetProvider } from "@/server/providers"
+import { isBuiltinProviderEnabled } from "@/server/builtin-provider-state"
 import type { PoolType } from "@/server/types"
 
 export const runtime = "nodejs"
@@ -39,7 +40,7 @@ export async function GET(request: Request) {
   const blockedIds = new Set((db.prepare(`SELECT DISTINCT account_id FROM quota_windows
     WHERE owner_user_id=? AND usage_percent>=100 AND (reset_at IS NULL OR reset_at>?)`)
     .all(user.id, new Date().toISOString()) as Array<{ account_id: string }>).map((row) => row.account_id))
-  const accounts = repo.list().map((account) => ({
+  const accounts = repo.list().filter((account) => isBuiltinProviderEnabled(account.poolType, db)).map((account) => ({
     id: account.id,
     name: account.name,
     email: account.email,
@@ -49,7 +50,7 @@ export async function GET(request: Request) {
     blocked: blockedIds.has(account.id),
   }))
   const catalogs = listProviderModelCatalogs(db, user.id)
-  const pools = [...new Map(catalogs.map((catalog) => [catalog.poolType, {
+  const pools = [...new Map(catalogs.filter((catalog) => isBuiltinProviderEnabled(catalog.poolType, db)).map((catalog) => [catalog.poolType, {
     type: catalog.poolType,
     label: catalog.label,
     models: catalog.models.filter((model) => tryGetProvider(catalog.poolType)?.supportsEndpoint?.(model, "responses") !== false),
