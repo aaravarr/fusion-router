@@ -89,7 +89,7 @@ export interface ProviderAccountData {
   // Generic encrypted credential storage for non-OpenCode providers
   // For openai (AT token or OAuth): { token, refreshToken?, expiresAt?, clientId?, chatgptAccountId, planType }
   // For xai-grok (xAI free OAuth): { token, refreshToken, expiresAt, clientId, email, subscriptionTier, entitlementStatus }
-  // For kimi-code (Kimi Code OAuth device flow): { token, refreshToken, expiresAt, clientId, email, subject }
+  // For kimi-code (Kimi Code OAuth device flow): { token, refreshToken, expiresAt, expiresIn, clientId, email, subject }
   token?: string
   refreshToken?: string
   expiresAt?: string
@@ -100,6 +100,16 @@ export interface ProviderAccountData {
   subscriptionTier?: string
   entitlementStatus?: string
   extraHeaders?: Record<string, string>
+  /** kimi-code：token 有效期秒数，用于按官方 defaultRefreshThreshold 提前刷新。 */
+  expiresIn?: string
+  /** kimi-code：refresh_token 被上游拒绝的时间（ISO）。存在即凭据已失效，需重新登录。 */
+  revokedAt?: string
+  /** kimi-code：/me 返回的账号信息（best-effort 补充）。 */
+  kimiUserId?: string
+  kimiNickname?: string
+  region?: string
+  domainName?: string
+  userLevel?: string
 }
 
 export interface ModelRouteRule {

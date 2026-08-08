@@ -21,6 +21,7 @@ interface ImportSeed {
   refreshToken?: string
   clientId?: string
   expiresAt?: string
+  expiresIn?: string
   idToken?: string
   tokenType?: string
   scope?: string
@@ -295,6 +296,7 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
       expiresAt: String(result.expiresAt),
+      expiresIn: String(result.expiresIn),
       tokenType: result.tokenType,
       scope: result.scope,
       clientId: seed.clientId || KIMI_CODE_CLIENT_ID,
@@ -327,6 +329,7 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
   if (seed.refreshToken) credentialData.refreshToken = seed.refreshToken
   if (seed.clientId) credentialData.clientId = seed.clientId
   if (seed.expiresAt) credentialData.expiresAt = seed.expiresAt
+  if (seed.expiresIn) credentialData.expiresIn = seed.expiresIn
   if (identity.email) credentialData.email = identity.email
   if (seed.idToken) credentialData.idToken = seed.idToken
   if (seed.tokenType) credentialData.tokenType = seed.tokenType

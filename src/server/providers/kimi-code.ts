@@ -24,8 +24,11 @@ import {
   createKimiDeviceHeaders,
   fetchKimiModels,
   fetchKimiUsage,
+  fetchKimiUserInfo,
   kimiCodeBaseUrl,
+  kimiRefreshThresholdSeconds,
   KIMI_CODE_CLIENT_ID,
+  KimiTokenInvalidError,
   refreshKimiAccessToken,
   type KimiUsageRow,
   type KimiWalletInfo,
@@ -113,6 +116,38 @@ function retryAfterSeconds(value: string | null): number | null {
   return Number.isNaN(parsed) ? null : Math.max(1, Math.ceil((parsed - Date.now()) / 1000))
 }
 
+// 对齐官方 kimi-errors.ts：Moonshot 用 429 + 结构化 error.type/code
+// （exceeded_current_quota_error）或 billing 措辞表达配额/余额耗尽，
+// 与瞬时限流（普通 429）区分。
+const KIMI_QUOTA_EXHAUSTED_CODES = new Set(["exceeded_current_quota_error"])
+const KIMI_QUOTA_EXHAUSTED_PATTERNS = [
+  /exceeded your current (?:token )?quota/,
+  /check your account balance/,
+  /insufficient balance/,
+  /recharge your account|please recharge/,
+  /account (?:is )?in arrears/,
+] as const
+
+function isKimiQuotaExhausted(body: string): boolean {
+  if (!body) return false
+  try {
+    // 结构化：遍历 error → error.error 最多 3 层，收集 code/type。
+    const codes: string[] = []
+    let current: unknown = JSON.parse(body)
+    for (let depth = 0; current !== null && typeof current === "object" && !Array.isArray(current) && depth < 3; depth += 1) {
+      const record = current as Record<string, unknown>
+      if (typeof record.code === "string") codes.push(record.code)
+      if (typeof record.type === "string") codes.push(record.type)
+      current = record.error
+    }
+    if (codes.some((code) => KIMI_QUOTA_EXHAUSTED_CODES.has(code))) return true
+  } catch {
+    // 非 JSON（如纯文本），走 message 匹配。
+  }
+  const lower = body.toLowerCase()
+  return KIMI_QUOTA_EXHAUSTED_PATTERNS.some((pattern) => pattern.test(lower))
+}
+
 export class KimiCodeProvider implements Provider {
   readonly poolType: PoolType = "kimi-code"
   readonly displayName = "Kimi Code"
@@ -128,15 +163,20 @@ export class KimiCodeProvider implements Provider {
     if (!data.refreshToken) return credential
 
     const expiresAt = data.expiresAt ? Number(data.expiresAt) : 0
+    const expiresIn = data.expiresIn ? Number(data.expiresIn) : 0
     const now = Date.now()
-    // Refresh when missing or within 5 minutes of expiry (kimi-code threshold floor).
-    if (data.token && expiresAt && now < (expiresAt - 300) * 1000) return credential
+    // 对齐官方 oauth-manager.ts defaultRefreshThreshold：剩余不足
+    // max(300, expiresIn*0.5) 秒即提前刷新，避免长请求/时钟偏移中途过期。
+    // expiresIn 缺失（旧数据）时退化为固定 300s。
+    if (data.token && expiresAt && now < (expiresAt - kimiRefreshThresholdSeconds(expiresIn)) * 1000) return credential
 
     try {
       const token = await refreshKimiAccessToken(data.refreshToken, data.clientId || KIMI_CODE_CLIENT_ID)
       data.token = token.accessToken
       data.refreshToken = token.refreshToken
       data.expiresAt = String(token.expiresAt)
+      data.expiresIn = String(token.expiresIn)
+      delete data.revokedAt
       if (token.scope) data.extraHeaders = { ...(data.extraHeaders || {}), scope: token.scope }
       db.prepare("UPDATE provider_credentials SET credential_data_ciphertext=?, credential_version=credential_version+1, updated_at=? WHERE account_id=?")
         .run(this.vault.encrypt(JSON.stringify(data)), new Date().toISOString(), accountId)
@@ -145,7 +185,18 @@ export class KimiCodeProvider implements Provider {
         extraHeaders: credential.extraHeaders ?? {},
         credentialVersion: row.credential_version + 1,
       }
-    } catch {
+    } catch (cause) {
+      // refresh_token 被上游拒绝（401/403/invalid_grant）：落失效标记，
+      // 后续请求直接报「需重新登录」，不再每次拿死 token 白刷（对齐官方
+      // revoked tombstone 语义）。
+      if (cause instanceof KimiTokenInvalidError) {
+        data.token = ""
+        data.revokedAt = new Date().toISOString()
+        db.prepare("UPDATE provider_credentials SET credential_data_ciphertext=?, credential_version=credential_version+1, updated_at=? WHERE account_id=?")
+          .run(this.vault.encrypt(JSON.stringify(data)), new Date().toISOString(), accountId)
+        throw cause
+      }
+      // 网络 / 5xx 抖动：保留旧 token 静默降级，不误杀账号。
       return credential
     }
   }
@@ -156,7 +207,13 @@ export class KimiCodeProvider implements Provider {
       .get(account.id) as { credential_data_ciphertext: string; credential_version: number } | undefined
     if (!row) throw new Error(`No provider credentials found for account ${account.id}`)
     const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as ProviderAccountData
-    if (!data.token) throw new Error(`No access token in provider credentials for account ${account.id}`)
+    if (!data.token) {
+      throw new KimiTokenInvalidError(
+        data.revokedAt
+          ? `Kimi 账号凭据已失效（refresh_token 被拒绝，需重新登录），account=${account.id}`
+          : `Kimi 账号缺少 access token，account=${account.id}`,
+      )
+    }
     const credential: ProviderCredential = {
       token: data.token,
       extraHeaders: {},
@@ -165,8 +222,37 @@ export class KimiCodeProvider implements Provider {
     return this.refreshTokenIfNeeded(credential, account.id)
   }
 
+  /** best-effort 拉 /me 补齐账号信息（user_id/region/domain/level/email），失败不影响主流程。 */
+  private async updateUserInfo(account: AccountRecord, accessToken: string): Promise<void> {
+    try {
+      const info = await fetchKimiUserInfo(accessToken, account)
+      if (!info) return
+      const db = getDatabase()
+      const row = db.prepare("SELECT credential_data_ciphertext, credential_version FROM provider_credentials WHERE account_id = ?")
+        .get(account.id) as { credential_data_ciphertext: string; credential_version: number } | undefined
+      if (!row) return
+      const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as ProviderAccountData
+      data.kimiUserId = info.userId
+      if (info.nickname) data.kimiNickname = info.nickname
+      if (info.region) data.region = info.region
+      if (info.domainName) data.domainName = info.domainName
+      if (info.userLevel) data.userLevel = String(info.userLevel)
+      if (info.email) data.email = info.email
+      db.prepare("UPDATE provider_credentials SET credential_data_ciphertext=?, credential_version=credential_version+1, updated_at=? WHERE account_id=?")
+        .run(this.vault.encrypt(JSON.stringify(data)), new Date().toISOString(), account.id)
+    } catch {
+      // best-effort：/me 失败不阻断校验
+    }
+  }
+
   async validateCredential(account: AccountRecord): Promise<{ valid: boolean; email?: string; planType?: string; extra?: Record<string, unknown> }> {
-    const credential = await this.getCredential(account)
+    let credential: ProviderCredential
+    try {
+      credential = await this.getCredential(account)
+    } catch (cause) {
+      if (cause instanceof KimiTokenInvalidError) return { valid: false }
+      throw cause
+    }
     try {
       const models = await fetchKimiModels(credential.token, account)
       const db = getDatabase()
@@ -177,13 +263,15 @@ export class KimiCodeProvider implements Provider {
         const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as ProviderAccountData
         email = data.email
       }
+      void this.updateUserInfo(account, credential.token)
       return { valid: true, email, planType: "kimi-code", extra: { modelCount: models.length } }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (message.includes("401") || message.includes("403") || message.includes("已失效")) {
+      // 401/402/403 均为认证/会员权益类错误（官方 managed-kimi-code 把三者
+      // 都视为 auth 类）；网络/5xx 保留账号可用。
+      if (/\b(401|402|403)\b/.test(message)) {
         return { valid: false }
       }
-      // Network / 5xx: keep account usable.
       return { valid: true }
     }
   }
@@ -272,8 +360,17 @@ export class KimiCodeProvider implements Provider {
   }
 
   classifyError(status: number, body: string, headers: Headers): UpstreamErrorClassification | null {
-    void body
     if (status === 429) {
+      // Moonshot 的配额/余额耗尽也是 429：结构化 error.type=exceeded_current_quota_error
+      // 或 billing 措辞，需与瞬时限流区分（官方 kimi-errors.ts 语义）。
+      if (isKimiQuotaExhausted(body)) {
+        return {
+          shouldSwitchAccount: true,
+          quotaKind: "WEEKLY",
+          retryAfterSeconds: retryAfterSeconds(headers.get("retry-after")) ?? 60,
+          errorType: "KIMI_QUOTA_EXCEEDED",
+        }
+      }
       return {
         shouldSwitchAccount: true,
         quotaKind: "PROVIDER_RATE_LIMIT",
@@ -282,6 +379,8 @@ export class KimiCodeProvider implements Provider {
       }
     }
     if (status === 402) {
+      // 402 在 /models 语境是会员权益/计费类错误（官方视为 auth 类）；
+      // 聊天转发时说明该号不可用，切换账号。
       return {
         shouldSwitchAccount: true,
         quotaKind: "WEEKLY",

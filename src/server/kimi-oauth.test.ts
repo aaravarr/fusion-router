@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
 import {
+  KimiTokenInvalidError,
+  kimiRefreshThresholdSeconds,
   parseKimiUsagePayload,
+  parseKimiUserInfoPayload,
+  refreshKimiAccessToken,
   startKimiOAuthSession,
   pollKimiOAuthSession,
   cancelKimiOAuthSession,
@@ -69,6 +73,94 @@ describe("kimiExternalId", () => {
   it("is stable for same subject", () => {
     expect(kimiExternalId("user-1", "rt-a")).toBe(kimiExternalId("user-1", "rt-b"))
     expect(kimiExternalId("user-1", "rt-a")).not.toBe(kimiExternalId("user-2", "rt-a"))
+  })
+})
+
+describe("kimiRefreshThresholdSeconds", () => {
+  // 对齐官方 oauth-manager.ts defaultRefreshThreshold：max(300, expiresIn * 0.5)
+  it("uses half of expiresIn when above the 300s floor", () => {
+    expect(kimiRefreshThresholdSeconds(3600)).toBe(1800)
+    expect(kimiRefreshThresholdSeconds(86400)).toBe(43200)
+  })
+
+  it("floors at 300s and degrades gracefully for missing/zero expiresIn", () => {
+    expect(kimiRefreshThresholdSeconds(300)).toBe(300)
+    expect(kimiRefreshThresholdSeconds(0)).toBe(300)
+    expect(kimiRefreshThresholdSeconds(-5)).toBe(300)
+  })
+})
+
+describe("parseKimiUserInfoPayload", () => {
+  it("parses official /me payload", () => {
+    const info = parseKimiUserInfoPayload({
+      user_id: "u_123",
+      nickname: "moonwalker",
+      status: "USER_STATUS_NORMAL",
+      region: "REGION_CN",
+      user_level: 30,
+      user_level_name: "Vivace",
+      domain: 1,
+      domain_name: "DOMAIN_EXAMPLE",
+      global_id: "u_123",
+      email: "user@example.com",
+    })
+    expect(info).toMatchObject({
+      userId: "u_123",
+      nickname: "moonwalker",
+      region: "REGION_CN",
+      userLevel: 30,
+      userLevelName: "Vivace",
+      domainName: "DOMAIN_EXAMPLE",
+      email: "user@example.com",
+    })
+  })
+
+  it("degrades missing optional fields (email may be absent in real payloads)", () => {
+    const info = parseKimiUserInfoPayload({
+      user_id: "d9d1v0uom6pu6l1jjkfg",
+      nickname: "ahao",
+      region: "REGION_CN",
+      user_level: "25",
+      domain_name: "DOMAIN_NEXUS",
+    })
+    expect(info).not.toBeNull()
+    expect(info?.email).toBeUndefined()
+    expect(info?.userLevel).toBe(25)
+  })
+
+  it("returns null when user_id is missing or payload is not an object", () => {
+    expect(parseKimiUserInfoPayload({ nickname: "x" })).toBeNull()
+    expect(parseKimiUserInfoPayload("nope")).toBeNull()
+    expect(parseKimiUserInfoPayload(null)).toBeNull()
+  })
+})
+
+describe("refreshKimiAccessToken error classification", () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it("throws KimiTokenInvalidError on 401 (revoked refresh token)", async () => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error: "invalid_grant" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch
+    await expect(refreshKimiAccessToken("dead-refresh")).rejects.toBeInstanceOf(KimiTokenInvalidError)
+  })
+
+  it("does not classify 5xx as token-invalid", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("boom", { status: 503 })) as typeof fetch
+    const assertion = expect(refreshKimiAccessToken("rt")).rejects.not.toBeInstanceOf(KimiTokenInvalidError)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await assertion
   })
 })
 

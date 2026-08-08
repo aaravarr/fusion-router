@@ -20,6 +20,31 @@ export const KIMI_CODE_VERSION = process.env.KIMI_CODE_VERSION?.trim() || "1.0.0
 const REQUEST_TIMEOUT_MS = 30_000
 const SESSION_TTL_MS = 15 * 60_000
 
+/**
+ * refresh_token 被上游拒绝（401/403/invalid_grant）时抛出，表示凭据已失效、
+ * 需要重新登录。与网络/5xx 类错误区分，调用方（provider）据此落失效标记，
+ * 而不是反复用死 token 刷新。
+ */
+export class KimiTokenInvalidError extends Error {
+  readonly status: number | null
+
+  constructor(message: string, status: number | null = null) {
+    super(message)
+    this.name = "KimiTokenInvalidError"
+    this.status = status
+  }
+}
+
+/**
+ * 刷新阈值对齐官方 oauth-manager.ts defaultRefreshThreshold：
+ * `expiresIn > 0 ? max(300, expiresIn * 0.5) : 300`。
+ * 官方在 token 剩余不足一半（至少 5 分钟）时就提前刷新，避免长请求中途过期。
+ */
+export function kimiRefreshThresholdSeconds(expiresIn: number): number {
+  if (expiresIn > 0) return Math.max(300, Math.floor(expiresIn * 0.5))
+  return 300
+}
+
 export interface KimiTokenInfo {
   accessToken: string
   refreshToken: string
@@ -258,7 +283,9 @@ export async function refreshKimiAccessToken(refreshToken: string, clientId = KI
       }, createKimiDeviceHeaders())
       if (status === 200 && typeof data.access_token === "string") return tokenFromResponse(data)
       const errorCode = typeof data.error === "string" ? data.error : ""
-      if (status === 401 || status === 403 || errorCode === "invalid_grant") throw new Error(`Kimi refresh token invalid: ${pickErrorDetail(data)}`)
+      if (status === 401 || status === 403 || errorCode === "invalid_grant") {
+        throw new KimiTokenInvalidError(`Kimi refresh token invalid: ${pickErrorDetail(data)}`, status)
+      }
       if ([429, 500, 502, 503, 504].includes(status) && attempt < maxRetries - 1) {
         lastError = new Error(`Kimi token refresh failed (HTTP ${status}): ${pickErrorDetail(data)}`)
         await new Promise((resolve) => setTimeout(resolve, 2 ** attempt * 1000))
@@ -267,7 +294,7 @@ export async function refreshKimiAccessToken(refreshToken: string, clientId = KI
       throw new Error(`Kimi token refresh failed (HTTP ${status}): ${pickErrorDetail(data)}`)
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
-      if (lastError.message.includes("invalid")) throw lastError
+      if (lastError instanceof KimiTokenInvalidError) throw lastError
       if (attempt < maxRetries - 1) {
         await new Promise((resolve) => setTimeout(resolve, 2 ** attempt * 1000))
         continue
@@ -505,6 +532,72 @@ export async function fetchKimiModels(accessToken: string, account?: MirrorSelec
     }
   }
   return [...models].sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * /me 用户信息，来自官方 managed-userinfo.ts 的宽松解析：
+ * 只要 user_id 存在就视为有效，其余字段独立降级。
+ * email/phone 为可选字段——实测企业版账号可能不返回 email。
+ */
+export interface KimiUserInfo {
+  userId: string
+  nickname: string
+  status: string
+  region: string
+  userLevel: number
+  userLevelName: string
+  domain: number
+  domainName: string
+  globalId?: string
+  email?: string
+}
+
+function userInfoString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+function userInfoInt(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key]
+  if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : undefined
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value)
+    return Number.isFinite(n) ? Math.trunc(n) : undefined
+  }
+  return undefined
+}
+
+export function parseKimiUserInfoPayload(payload: unknown): KimiUserInfo | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null
+  const record = payload as Record<string, unknown>
+  const userId = userInfoString(record, "user_id")
+  if (!userId) return null
+  return {
+    userId,
+    nickname: userInfoString(record, "nickname") ?? "",
+    status: userInfoString(record, "status") ?? "",
+    region: userInfoString(record, "region") ?? "",
+    userLevel: userInfoInt(record, "user_level") ?? 0,
+    userLevelName: userInfoString(record, "user_level_name") ?? "",
+    domain: userInfoInt(record, "domain") ?? 0,
+    domainName: userInfoString(record, "domain_name") ?? "",
+    globalId: userInfoString(record, "global_id"),
+    email: userInfoString(record, "email"),
+  }
+}
+
+export async function fetchKimiUserInfo(accessToken: string, account?: MirrorSelectionAccount): Promise<KimiUserInfo | null> {
+  const response = await apiFetchWithMirrorContext(`${kimiCodeBaseUrl()}/me`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }, { account })
+  if (!response.ok) {
+    // 401/403 = 凭据失效；其余按不可用处理，调用方 best-effort 忽略。
+    const body = await response.text().catch(() => "")
+    throw new KimiTokenInvalidError(`Kimi /me failed (HTTP ${response.status}): ${body.slice(0, 200)}`, response.status)
+  }
+  return parseKimiUserInfoPayload(await response.json())
 }
 
 export function kimiExternalId(subject: string | null | undefined, refreshToken: string): string {
