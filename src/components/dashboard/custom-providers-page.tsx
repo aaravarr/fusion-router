@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { javascript } from "@codemirror/lang-javascript";
-import { Check, Copy, Info, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Copy, Info, KeyRound, LoaderCircle, Pencil, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -98,6 +98,18 @@ export function CustomProvidersPage() {
     finally { setBusyId(null); }
   }
 
+  async function toggleProvider(provider: CustomProvider) {
+    const next = !provider.enabled;
+    setBusyId(provider.id); setMessage(null);
+    try {
+      const response = await adminFetch(`/api/admin/custom-providers/${provider.id}`, { method: "PATCH", body: JSON.stringify({ enabled: next }) });
+      if (!response.ok) throw new Error(errorMessage(await response.json().catch(() => null), "切换失败"));
+      setMessage(`已${next ? "启用" : "停用"} ${provider.name}，其下账号${next ? "恢复" : "退出"}调度（数据保留，可随时再切换）`);
+      await resource.refresh();
+    } catch (cause) { setMessage(cause instanceof Error ? cause.message : "切换失败"); }
+    finally { setBusyId(null); }
+  }
+
   return (
     <>
       <PageIntro eyebrow="CUSTOM UPSTREAMS" title="自定义 Provider" description="配置 OpenAI 兼容上游、接口类型和 API Key。未填写模型列表时，系统从上游 /models 自动发现。" actions={<Button size="sm" onClick={() => setEditing(null)}><Plus data-icon="inline-start" />新建 Provider</Button>} />
@@ -118,6 +130,7 @@ export function CustomProvidersPage() {
                   <p className="mt-1 text-muted-foreground">{provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · {provider.models?.length ? `${provider.models.length} 个固定模型` : "从 /models 自动发现"} · {provider.balanceConfig ? "已配置余额查询" : "未配置余额查询"}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" disabled={busyId === provider.id} onClick={() => void toggleProvider(provider)}>{busyId === provider.id ? <LoaderCircle className="animate-spin" /> : <Power />}{provider.enabled ? "停用" : "启用"}</Button>
                   <Button variant="outline" size="sm" onClick={() => setKeyProvider(provider)}><KeyRound />API Keys</Button>
                   {!provider.models?.length ? <Button variant="outline" size="sm" disabled={busyId === provider.id} onClick={() => void refreshModels(provider)}><RefreshCw className={busyId === provider.id ? "animate-spin" : ""} />模型</Button> : null}
                   <Button variant="outline" size="icon-sm" aria-label={`编辑 ${provider.name}`} onClick={() => setEditing(provider)}><Pencil /></Button>

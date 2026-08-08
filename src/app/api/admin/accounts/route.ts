@@ -40,10 +40,12 @@ export async function GET(request: Request) {
   const repo = new AccountRepository(user.id, db)
   const customProviders = new CustomProviderRepository(user.id, db).list()
   const customProviderEnabled = new Map(customProviders.map((customProvider) => [customProvider.poolType, customProvider.enabled]))
-  // Disabled builtin providers are hidden from the account pool page entirely
-  // (items + stats); their accounts stay intact and return when re-enabled.
+  // Disabled builtin/custom providers are hidden from the account pool page
+  // entirely (items + stats); their accounts stay intact and return when
+  // re-enabled.
   const disabledBuiltinPoolTypes = POOL_TYPES.filter((poolType) => !isBuiltinProviderEnabled(poolType, db))
-  const listed = repo.listPage({ page, pageSize, q, poolType, status, sort, excludePoolTypes: disabledBuiltinPoolTypes })
+  const disabledCustomPoolTypes = customProviders.filter((customProvider) => !customProvider.enabled).map((customProvider) => customProvider.poolType)
+  const listed = repo.listPage({ page, pageSize, q, poolType, status, sort, excludePoolTypes: [...disabledBuiltinPoolTypes, ...disabledCustomPoolTypes] })
   const routing = new RoutingService(user.id, db).getState()
   const windows = repo.listQuotaWindows(listed.items.map((account) => account.id))
   const windowsByAccount = new Map<string, typeof windows>()

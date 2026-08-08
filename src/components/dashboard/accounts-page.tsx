@@ -633,7 +633,6 @@ export function AccountsPage() {
                           {account.name || account.email || "未命名账号"}
                           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                         </span>
-                        <span className="mt-1 block truncate font-mono text-[10px] text-muted-foreground" title={account.workspaceId || account.id}>{displayWorkspaceId(account.poolType, account.poolLabel, account.workspaceId, account.id)}</span>
                       </Button>
                     </TableCell>
                     <TableCell><PoolTypeBadge poolType={account.poolType} label={account.poolLabel} /></TableCell>

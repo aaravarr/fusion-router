@@ -27,8 +27,8 @@ function listBuiltinPoolTypeOptions(db: AppDatabase, includeDisabled: boolean): 
   }).filter((option): option is PoolTypeOption => option !== null)
 }
 
-function listCustomPoolTypeOptions(ownerUserId: string, db: AppDatabase): PoolTypeOption[] {
-  return new CustomProviderRepository(ownerUserId, db).list().map((provider) => ({
+function listCustomPoolTypeOptions(ownerUserId: string, db: AppDatabase, includeDisabled: boolean): PoolTypeOption[] {
+  return new CustomProviderRepository(ownerUserId, db).list().filter((provider) => includeDisabled || provider.enabled).map((provider) => ({
     type: provider.poolType,
     label: provider.name,
     description: provider.description || `${provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · ${provider.baseUrl}`,
@@ -40,16 +40,16 @@ function listCustomPoolTypeOptions(ownerUserId: string, db: AppDatabase): PoolTy
 export function listPoolTypeOptions(ownerUserId: string, db: AppDatabase = getDatabase()): PoolTypeOption[] {
   return [
     ...listBuiltinPoolTypeOptions(db, false),
-    ...listCustomPoolTypeOptions(ownerUserId, db),
+    ...listCustomPoolTypeOptions(ownerUserId, db, false),
   ]
 }
 
 export function listPoolTypeLabelMap(ownerUserId: string, db: AppDatabase = getDatabase()): Map<string, string> {
-  // Label map must stay complete even for disabled builtin providers, otherwise
+  // Label map must stay complete even for disabled providers, otherwise
   // existing accounts of a disabled pool would lose their human-readable label.
   return new Map([
     ...listBuiltinPoolTypeOptions(db, true),
-    ...listCustomPoolTypeOptions(ownerUserId, db),
+    ...listCustomPoolTypeOptions(ownerUserId, db, true),
   ].map((option) => [option.type, option.label]))
 }
 
