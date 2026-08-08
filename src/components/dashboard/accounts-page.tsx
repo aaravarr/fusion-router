@@ -127,6 +127,7 @@ export function AccountsPage() {
   const [openaiOauthOpen, setOpenaiOauthOpen] = useState(false);
   const [kimiOauthOpen, setKimiOauthOpen] = useState(false);
   const [kimiRefreshOpen, setKimiRefreshOpen] = useState(false);
+  const [kimiApiKeyOpen, setKimiApiKeyOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState<"enable" | "disable" | "delete" | null>(null);
@@ -489,6 +490,7 @@ export function AccountsPage() {
               <DropdownMenu>
                 <DropdownMenuTrigger asChild><Button size="sm"><KeyRound data-icon="inline-start" />连接 Kimi 账号</Button></DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-auto min-w-44">
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setKimiApiKeyOpen(true)}><KeyRound />API Key</DropdownMenuItem>
                   <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</DropdownMenuItem>
                   <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setKimiRefreshOpen(true)}><FileUp />Refresh Token</DropdownMenuItem>
                 </DropdownMenuContent>
@@ -585,7 +587,7 @@ export function AccountsPage() {
                 placeholder: "粘贴 JSON，或选择一个或多个 JSON 文件",
               })}><Upload />导入 xAI 账号</Button>
             ) : poolFilter === "kimi-code" ? (
-              <Button size="sm" onClick={() => setKimiOauthOpen(true)}><KeyRound />Kimi OAuth 登录</Button>
+              <Button size="sm" onClick={() => setKimiApiKeyOpen(true)}><KeyRound />Kimi API Key</Button>
             ) : poolFilter === "openai" ? (
               <Button size="sm" onClick={() => setOpenaiOauthOpen(true)}><KeyRound />OpenAI OAuth 登录</Button>
             ) : <span className="text-xs text-muted-foreground">请先在上方选择一个号池。</span>}
@@ -704,6 +706,7 @@ export function AccountsPage() {
       <OpenAIOauthLoginDialog open={openaiOauthOpen} onOpenChange={setOpenaiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiOauthLoginDialog open={kimiOauthOpen} onOpenChange={setKimiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
+      <KimiApiKeyDialog open={kimiApiKeyOpen} onOpenChange={setKimiApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <TokenLineImportDialog spec={tokenImport} open={Boolean(tokenImport)} onOpenChange={(open) => { if (!open) setTokenImport(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
      <AccountDetailSheet
         account={selected}
@@ -1413,6 +1416,66 @@ function KimiRefreshTokenDialog({ open, onOpenChange, onCreated }: { open: boole
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
           <Button onClick={() => void onSubmit()} disabled={busy || !tokenText.trim()}>{busy ? "提交中…" : "开始导入"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function KimiApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const { adminFetch } = useAdmin();
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  async function onSubmit() {
+    setBusy(true);
+    setError(null);
+    setSuccess(false);
+    try {
+      const response = await adminFetch("/api/admin/accounts/kimi-apikey", {
+        method: "POST",
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || "录入 API Key 失败");
+      if (payload?.error) throw new Error(payload.error.message || "录入 API Key 失败");
+      setSuccess(true);
+      onCreated();
+      window.setTimeout(() => onOpenChange(false), 800);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "录入失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); if (!next) { setApiKey(""); setError(null); setSuccess(false); } }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>录入 Kimi API Key</DialogTitle>
+          <DialogDescription>
+            粘贴 Kimi Code 的 API Key（sk- 开头，来自 kimi.com 会员控制台 / Moonshot 开放平台）。
+            后台会先拉取 /models 验证 Key 有效性，通过后直接写入 kimi-code 号池，无需 OAuth。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <Input
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="sk-..."
+            className="font-mono"
+            spellCheck={false}
+            autoFocus
+          />
+          {error ? <p className="text-destructive">{error}</p> : null}
+          {success ? <p className="text-success">验证通过，账号已写入 kimi-code 号池。</p> : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
+          <Button onClick={() => void onSubmit()} disabled={busy || !apiKey.trim()}>{busy ? "验证中…" : "验证并录入"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
