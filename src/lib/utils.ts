@@ -21,16 +21,19 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     textarea.value = text
     textarea.setAttribute("readonly", "")
     textarea.setAttribute("aria-hidden", "true")
+    // clipboard.js 式兜底：不用 opacity:0（部分浏览器/iOS 会拒绝复制不可见元素），
+    // 改为移出视口；且挂到当前打开的 dialog 内，避免 Radix focus trap 把焦点抢回去
+    // 导致选区丢失、execCommand("copy") 静默失败（HTTP 非安全上下文只有这条路）。
     textarea.style.position = "fixed"
     textarea.style.top = "0"
-    textarea.style.left = "0"
-    textarea.style.width = "1px"
-    textarea.style.height = "1px"
+    textarea.style.left = "-9999px"
+    textarea.style.width = "2em"
+    textarea.style.height = "2em"
     textarea.style.padding = "0"
     textarea.style.border = "0"
     textarea.style.fontSize = "16px"
-    textarea.style.opacity = "0"
-    document.body.appendChild(textarea)
+    const container = document.querySelector('[role="dialog"]') ?? document.body
+    container.appendChild(textarea)
     textarea.focus({ preventScroll: true })
     textarea.select()
     textarea.setSelectionRange(0, text.length)

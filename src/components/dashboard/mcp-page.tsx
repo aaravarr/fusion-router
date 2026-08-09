@@ -432,15 +432,7 @@ export function McpPage() {
       ) : (
         <div className="space-y-4">
           <Panel title="MCP 服务信息" description="MCP 客户端连接地址与鉴权方式。">
-            <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-[240px_1fr]">
-              <div className="grid auto-rows-fr gap-3">
-                <InfoCell label="服务端点" mono>{endpoint}</InfoCell>
-                <InfoCell label="协议版本" mono>{server?.protocolVersion || "—"}</InfoCell>
-                <InfoCell label="工具数量">{server?.toolCount ?? tools.length}</InfoCell>
-                <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;
-                  <span className="mt-1 block text-[11px] font-normal leading-5 text-muted-foreground">使用「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</span>
-                </InfoCell>
-              </div>
+            <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-[1fr_240px]">
               <div className="min-w-0 rounded-lg border bg-white p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs font-medium text-foreground">客户端接入配置（mcpServers）</p>
@@ -470,6 +462,14 @@ export function McpPage() {
                   )}
                   <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；识图请求使用该 Key 归属用户的账号池。</p>
                 </div>
+              </div>
+              <div className="grid auto-rows-fr gap-3">
+                <InfoCell label="服务端点" mono>{endpoint}</InfoCell>
+                <InfoCell label="协议版本" mono>{server?.protocolVersion || "—"}</InfoCell>
+                <InfoCell label="工具数量">{server?.toolCount ?? tools.length}</InfoCell>
+                <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;
+                  <span className="mt-1 block text-[11px] font-normal leading-5 text-muted-foreground">使用「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</span>
+                </InfoCell>
               </div>
             </div>
           </Panel>
