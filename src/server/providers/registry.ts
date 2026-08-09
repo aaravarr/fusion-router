@@ -13,14 +13,14 @@ export const POOL_TYPE_METADATA: Partial<Record<PoolType, PoolTypeMeta>> = {
   "opencode-go": {
     type: "opencode-go",
     label: "OpenCode Go",
-    description: "OpenCode Go subscription via browser extension. Upstream: opencode.ai/zen/go/v1",
+    description: "OpenCode Go subscription via browser extension. Upstream: opencode.ai/zen/go/v1. 原生格式: Chat / Messages",
     quotaKinds: ["FIVE_HOUR", "WEEKLY", "MONTHLY"] as readonly QuotaKind[],
     credentialFields: [],
   },
   "xai-grok": {
     type: "xai-grok",
     label: "xAI Grok",
-    description: "xAI free OAuth (refresh token). Upstream: api.x.ai/v1. Rolling-24h 1M token window.",
+    description: "xAI free OAuth (refresh token). Upstream: api.x.ai/v1. Rolling-24h 1M token window. 原生格式: Chat / Responses",
     quotaKinds: ["ROLLING_24H"] as readonly QuotaKind[],
     credentialFields: [
       { key: "refreshToken", label: "Refresh Token", required: true, type: "password" },
@@ -30,7 +30,7 @@ export const POOL_TYPE_METADATA: Partial<Record<PoolType, PoolTypeMeta>> = {
   "openai": {
     type: "openai",
     label: "OpenAI",
-    description: "OpenAI Codex (AT token or OAuth refresh). Upstream: chatgpt.com/backend-api/codex/responses",
+    description: "OpenAI Codex (AT token or OAuth refresh). Upstream: chatgpt.com/backend-api/codex/responses. 原生格式: Responses",
     quotaKinds: ["FIVE_HOUR", "WEEKLY"] as readonly QuotaKind[],
     credentialFields: [
       { key: "token", label: "Access Token", required: true, type: "password" },
@@ -41,7 +41,7 @@ export const POOL_TYPE_METADATA: Partial<Record<PoolType, PoolTypeMeta>> = {
   "kimi-code": {
     type: "kimi-code",
     label: "Kimi Code",
-    description: "Kimi Code OAuth device login. Upstream: api.kimi.com/coding/v1. Quota from /usages (5h + weekly).",
+    description: "Kimi Code OAuth device login. Upstream: api.kimi.com/coding/v1. Quota from /usages (5h + weekly). 原生格式: Chat / Messages",
     quotaKinds: ["FIVE_HOUR", "WEEKLY"] as readonly QuotaKind[],
     credentialFields: [
       { key: "refreshToken", label: "Refresh Token", required: true, type: "password" },

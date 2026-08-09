@@ -293,6 +293,7 @@ CREATE TABLE IF NOT EXISTS custom_providers (
   description TEXT NOT NULL DEFAULT '',
   base_url TEXT NOT NULL,
   interface_type TEXT NOT NULL CHECK(interface_type IN ('chat', 'responses')),
+  interface_types_json TEXT,
   models_json TEXT,
   balance_config_json TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
@@ -360,6 +361,7 @@ export function createDatabase(filename: string): AppDatabase {
   ensureResponseConversationColumns(db)
   ensureCurrentImportJobColumns(db)
   ensureCustomProviderSlugColumn(db)
+  ensureCustomProviderInterfaceTypesColumn(db)
   db.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
   return db
 }
@@ -379,6 +381,14 @@ function ensureCustomProviderSlugColumn(db: AppDatabase): void {
     db.prepare("UPDATE custom_providers SET slug=? WHERE id=?").run(slug, row.id)
   }
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS custom_providers_slug_idx ON custom_providers(owner_user_id, slug)")
+}
+
+// SQLite 无法修改 CHECK 约束：新增 interface_types_json 列承载多选格式，
+// 旧 interface_type 列保留不删（避免重建表风险），从旧列回填一次。
+export function ensureCustomProviderInterfaceTypesColumn(db: AppDatabase): void {
+  const cols = new Set((db.prepare("PRAGMA table_info(custom_providers)").all() as { name: string }[]).map((column) => column.name))
+  if (!cols.has("interface_types_json")) db.exec("ALTER TABLE custom_providers ADD COLUMN interface_types_json TEXT")
+  db.exec("UPDATE custom_providers SET interface_types_json = json_array(interface_type) WHERE interface_types_json IS NULL")
 }
 
 function ensurePoolTypeColumn(db: AppDatabase): void {

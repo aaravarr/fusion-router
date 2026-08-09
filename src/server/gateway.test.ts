@@ -106,6 +106,43 @@ describe("gateway", () => {
     expect(headers.get("x-api-key")).toBe("sk-go-one"); expect(headers.get("authorization")).toBeNull(); expect(headers.get("x-org-id")).toBeNull()
   })
 
+  it("messages 入口对不支持 messages 的账号经 chat 枢纽双向转换", async () => {
+    const { db, apiKey, credentials, hasher } = setup("xai-grok", 1)
+    let sentUrl = ""
+    let sent: Record<string, unknown> = {}
+    const fetcher = vi.fn().mockImplementation(async (url, init) => {
+      sentUrl = String(url)
+      sent = JSON.parse(new TextDecoder().decode((init as { body: Uint8Array }).body)) as Record<string, unknown>
+      return Response.json({
+        id: "chatcmpl-9", object: "chat.completion", model: "grok-4.5",
+        choices: [{ index: 0, message: { role: "assistant", content: "converted-ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+      })
+    })
+    const req = new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "grok-4.5", max_tokens: 64, system: "be brief",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "messages")
+    expect(response.status, await response.clone().text()).toBe(200)
+    expect(sentUrl).toContain("/chat/completions")
+    expect(sent.messages).toEqual([{ role: "system", content: "be brief" }, { role: "user", content: "hi" }])
+    expect(await response.json()).toMatchObject({
+      type: "message", role: "assistant", stop_reason: "end_turn",
+      content: [{ type: "text", text: "converted-ok" }],
+      usage: { input_tokens: 3, output_tokens: 2 },
+    })
+    const row = db.prepare("SELECT route_mode, route_reason, converted, transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.route_mode).toBe("chat")
+    expect(row.route_reason).toBe("messages_to_chat")
+    expect(row.converted).toBe(1)
+    expect(String(row.transform_summary || "")).toContain("messages->chat")
+  })
+
   it("其他错误直接返回且不切号", async () => {
     const { db, apiKey, credentials, hasher } = setup()
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { type: "RateLimitError" } }), { status: 429 }))

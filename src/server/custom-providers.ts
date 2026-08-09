@@ -3,8 +3,23 @@ import { slugifyProviderName } from "./slug"
 import type { AppDatabase } from "./db"
 import { getDatabase } from "./db"
 import type { PoolType } from "./types"
+import type { InterfaceFormat } from "./messages/route-decision"
 
-export type CustomProviderInterface = "chat" | "responses"
+export type CustomProviderInterface = InterfaceFormat
+
+const CUSTOM_PROVIDER_INTERFACES: readonly CustomProviderInterface[] = ["chat", "responses", "messages"]
+
+export function normalizeInterfaceTypes(values: unknown): CustomProviderInterface[] | null {
+  if (!Array.isArray(values)) return null
+  const unique = [...new Set(values)].filter((value): value is CustomProviderInterface =>
+    typeof value === "string" && (CUSTOM_PROVIDER_INTERFACES as readonly string[]).includes(value))
+  return unique.length ? unique : null
+}
+
+/** 旧 interface_type 列的 CHECK 只允许 chat/responses；新列才是真实数据源。 */
+function legacyInterfaceType(types: CustomProviderInterface[]): "chat" | "responses" {
+  return types.includes("responses") ? "responses" : types.includes("chat") ? "chat" : "chat"
+}
 
 export interface BalanceRequestConfig {
   url: string
@@ -26,7 +41,7 @@ export interface CustomProviderRecord {
   slug: string
   description: string
   baseUrl: string
-  interfaceType: CustomProviderInterface
+  interfaceTypes: CustomProviderInterface[]
   models: string[] | null
   balanceConfig: CustomProviderBalanceConfig | null
   enabled: boolean
@@ -36,7 +51,7 @@ export interface CustomProviderRecord {
 
 type ProviderRow = {
   id: string; owner_user_id: string; name: string; slug: string; description: string; base_url: string
-  interface_type: CustomProviderInterface; models_json: string | null; balance_config_json: string | null
+  interface_type: string; interface_types_json: string | null; models_json: string | null; balance_config_json: string | null
   enabled: number; created_at: string; updated_at: string
 }
 
@@ -57,6 +72,10 @@ function parseJson<T>(value: string | null): T | null {
 }
 
 function fromRow(row: ProviderRow): CustomProviderRecord {
+  // 新列 interface_types_json 优先；老库迁移前/异常行回退到旧 interface_type 列。
+  const interfaceTypes = normalizeInterfaceTypes(parseJson<unknown[]>(row.interface_types_json))
+    ?? normalizeInterfaceTypes([row.interface_type])
+    ?? ["chat"]
   return {
     id: row.id,
     ownerUserId: row.owner_user_id,
@@ -65,7 +84,7 @@ function fromRow(row: ProviderRow): CustomProviderRecord {
     slug: row.slug,
     description: row.description,
     baseUrl: row.base_url,
-    interfaceType: row.interface_type,
+    interfaceTypes,
     models: parseJson<string[]>(row.models_json),
     balanceConfig: parseJson<CustomProviderBalanceConfig>(row.balance_config_json),
     enabled: Boolean(row.enabled),
@@ -102,15 +121,17 @@ export class CustomProviderRepository {
     return row ? fromRow(row) : null
   }
 
-  create(input: { name: string; description?: string; baseUrl: string; interfaceType: CustomProviderInterface; models?: string[] | null; balanceConfig?: CustomProviderBalanceConfig | null; enabled?: boolean }): CustomProviderRecord {
+  create(input: { name: string; description?: string; baseUrl: string; interfaceTypes: CustomProviderInterface[]; models?: string[] | null; balanceConfig?: CustomProviderBalanceConfig | null; enabled?: boolean }): CustomProviderRecord {
+    const interfaceTypes = normalizeInterfaceTypes(input.interfaceTypes)
+    if (!interfaceTypes) throw new Error("至少选择一种接口类型")
     const id = randomUUID()
     const timestamp = nowIso()
     const name = input.name.trim()
     const slug = this.uniqueSlug(name)
-    this.db.prepare(`INSERT INTO custom_providers(id,owner_user_id,name,slug,description,base_url,interface_type,models_json,balance_config_json,enabled,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      id, this.ownerUserId, name, slug, input.description?.trim() ?? "", normalizeBaseUrl(input.baseUrl), input.interfaceType,
-      JSON.stringify(normalizeModels(input.models)), input.balanceConfig ? JSON.stringify(input.balanceConfig) : null,
+    this.db.prepare(`INSERT INTO custom_providers(id,owner_user_id,name,slug,description,base_url,interface_type,interface_types_json,models_json,balance_config_json,enabled,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, this.ownerUserId, name, slug, input.description?.trim() ?? "", normalizeBaseUrl(input.baseUrl), legacyInterfaceType(interfaceTypes),
+      JSON.stringify(interfaceTypes), JSON.stringify(normalizeModels(input.models)), input.balanceConfig ? JSON.stringify(input.balanceConfig) : null,
       Number(input.enabled ?? true), timestamp, timestamp,
     )
     invalidateCustomProviderCache(id)
@@ -128,7 +149,7 @@ export class CustomProviderRepository {
     return slug
   }
 
-  update(id: string, input: Partial<{ name: string; description: string; baseUrl: string; interfaceType: CustomProviderInterface; models: string[] | null; balanceConfig: CustomProviderBalanceConfig | null; enabled: boolean }>): CustomProviderRecord | null {
+  update(id: string, input: Partial<{ name: string; description: string; baseUrl: string; interfaceTypes: CustomProviderInterface[]; models: string[] | null; balanceConfig: CustomProviderBalanceConfig | null; enabled: boolean }>): CustomProviderRecord | null {
     const entries: Array<[string, unknown]> = []
     if (input.name !== undefined) {
       const name = input.name.trim()
@@ -137,7 +158,12 @@ export class CustomProviderRepository {
     }
     if (input.description !== undefined) entries.push(["description", input.description.trim()])
     if (input.baseUrl !== undefined) entries.push(["base_url", normalizeBaseUrl(input.baseUrl)])
-    if (input.interfaceType !== undefined) entries.push(["interface_type", input.interfaceType])
+    if (input.interfaceTypes !== undefined) {
+      const interfaceTypes = normalizeInterfaceTypes(input.interfaceTypes)
+      if (!interfaceTypes) throw new Error("至少选择一种接口类型")
+      entries.push(["interface_types_json", JSON.stringify(interfaceTypes)])
+      entries.push(["interface_type", legacyInterfaceType(interfaceTypes)])
+    }
     if (input.models !== undefined) entries.push(["models_json", JSON.stringify(normalizeModels(input.models))])
     if (input.balanceConfig !== undefined) entries.push(["balance_config_json", input.balanceConfig ? JSON.stringify(input.balanceConfig) : null])
     if (input.enabled !== undefined) entries.push(["enabled", Number(input.enabled)])

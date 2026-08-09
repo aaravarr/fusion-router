@@ -14,7 +14,7 @@ function setup() {
   const provider = new CustomProviderRepository(ownerUserId, db).create({
     name: "Custom",
     baseUrl: "https://api.example.com/v1",
-    interfaceType: "chat",
+    interfaceTypes: ["chat"],
   })
   return { db, provider }
 }

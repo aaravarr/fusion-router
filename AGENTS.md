@@ -19,3 +19,11 @@
 - **refresh 401/403 = 凭据失效**：`refreshKimiAccessToken` 对 401/403/invalid_grant 抛 `KimiTokenInvalidError`；provider 捕获后清空 token 并写 `revokedAt`（对齐官方 revoked tombstone，token-state.ts），`getCredential` 直接报「需重新登录」，不要反复拿死 token 白刷；网络/5xx 抖动保留旧 token 静默降级。
 - **429 语义**：Moonshot 的配额/余额耗尽也是 429——结构化 `error.type=exceeded_current_quota_error` 或 billing 措辞（"exceeded your current quota"/"insufficient balance"/"please recharge"/"in arrears"）→ 配额耗尽（切换账号），其余 429 才是瞬时限流（kimi-errors.ts 语义）。402 在 /models 语境是会员权益/认证类错误。
 - **业务错误码禁用 401**：前端 `sessionFetch`（admin-context.tsx）会把任何 401 当会话过期跳登录页；业务校验失败（如 key 无效）必须返回 400/422，否则出现「验证并录入 → 跳登录」的诡异现象。
+
+### 各 provider 原生接口格式能力（2026-08-09 确认）
+
+- opencode-go：chat completions + Anthropic messages（上游 opencode.ai 原生支持 /messages）；**responses 入口走网关转 chat 的兼容链路，不是原生**。
+- kimi-code：chat completions + Anthropic messages（官方 Claude Code 接入方式 `ANTHROPIC_BASE_URL=https://api.kimi.com/coding/` → `/v1/messages`，文档确认）。
+- openai (codex)：仅 responses（chatgpt.com/backend-api/codex）。
+- xai-grok：chat completions + responses（cli-chat-proxy.grok.com）；**不支持 messages（用户确认，已知事实）**。
+- 通用原则：上游格式能力以实测/官方文档为准，不靠猜；调度遵循「原生优先，兼容转换兜底」。

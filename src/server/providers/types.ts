@@ -1,4 +1,5 @@
 import type { AccountRecord, QuotaKind } from "../types"
+import type { InterfaceFormat } from "../messages/route-decision"
 
 // Pool Type
 
@@ -96,6 +97,11 @@ export interface Provider {
   supportsModel?(model: string, accounts?: AccountRecord[]): boolean
   /** Optional endpoint-level capability check for catalogs containing non-chat models. */
   supportsEndpoint?(model: string, endpoint: string): boolean
+  /**
+   * 上游原生支持的接口格式（chat / responses / messages）。未声明时网关
+   * 不做格式决策，保持现状直通。
+   */
+  supportedInterfaces?(): readonly InterfaceFormat[]
   /**
    * Optional live catalog fetch using a ready account credential.
    * Return null when this provider cannot list models remotely.

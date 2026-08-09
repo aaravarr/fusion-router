@@ -1,9 +1,10 @@
 import { Script, createContext } from "node:vm"
 import { apiFetchWithMirrorContext } from "../api-fetch"
 import type { MirrorSelectionAccount } from "../api-fetch"
-import { getCustomProviderByPoolType, type CustomProviderBalanceConfig } from "../custom-providers"
+import { getCustomProviderByPoolType, type CustomProviderBalanceConfig, type CustomProviderInterface } from "../custom-providers"
 import { getDatabase } from "../db"
 import { ProviderCredentialRepository } from "../repository"
+import { endpointForFormat, formatForEndpoint } from "../messages/route-decision"
 import type { AccountRecord, PoolType, QuotaKind } from "../types"
 import type { ForwardRequestInput, ForwardTarget, Provider, ProviderCredential, QuotaWindow, UpstreamErrorClassification } from "./types"
 
@@ -116,7 +117,8 @@ async function queryBalance(config: CustomProviderBalanceConfig, baseUrl: string
 export class CustomProvider implements Provider {
   constructor(readonly poolType: PoolType) {}
   get displayName(): string { return configFor(this.poolType).name }
-  get interfaceType(): "chat" | "responses" { return configFor(this.poolType).interfaceType }
+  get interfaceTypes(): CustomProviderInterface[] { return configFor(this.poolType).interfaceTypes }
+  supportedInterfaces(): readonly CustomProviderInterface[] { return configFor(this.poolType).interfaceTypes }
   supportedQuotaKinds(): readonly QuotaKind[] { return ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD"] }
 
   async refreshQuota(_accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
@@ -183,7 +185,11 @@ export class CustomProvider implements Provider {
         body = new TextEncoder().encode(JSON.stringify(parsed))
       } catch { /* upstream will validate malformed JSON */ }
     }
-    const endpoint = config.interfaceType === "chat" ? "chat/completions" : "responses"
+    // 尊重 Gateway 决策后传入的端点（原生优先）；不在支持集合内时回退到
+    // 首选格式。probe/test-connection 不走这里，不受影响。
+    const supported = config.interfaceTypes
+    const inputFormat = formatForEndpoint(input.endpoint)
+    const endpoint = inputFormat && supported.includes(inputFormat) ? input.endpoint.replace(/^\/+/, "") : endpointForFormat(supported[0])
     return { url: `${config.baseUrl}/${endpoint}`, headers, body }
   }
 
@@ -228,7 +234,6 @@ export interface CustomProviderProbeResult {
 
 export async function probeCustomProvider(input: {
   baseUrl: string
-  interfaceType: "chat" | "responses"
   apiKey?: string | null
   extraHeaders?: Record<string, string>
   balanceConfig?: CustomProviderBalanceConfig | null

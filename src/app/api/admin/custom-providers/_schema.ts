@@ -16,7 +16,7 @@ export const createCustomProviderSchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().max(500).optional(),
   baseUrl: z.string().url().max(2000),
-  interfaceType: z.enum(["chat", "responses"]),
+  interfaceTypes: z.array(z.enum(["chat", "responses", "messages"])).min(1),
   models: z.array(z.string().trim().min(1).max(200)).max(500).nullable().optional(),
   balanceConfig: balanceConfigSchema.nullable().optional(),
   apiKeys: z.array(z.string().trim().min(1).max(20_000)).max(100).optional(),

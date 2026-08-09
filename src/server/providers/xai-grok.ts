@@ -386,6 +386,10 @@ export class XAIGrokProvider implements Provider {
     return SUPPORTED_QUOTA_KINDS
   }
 
+  supportedInterfaces(): readonly import("../messages/route-decision").InterfaceFormat[] {
+    return ["chat", "responses"] as const
+  }
+
   async refreshQuota(_accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
     // Free-tier quota headers are unreliable (often remaining=limit forever).
     // Do not spend a live probe request here; local 24h request logs are the

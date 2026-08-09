@@ -29,7 +29,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const provider = new CustomProviderRepository(user.id, db).update(id, input)
     let warnings: string[] = []
     // 配置变更（Key、余额、地址、协议）后，对该 Provider 全部账号重新同步模型与额度。
-    if (provider && (apiKeys?.length || input.balanceConfig !== undefined || input.baseUrl !== undefined || input.interfaceType !== undefined)) {
+    if (provider && (apiKeys?.length || input.balanceConfig !== undefined || input.baseUrl !== undefined || input.interfaceTypes !== undefined)) {
       if (apiKeys?.length) {
         createCustomProviderKeys({ ownerUserId: user.id, poolType: provider.poolType, apiKeys }, db)
       }

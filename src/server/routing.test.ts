@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { createDatabase } from "./db"
+import { createDatabase, type AppDatabase } from "./db"
 import { SecretVault } from "./crypto"
 import { AccountRepository, ModelRoutingRepository } from "./repository"
 import { NoEligibleAccountError, RoutingService } from "./routing"
 import { setBuiltinProviderEnabled } from "./builtin-provider-state"
 import { upsertLocalRollingUsage } from "./quota-usage"
+import { CustomProviderRepository, invalidateCustomProviderCache } from "./custom-providers"
 
 const encryptionKey = Buffer.alloc(32, 4).toString("base64")
 const ownerUserId = "user-1"
@@ -27,6 +28,10 @@ function make() {
     useBalance: safe ? false : null, usage,
   }).id
   return { db, accounts, routing, add }
+}
+
+function setGlobalDatabase(value: AppDatabase | undefined) {
+  (globalThis as typeof globalThis & { __opencodeApiDb?: AppDatabase }).__opencodeApiDb = value
 }
 
 describe("routing", () => {
@@ -355,5 +360,44 @@ describe("routing", () => {
     expect(db.prepare("SELECT COUNT(*) AS value FROM quota_windows WHERE account_id=? AND kind='ROLLING_24H'").get(xai.id)).toEqual({ value: 0 })
     const event = db.prepare("SELECT metadata_json FROM events WHERE account_id=? AND type='ACCOUNT_QUOTA_BLOCKED' ORDER BY rowid DESC LIMIT 1").get(xai.id) as { metadata_json: string }
     expect(JSON.parse(event.metadata_json)).toMatchObject({ consecutiveFailures: 1, dayUnavailable: false })
+  })
+
+  it("入口格式门控：chat 入口排除 messages-only 账号，messages 入口保留", () => {
+    const { db, accounts, routing, add } = make()
+    setGlobalDatabase(db)
+    try {
+      const goId = add("one")
+      const provider = new CustomProviderRepository(ownerUserId, db).create({ name: "messages only", baseUrl: "https://anthropic.example.com/v1", interfaceTypes: ["messages"] })
+      const customId = accounts.createProviderAccount({ name: "claude key", poolType: provider.poolType }).id
+
+      // chat 入口：messages-only 账号无转换链可达，被排除
+      routing.setInterfaceFormat("chat")
+      expect(routing.select("gate-chat", "chat/completions", new Set()).account.id).toBe(goId)
+      routing.releaseLease(routing.select("gate-chat-2", "chat/completions", new Set()).leaseId)
+
+      // messages 入口：两个账号都原生支持
+      routing.setInterfaceFormat("messages")
+      expect(routing.select("gate-messages", "messages", new Set([goId])).account.id).toBe(customId)
+
+      // chat 入口且只剩 messages-only 账号：fail closed
+      routing.setInterfaceFormat("chat")
+      expect(() => routing.select("gate-chat-none", "chat/completions", new Set([goId]))).toThrowError(NoEligibleAccountError)
+    } finally {
+      invalidateCustomProviderCache()
+      setGlobalDatabase(undefined)
+    }
+  })
+
+  it("raw 直通仅保留原生支持入口格式的账号", () => {
+    const { routing, add } = make()
+    add("one")
+    // opencode-go 原生声明 chat+messages：raw responses 不可路由，raw messages 可以
+    routing.setInterfaceFormat("responses", true)
+    expect(() => routing.select("raw-responses", "responses", new Set())).toThrowError(NoEligibleAccountError)
+    routing.setInterfaceFormat("messages", true)
+    expect(routing.select("raw-messages", "messages", new Set()).account).toBeDefined()
+    // 非 raw（可转换）：responses 经 chat 枢纽可达
+    routing.setInterfaceFormat("responses")
+    expect(routing.select("processed-responses", "responses", new Set()).account).toBeDefined()
   })
 })

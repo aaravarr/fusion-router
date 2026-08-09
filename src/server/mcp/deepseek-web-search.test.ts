@@ -24,7 +24,7 @@ beforeEach(() => {
   const provider = new CustomProviderRepository(ownerUserId, db).create({
     name: "DeepSeek 官方",
     baseUrl: "https://api.deepseek.com",
-    interfaceType: "responses",
+    interfaceTypes: ["responses"],
     models: ["deepseek-v4-flash"],
   })
   const account = new AccountRepository(ownerUserId, db).createProviderAccount({

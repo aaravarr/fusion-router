@@ -96,6 +96,10 @@ export class OpenCodeGoProvider implements Provider {
     return ["FIVE_HOUR", "WEEKLY", "MONTHLY"] as const
   }
 
+  supportedInterfaces(): readonly import("../messages/route-decision").InterfaceFormat[] {
+    return ["chat", "messages"] as const
+  }
+
   async refreshQuota(accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
     // Delegated to OpenCodeWebService.refreshUsage — this method is a no-op stub
     // because the OpenCode Go quota refresh is orchestrated by the maintenance

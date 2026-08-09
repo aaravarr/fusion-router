@@ -17,10 +17,12 @@ import { useAdminResource } from "./use-admin-resource";
 import { useConfirm } from "@/components/ui/confirm-provider";
 import { Checkbox } from "@/components/ui/checkbox";
 
-type InterfaceType = "chat" | "responses";
+type InterfaceFormat = "chat" | "responses" | "messages";
+const INTERFACE_FORMAT_LABELS: Record<InterfaceFormat, string> = { chat: "Chat Completions", responses: "Responses", messages: "Anthropic Messages" };
+const INTERFACE_FORMAT_ORDER: InterfaceFormat[] = ["chat", "responses", "messages"];
 interface BalanceConfig { request: { url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: unknown }; extractor: string }
 interface CustomProvider {
-  id: string; poolType: string; name: string; description: string; baseUrl: string; interfaceType: InterfaceType;
+  id: string; poolType: string; name: string; description: string; baseUrl: string; interfaceTypes: InterfaceFormat[];
   models: string[] | null; balanceConfig: BalanceConfig | null; enabled: boolean; createdAt: string; updatedAt: string; keyCount?: number;
 }
 interface ProviderKey { id: string; name: string; adminState: "ENABLED" | "DISABLED"; authState: string; maxConcurrency: number; lastSuccessAt: string | null; createdAt: string }
@@ -127,7 +129,10 @@ export function CustomProvidersPage() {
                 </div>
                 <div className="min-w-0 text-xs">
                   <p className="truncate font-mono text-foreground">{provider.baseUrl}</p>
-                  <p className="mt-1 text-muted-foreground">{provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · {provider.models?.length ? `${provider.models.length} 个固定模型` : "从 /models 自动发现"} · {provider.balanceConfig ? "已配置余额查询" : "未配置余额查询"}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    {provider.interfaceTypes.map((format) => <span key={format} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{INTERFACE_FORMAT_LABELS[format]}</span>)}
+                    <span className="text-muted-foreground">{provider.models?.length ? `${provider.models.length} 个固定模型` : "从 /models 自动发现"} · {provider.balanceConfig ? "已配置余额查询" : "未配置余额查询"}</span>
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="outline" size="sm" disabled={busyId === provider.id} onClick={() => void toggleProvider(provider)}>{busyId === provider.id ? <LoaderCircle className="animate-spin" /> : <Power />}{provider.enabled ? "停用" : "启用"}</Button>
@@ -203,7 +208,14 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
   const [name, setName] = useState(provider?.name ?? "");
   const [description, setDescription] = useState(provider?.description ?? "");
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
-  const [interfaceType, setInterfaceType] = useState<InterfaceType>(provider?.interfaceType ?? "responses");
+  const [interfaceTypes, setInterfaceTypes] = useState<InterfaceFormat[]>(provider?.interfaceTypes?.length ? provider.interfaceTypes : ["responses"]);
+  const toggleInterfaceType = (format: InterfaceFormat, checked: boolean) => {
+    setInterfaceTypes((current) => {
+      if (checked) return INTERFACE_FORMAT_ORDER.filter((item) => item === format || current.includes(item));
+      // 至少保留一种接口格式
+      return current.length > 1 ? current.filter((item) => item !== format) : current;
+    });
+  };
   const [models, setModels] = useState(provider?.models?.join("\n") ?? "");
   const [balanceEnabled, setBalanceEnabled] = useState(Boolean(provider?.balanceConfig));
   const [balanceUrl, setBalanceUrl] = useState(provider?.balanceConfig?.request.url ?? "{{baseUrl}}/user/balance");
@@ -229,7 +241,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
       }
       const requestBody = balanceEnabled && balanceMethod === "POST" && balanceBody.trim() ? JSON.parse(balanceBody) : undefined;
       const payload = {
-        name, description, baseUrl, interfaceType, enabled,
+        name, description, baseUrl, interfaceTypes, enabled,
         apiKeys: apiKeyList,
         models: models.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
         balanceConfig: balanceEnabled ? { request: { url: balanceUrl, method: balanceMethod, headers, ...(balanceMethod === "POST" && requestBody !== undefined ? { body: requestBody } : {}) }, extractor } : null,
@@ -249,7 +261,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
     }
     setModelsProbe((current) => ({ ...current, testing: true, error: null, result: null }));
     try {
-      const payload = { baseUrl, interfaceType, apiKey: apiKeyList[0] || undefined, providerId: provider?.id };
+      const payload = { baseUrl, interfaceTypes, apiKey: apiKeyList[0] || undefined, providerId: provider?.id };
       const response = await adminFetch("/api/admin/custom-providers/test-connection", { method: "POST", body: JSON.stringify(payload) });
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(errorMessage(result, "调试请求失败"));
@@ -278,7 +290,7 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
       setBalanceProbe((current) => ({ ...current, testing: true, error: null, result: null }));
       const payload = {
         baseUrl,
-        interfaceType,
+        interfaceTypes,
         apiKey: apiKeyList[0] || undefined,
         providerId: provider?.id,
         extraHeaders: headers,
@@ -304,7 +316,16 @@ function ProviderEditor({ provider, onClose, onSaved }: { provider: CustomProvid
       <EditorSection title="基础信息" description="定义 Provider 的连接方式和可用模型。">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="名称" hint="控制台内显示的名称，不影响上游请求。"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Internal OpenAI" /></Field>
-          <Field label="接口类型" hint="选择上游遵循的 OpenAI 协议：Responses 走 /responses，Chat 走 /chat/completions。"><Select value={interfaceType} onValueChange={(value) => setInterfaceType(value as InterfaceType)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="responses">Responses API</SelectItem><SelectItem value="chat">Chat Completions API</SelectItem></SelectContent></Select></Field>
+          <Field label="接口类型" hint="勾选上游原生支持的协议（可多选）：入口格式命中时原生直通，未命中时经 Chat 枢纽自动转换。">
+            <div className="flex flex-col gap-2 rounded-md border bg-white p-3">
+              {INTERFACE_FORMAT_ORDER.map((format) => (
+                <label key={format} className="flex items-center gap-2 text-sm">
+                  <Checkbox checked={interfaceTypes.includes(format)} onCheckedChange={(checked) => toggleInterfaceType(format, checked === true)} />
+                  <span>{INTERFACE_FORMAT_LABELS[format]} API</span>
+                </label>
+              ))}
+            </div>
+          </Field>
           <Field label="Base URL" hint="上游 API 根地址，需包含版本前缀，例如 https://api.example.com/v1。模型与转发请求都会拼在这个地址后面。" wide><Input className="font-mono text-xs" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /></Field>
           <Field label="描述" hint="可选备注，展示在 Provider 列表中。" wide><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="用途、地域或计费说明" /></Field>
           <div className="sm:col-span-2">

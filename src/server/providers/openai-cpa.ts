@@ -314,6 +314,10 @@ export class OpenAICPAProvider implements Provider {
     return SUPPORTED_QUOTA_KINDS
   }
 
+  supportedInterfaces(): readonly import("../messages/route-decision").InterfaceFormat[] {
+    return ["responses"] as const
+  }
+
   async refreshQuota(accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
     const credential = await this.getCredential(account)
     const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"] ?? accountId

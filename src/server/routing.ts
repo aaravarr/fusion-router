@@ -8,6 +8,7 @@ import { tryGetProvider } from "./providers"
 import { ModelRoutingRepository } from "./repository"
 import { refreshStaleLocalRollingUsage, resolveXaiBlockSeconds } from "./quota-usage"
 import { isBuiltinProviderEnabled } from "./builtin-provider-state"
+import { canServeInterface, type InterfaceFormat } from "./messages/route-decision"
 
 type Row = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
@@ -56,6 +57,8 @@ export class RoutingService {
   private currentModel: string | null = null
   private constrainedPoolType: PoolType | null = null
   private constrainedAccountId: string | null = null
+  private interfaceFormat: InterfaceFormat | null = null
+  private interfaceNativeOnly = false
 
   constructor(readonly ownerUserId: string, readonly db: AppDatabase = getDatabase()) {
     if (!ownerUserId) throw new Error("ownerUserId is required")
@@ -165,13 +168,26 @@ export class RoutingService {
       if (this.currentModel && modelCapable.length === 0 && otherwiseEligible.length > 0) {
         throw new NoEligibleAccountError("NO_ELIGIBLE")
       }
-      const unconstrainedCapabilityPool = modelCapable.length > 0 ? modelCapable : otherwiseEligible
+      // 入口格式门控：账号既不支持入口格式、也无法经 chat 枢纽转换到达时提前排除。
+      // raw 直通模式下网关不做任何转换，要求原生支持。
+      const supportsRequestFormat = (poolType: PoolType): boolean => {
+        if (!this.interfaceFormat) return true
+        const supported = tryGetProvider(poolType)?.supportedInterfaces?.()
+        if (!supported?.length) return true
+        if (this.interfaceNativeOnly) return supported.includes(this.interfaceFormat)
+        return canServeInterface(this.interfaceFormat, supported)
+      }
+      const formatCapable = this.interfaceFormat ? modelCapable.filter((account) => supportsRequestFormat(account.poolType)) : modelCapable
+      if (this.interfaceFormat && formatCapable.length === 0 && modelCapable.length > 0) {
+        throw new NoEligibleAccountError("NO_ELIGIBLE")
+      }
+      const unconstrainedCapabilityPool = formatCapable.length > 0 ? formatCapable : otherwiseEligible
       // A matching model-routing rule is an allow-list, not merely a sorting
       // hint. Keep only providers named by the rule (and capable of serving
       // the model) before applying request-level constraints and availability.
       const rawModelPriority = this.currentModel ? this.modelRouting.resolveModelPriority(this.currentModel) : null
       const modelPriority = rawModelPriority
-        ? rawModelPriority.filter((pt) => providerSupportsModel(pt as PoolType, this.currentModel, endpoint))
+        ? rawModelPriority.filter((pt) => providerSupportsModel(pt as PoolType, this.currentModel, endpoint) && supportsRequestFormat(pt as PoolType))
         : null
       const allowedModelPools = modelPriority ? new Set(modelPriority) : null
       const routedCapabilityPool = allowedModelPools
@@ -312,6 +328,15 @@ export class RoutingService {
   }
 
   setModel(model: string | null): void { this.currentModel = model }
+
+  /**
+   * 按入口接口格式过滤可选账号。nativeOnly（raw 直通）时仅保留原生支持
+   * 该格式的账号；否则接受任何能经转换链到达的账号。
+   */
+  setInterfaceFormat(format: InterfaceFormat | null, nativeOnly = false): void {
+    this.interfaceFormat = format
+    this.interfaceNativeOnly = nativeOnly
+  }
 
   /** Constrain one request without mutating the user's persistent routing preferences. */
   setRequestConstraint(input: { poolType?: PoolType | null; accountId?: string | null }): void {

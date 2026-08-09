@@ -280,6 +280,10 @@ export class KimiCodeProvider implements Provider {
     return SUPPORTED_QUOTA_KINDS
   }
 
+  supportedInterfaces(): readonly import("../messages/route-decision").InterfaceFormat[] {
+    return ["chat", "messages"] as const
+  }
+
   async refreshQuota(_accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
     void _accountId
     const credential = await this.getCredential(account)

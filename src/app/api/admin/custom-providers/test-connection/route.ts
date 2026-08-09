@@ -10,7 +10,7 @@ export const runtime = "nodejs"
 
 const debugSchema = z.object({
   baseUrl: z.string().url().max(2000),
-  interfaceType: z.enum(["chat", "responses"]),
+  interfaceTypes: z.array(z.enum(["chat", "responses", "messages"])).min(1).optional(),
   apiKey: z.string().max(20_000).optional(),
   extraHeaders: z.record(z.string(), z.string()).optional(),
   balanceConfig: balanceConfigSchema.nullable().optional(),
@@ -35,7 +35,6 @@ export async function POST(request: Request) {
   try {
     const result = await probeCustomProvider({
       baseUrl: parsed.data.baseUrl,
-      interfaceType: parsed.data.interfaceType,
       apiKey,
       extraHeaders: parsed.data.extraHeaders,
       balanceConfig: parsed.data.balanceConfig,

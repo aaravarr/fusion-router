@@ -19,6 +19,8 @@ import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
 import { normalizeOpenCodeGoResponsesSse } from "./responses/opencode-go-compat"
+import { chatJsonToMessages, chatSseToMessagesStream, messagesRequestToChat } from "./messages/convert"
+import { decideUpstreamRoute, formatForEndpoint } from "./messages/route-decision"
 import { hasImageInBody, modelSupportsImage, rewriteImagesToText } from "./mcp/openrouter-models"
 import { isBuiltinProviderEnabled } from "./builtin-provider-state"
 
@@ -337,6 +339,7 @@ export class GatewayService {
     let effectiveEndpoint = endpoint
     const processResponses = endpoint === "responses" && options?.raw !== true
     const processChat = endpoint === "chat/completions" && options?.raw !== true
+    const processMessages = endpoint === "messages" && options?.raw !== true
 
     if (requestBodyJson && typeof requestBodyJson === "object") {
       if (processResponses) {
@@ -366,7 +369,8 @@ export class GatewayService {
           stream = (prepared as { stream?: boolean }).stream === true
         }
         upstreamBytes = new TextEncoder().encode(JSON.stringify(prepared))
-      } else if (stream && logging) {
+      } else if (stream && logging && endpoint !== "messages") {
+        // Anthropic Messages 流式协议自带 usage（message_start/message_delta），无需注入。
         const rewritten = ensureStreamUsage(requestBodyJson, endpoint === "responses" ? "responses" : "chat")
         upstreamBytes = new TextEncoder().encode(JSON.stringify(rewritten))
       }
@@ -374,7 +378,7 @@ export class GatewayService {
 
     const chatFallbackUsed = processResponses && responsesRoute === "chat"
     const inboundEndpoint = options?.raw ? `raw/v1/${endpoint}` : `v1/${endpoint}`
-    const processMode = options?.raw ? "raw" : (processResponses || processChat ? "processed" : "passthrough")
+    const processMode = options?.raw ? "raw" : (processResponses || processChat || processMessages ? "processed" : "passthrough")
     const routeMode = processResponses ? responsesRoute : (endpoint === "chat/completions" ? "chat" : endpoint === "responses" ? "responses" : endpoint)
     const routeReason = processResponses
       ? (responsesRouteReason || (responsesRoute === "chat" ? "chat_fallback" : "responses_native"))
@@ -391,6 +395,8 @@ export class GatewayService {
       if (responsesRoute === "chat") transformParts.push("chat-to-responses")
     } else if (processChat) {
       transformParts.push("chat-normalize")
+    } else if (processMessages) {
+      transformParts.push("messages-native")
     }
     if (routeReason) transformParts.push(`reason:${routeReason}`)
     const transformSummary = transformParts.join(" | ")
@@ -409,6 +415,10 @@ export class GatewayService {
       poolType: options?.routing?.poolType ?? null,
       accountId: options?.routing?.accountId ?? null,
     })
+    // 入口格式门控：提前排除既不支持入口格式也无法经转换链到达的账号；
+    // raw 直通要求原生支持。
+    const inboundFormat = inferenceRequest ? formatForEndpoint(endpoint) : null
+    if (inboundFormat) routing.setInterfaceFormat(inboundFormat, options?.raw === true)
     const tried = new Set<string>()
     const permanentlyDisabled = new Set<string>()
     let attemptNumber = 0
@@ -485,6 +495,8 @@ export class GatewayService {
       const upstreamStartedAt = Date.now()
       try {
        const provider = tryGetProvider(selection.account.poolType)
+       const supportedInterfaces = provider?.supportedInterfaces?.() ?? null
+       const isCustomPool = selection.account.poolType.startsWith("custom:")
        let attemptUpstreamBytes = upstreamBytes
        let attemptEndpoint = effectiveEndpoint
        let attemptChatFallbackUsed = chatFallbackUsed
@@ -492,44 +504,58 @@ export class GatewayService {
        let attemptResponsesRouteReason = responsesRouteReason
        let attemptToolContext = responsesToolContext
        let attemptResponsesToChat = false
-       if (provider && selection.account.poolType.startsWith("custom:")) {
-         const interfaceType = (provider as typeof provider & { interfaceType?: "chat" | "responses" }).interfaceType
-         if (processResponses && interfaceType === "chat" && !attemptChatFallbackUsed) {
+       let attemptMessagesFallback: "chat" | "responses" | null = null
+       // 格式决策表：入口格式 × 账号支持集合 → (上游端点, 转换链)。原生优先。
+       if (processResponses && supportedInterfaces) {
+         if (attemptChatFallbackUsed) {
+           // 管线已把请求转成 chat；账号原生支持 responses 但不支持 chat 时回退原生 responses。
+           if (!supportedInterfaces.includes("chat") && supportedInterfaces.includes("responses")) {
+             attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(responsesNativeBody ?? requestBodyJson))
+             attemptEndpoint = "responses"
+             attemptChatFallbackUsed = false
+             attemptResponsesRoute = "responses"
+             attemptResponsesRouteReason = isCustomPool ? "custom_provider_responses_interface" : "responses_native_capability"
+           }
+         } else if (!supportedInterfaces.includes("responses") && supportedInterfaces.includes("chat")) {
            const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson, [], { reasoningItems: (responsesProcessMeta?.reasoningItems ?? []).map((reasoning_content) => ({ reasoning_content })) })
            attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(prepareChatRequestBody(convertedRequest.body)))
            attemptToolContext = convertedRequest.toolContext
            attemptEndpoint = "chat/completions"
            attemptChatFallbackUsed = true
            attemptResponsesRoute = "chat"
-           attemptResponsesRouteReason = "custom_provider_chat_interface"
-         } else if (processResponses && interfaceType === "responses" && attemptChatFallbackUsed) {
-           attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(responsesNativeBody ?? requestBodyJson))
-           attemptEndpoint = "responses"
-           attemptChatFallbackUsed = false
-           attemptResponsesRoute = "responses"
-           attemptResponsesRouteReason = "custom_provider_responses_interface"
-         } else if (processChat && interfaceType === "responses") {
-           attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(chatRequestToResponses(requestBodyJson)))
-           attemptEndpoint = "responses"
-           attemptResponsesToChat = true
+           attemptResponsesRouteReason = selection.account.poolType === "opencode-go" ? "opencode_go_responses_to_chat" : isCustomPool ? "custom_provider_chat_interface" : "responses_to_chat_capability"
          }
        }
-       if (processResponses && selection.account.poolType === "opencode-go" && !attemptChatFallbackUsed) {
-         const convertedRequest = buildChatFallbackFromResponsesWithContext(responsesNativeBody ?? requestBodyJson, [], { reasoningItems: (responsesProcessMeta?.reasoningItems ?? []).map((reasoning_content) => ({ reasoning_content })) })
-         attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(prepareChatRequestBody(convertedRequest.body)))
-         attemptToolContext = convertedRequest.toolContext
-         attemptEndpoint = "chat/completions"
-         attemptChatFallbackUsed = true
-         attemptResponsesRoute = "chat"
-         attemptResponsesRouteReason = "opencode_go_responses_to_chat"
+       if (processChat && supportedInterfaces && !supportedInterfaces.includes("chat") && supportedInterfaces.includes("responses")) {
+         attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(chatRequestToResponses(requestBodyJson)))
+         attemptEndpoint = "responses"
+         attemptResponsesToChat = true
+         attemptResponsesRouteReason = isCustomPool ? "custom_provider_responses_interface" : "chat_to_responses"
+       }
+       if (processMessages && supportedInterfaces) {
+         const decision = decideUpstreamRoute("messages", supportedInterfaces)
+         if (decision && !decision.native) {
+           // chat 为转换枢纽：messages→chat；只支持 responses 时再接力 chat→responses。
+           const chatBody = messagesRequestToChat(requestBodyJson)
+           if (decision.upstreamEndpoint === "chat/completions") {
+             attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(chatBody))
+             attemptMessagesFallback = "chat"
+           } else {
+             attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(chatRequestToResponses(chatBody)))
+             attemptMessagesFallback = "responses"
+           }
+           attemptEndpoint = decision.upstreamEndpoint
+           attemptResponsesRouteReason = decision.reason
+         }
        }
        routeMeta.upstreamEndpoint = attemptEndpoint
-       routeMeta.routeMode = processResponses ? attemptResponsesRoute : attemptResponsesToChat ? "responses" : routeMode
+       routeMeta.routeMode = processResponses ? attemptResponsesRoute : attemptMessagesFallback ?? (attemptResponsesToChat ? "responses" : routeMode)
        routeMeta.routeReason = attemptResponsesRouteReason || (attemptResponsesToChat ? "custom_provider_responses_interface" : routeReason)
-       routeMeta.converted = Number(attemptChatFallbackUsed || attemptResponsesToChat)
-       if (processResponses && attemptChatFallbackUsed && !chatFallbackUsed) routeMeta.transformSummary = "responses->chat | reason:" + (attemptResponsesRouteReason || "custom_provider_chat_interface")
+       routeMeta.converted = Number(attemptChatFallbackUsed || attemptResponsesToChat || attemptMessagesFallback !== null)
+       if (processMessages && attemptMessagesFallback) routeMeta.transformSummary = (attemptMessagesFallback === "responses" ? "messages->chat->responses" : "messages->chat") + " | reason:" + (attemptResponsesRouteReason || "messages_to_chat")
+       else if (processResponses && attemptChatFallbackUsed && !chatFallbackUsed) routeMeta.transformSummary = "responses->chat | reason:" + (attemptResponsesRouteReason || "custom_provider_chat_interface")
        else if (processResponses && !attemptChatFallbackUsed && chatFallbackUsed) routeMeta.transformSummary = "responses-native | reason:custom_provider_responses_interface"
-       else if (attemptResponsesToChat) routeMeta.transformSummary = "chat->responses | reason:custom_provider_responses_interface"
+       else if (attemptResponsesToChat) routeMeta.transformSummary = "chat->responses | reason:" + (attemptResponsesRouteReason || "custom_provider_responses_interface")
        let upstream: Response
        if (provider) {
           let credential: import("./providers").ProviderCredential
@@ -657,6 +683,23 @@ export class GatewayService {
           return new Response(body, { status, headers: responseHeaders(upstream.headers) })
         }
 
+        if (attemptMessagesFallback && !(upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
+          const raw = await upstream.text()
+          let converted: unknown
+          try {
+            const parsed = JSON.parse(raw)
+            converted = chatJsonToMessages(attemptMessagesFallback === "responses" ? responsesJsonToChatCompletion(parsed) : parsed)
+          } catch { converted = { type: "error", error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } } }
+          const body = JSON.stringify(converted)
+          routing.markSuccess(selection.account.id)
+          const status = upstream.status
+          this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
+          this.finalizeRequest(requestId, { status, outcome: "SUCCESS", attempts: attemptNumber, ok: 1, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, usage: extractUsage(converted), accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: body.length, logSettings, requestBodyJson, responseBody: logging ? converted : undefined, responseTruncated: false, meta, ...routeMeta })
+          const headers = responseHeaders(upstream.headers)
+          headers.set("x-messages-route", attemptMessagesFallback)
+          return new Response(body, { status, headers })
+        }
+
         if (attemptResponsesToChat && !(upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
           const raw = await upstream.text()
           let converted: unknown
@@ -739,13 +782,16 @@ export class GatewayService {
             }
           }
           let outStream: ReadableStream<Uint8Array> = teeAndCapture(rebuilt, onComplete)
-          if (selection.account.poolType === "opencode-go" && processResponses && !attemptChatFallbackUsed && !attemptResponsesToChat) {
+          if (attemptMessagesFallback === "responses") outStream = chatSseToMessagesStream(responsesSseToChatStream(outStream))
+          else if (attemptMessagesFallback === "chat") outStream = chatSseToMessagesStream(outStream)
+          else if (selection.account.poolType === "opencode-go" && processResponses && !attemptChatFallbackUsed && !attemptResponsesToChat) {
             outStream = normalizeOpenCodeGoResponsesSse(outStream)
             if (attemptToolContext) outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
           } else if (attemptChatFallbackUsed) outStream = convertChatStreamToResponses(outStream, responsesModelHint, attemptToolContext)
           else if (attemptResponsesToChat) outStream = responsesSseToChatStream(outStream)
           else if (processResponses && attemptToolContext) outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
           const headers = responseHeaders(upstream.headers)
+          if (processMessages) headers.set("x-messages-route", attemptMessagesFallback ?? "native")
           if (processResponses) {
             headers.set("x-responses-route", attemptResponsesRoute)
             if (attemptResponsesRouteReason) headers.set("x-responses-route-reason", attemptResponsesRouteReason)
@@ -857,11 +903,15 @@ export class GatewayService {
               ...routeMeta,
             })
           }
-          return new Response(captureJsonResponse(upstream.body, onComplete), { status, headers: responseHeaders(upstream.headers) })
+          const passthroughHeaders = responseHeaders(upstream.headers)
+          if (processMessages) passthroughHeaders.set("x-messages-route", "native")
+          return new Response(captureJsonResponse(upstream.body, onComplete), { status, headers: passthroughHeaders })
         }
         this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
         this.finalizeRequest(requestId, { status, outcome: "SUCCESS", attempts: attemptNumber, ok: 1, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, accountId: selection.account.id, accountName: selection.account.name, logSettings, requestBodyJson, meta, ...routeMeta })
-        return new Response(upstream.body, { status, headers: responseHeaders(upstream.headers) })
+        const noBodyHeaders = responseHeaders(upstream.headers)
+        if (processMessages) noBodyHeaders.set("x-messages-route", "native")
+        return new Response(upstream.body, { status, headers: noBodyHeaders })
       } catch (cause) {
         const message = formatErrorDetail(cause)
         this.finishAttempt(attemptId, 502, "RETURN_DIRECTLY", "NETWORK", Date.now() - attemptStartedAt, message, selection.account.name, null)

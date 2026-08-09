@@ -27,11 +27,13 @@ function listBuiltinPoolTypeOptions(db: AppDatabase, includeDisabled: boolean): 
   }).filter((option): option is PoolTypeOption => option !== null)
 }
 
+const INTERFACE_LABELS: Record<string, string> = { chat: "Chat Completions", responses: "Responses", messages: "Anthropic Messages" }
+
 function listCustomPoolTypeOptions(ownerUserId: string, db: AppDatabase, includeDisabled: boolean): PoolTypeOption[] {
   return new CustomProviderRepository(ownerUserId, db).list().filter((provider) => includeDisabled || provider.enabled).map((provider) => ({
     type: provider.poolType,
     label: provider.name,
-    description: provider.description || `${provider.interfaceType === "chat" ? "Chat Completions" : "Responses"} · ${provider.baseUrl}`,
+    description: provider.description || `${provider.interfaceTypes.map((format) => INTERFACE_LABELS[format] ?? format).join(" / ")} · ${provider.baseUrl}`,
     quotaKinds: provider.balanceConfig ? ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD"] : [],
     credentialFields: [{ key: "token", label: "API Key", required: true, type: "password" }],
   }))

@@ -37,8 +37,8 @@ describe("pool-type-options", () => {
     db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
       .run(ownerUserId, "owner", "owner", "Owner", "USER", "hash", now, now)
     const repo = new CustomProviderRepository(ownerUserId, db)
-    repo.create({ name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", interfaceType: "chat" })
-    const provider = repo.create({ name: "Disabled Up", baseUrl: "https://example.com/v1", interfaceType: "chat", enabled: false })
+    repo.create({ name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", interfaceTypes: ["chat"] })
+    const provider = repo.create({ name: "Disabled Up", baseUrl: "https://example.com/v1", interfaceTypes: ["chat"], enabled: false })
 
     const types = listPoolTypeOptions(ownerUserId, db).map((option) => option.type)
     expect(types).toContain(repo.list()[0].poolType)
