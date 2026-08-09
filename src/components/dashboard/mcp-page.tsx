@@ -88,30 +88,44 @@ export function McpPage() {
     [origin, server?.endpoint]
   );
 
-  const mcpServerConfig = useMemo(() => {
-    if (!endpoint) return "";
-    return JSON.stringify(
-      {
-        mcpServers: {
-          [MCP_SERVER_NAME]: {
-            command: "cmd",
-            args: [
-              "/c",
-              "npx",
-              "-y",
-              "fusionrouter-mcp",
-              "--base-url",
-              endpoint.replace(/\/mcp$/, ""),
-              "--api-key",
-              "<你的 API Key>",
-            ],
-          },
+  type McpTransport = "stdio" | "http" | "sse";
+  const [transport, setTransport] = useState<McpTransport>("stdio");
+  const mcpServerConfigs = useMemo<Record<McpTransport, { label: string; json: string }> | null>(() => {
+    if (!endpoint) return null;
+    const baseUrl = endpoint.replace(/\/mcp$/, "");
+    const stdio = {
+      mcpServers: {
+        [MCP_SERVER_NAME]: {
+          command: "cmd",
+          args: [
+            "/c",
+            "npx",
+            "-y",
+            "fusionrouter-mcp",
+            "--base-url",
+            baseUrl,
+            "--api-key",
+            "<你的 API Key>",
+          ],
         },
       },
-      null,
-      2,
-    );
+    };
+    const remote = (type: "http" | "sse") => ({
+      mcpServers: {
+        [MCP_SERVER_NAME]: {
+          type,
+          url: endpoint,
+          headers: { Authorization: "Bearer <你的 API Key>" },
+        },
+      },
+    });
+    return {
+      stdio: { label: "stdio（本地桥，推荐）", json: JSON.stringify(stdio, null, 2) },
+      http: { label: "http（Streamable HTTP 直连）", json: JSON.stringify(remote("http"), null, 2) },
+      sse: { label: "sse（SSE 直连）", json: JSON.stringify(remote("sse"), null, 2) },
+    };
   }, [endpoint]);
+  const mcpServerConfig = mcpServerConfigs?.[transport].json ?? "";
   const [configCopied, setConfigCopied] = useState(false);
 
   async function copyServerConfig() {
@@ -418,26 +432,42 @@ export function McpPage() {
       ) : (
         <div className="space-y-4">
           <Panel title="MCP 服务信息" description="MCP 客户端连接地址与鉴权方式。">
-            <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-[3fr_2fr]">
-              <div className="grid auto-rows-fr gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-[240px_1fr]">
+              <div className="grid auto-rows-fr gap-3">
                 <InfoCell label="服务端点" mono>{endpoint}</InfoCell>
                 <InfoCell label="协议版本" mono>{server?.protocolVersion || "—"}</InfoCell>
                 <InfoCell label="工具数量">{server?.toolCount ?? tools.length}</InfoCell>
                 <InfoCell label="鉴权方式" mono>Bearer &lt;API Key&gt;
-                  <span className="mt-1 block truncate text-[11px] font-normal leading-5 text-muted-foreground">使用「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</span>
+                  <span className="mt-1 block text-[11px] font-normal leading-5 text-muted-foreground">使用「API 密钥」页创建的 API Key，识图消耗该 Key 归属用户的账号池</span>
                 </InfoCell>
               </div>
               <div className="min-w-0 rounded-lg border bg-white p-4">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs font-medium text-foreground">客户端接入配置（mcpServers）</p>
-                  <Button size="xs" variant="outline" onClick={() => void copyServerConfig()}>
-                    {configCopied ? <Check /> : <Copy />}
-                    {configCopied ? "已复制" : "复制"}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Select value={transport} onValueChange={(value) => setTransport(value as McpTransport)}>
+                      <SelectTrigger size="sm" className="w-52">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {mcpServerConfigs ? (Object.entries(mcpServerConfigs) as [McpTransport, { label: string }][]).map(([value, item]) => (
+                          <SelectItem key={value} value={value}>{item.label}</SelectItem>
+                        )) : null}
+                      </SelectContent>
+                    </Select>
+                    <Button size="xs" variant="outline" onClick={() => void copyServerConfig()}>
+                      {configCopied ? <Check /> : <Copy />}
+                      {configCopied ? "已复制" : "复制"}
+                    </Button>
+                  </div>
                 </div>
                 <pre className="mt-2 overflow-x-auto rounded-md bg-[#fafafa] p-3 font-mono text-[11px] leading-5">{mcpServerConfig || "…"}</pre>
                 <div className="mt-3 space-y-1.5 text-[11px] leading-5 text-muted-foreground">
-                  <p>本地桥（npx fusionrouter-mcp）支持传<strong>本地图片路径</strong>，推荐接入方式；远程 URL 直连（<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code> + Bearer 鉴权）不支持本地图片。</p>
+                  {transport === "stdio" ? (
+                    <p>本地桥（npx fusionrouter-mcp）支持传<strong>本地图片路径</strong>，推荐接入方式；http / sse 远程 URL 直连不支持本地图片。</p>
+                  ) : (
+                    <p>远程 URL 直连（<code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">{endpoint}</code> + Bearer 鉴权）<strong>不支持本地图片</strong>；需要传本地图片请改用 stdio 本地桥。客户端不支持 {transport === "http" ? "Streamable HTTP" : "SSE"} 传输时请选其他接入方式。</p>
+                  )}
                   <p>把 <code className="rounded-md border bg-[#fafafa] px-1.5 py-0.5 font-mono text-[10px] text-foreground">&lt;你的 API Key&gt;</code> 替换成「API 密钥」页创建的 Key；识图请求使用该 Key 归属用户的账号池。</p>
                 </div>
               </div>
