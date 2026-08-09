@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CustomProviderRepository } from "@/server/custom-providers"
 import { createDatabase, type AppDatabase } from "@/server/db"
 import { AccountRepository, ProviderCredentialRepository } from "@/server/repository"
-import { cleanSearchUrl, deepseekWebSearch, parseResponsesSearchResult } from "./deepseek-web-search"
+import { cleanSearchUrl, webSearch, parseResponsesSearchResult } from "./web-search"
 import { ensureDefaultMcpTools, updateMcpTool } from "./mcp-tools"
 
 const ownerUserId = "custom-owner"
@@ -37,7 +37,7 @@ beforeEach(() => {
     credentialData: { token: "sk-deepseek" },
   })
   ensureDefaultMcpTools(db)
-  updateMcpTool("deepseek_web_search", {
+  updateMcpTool("web_search", {
     config: { provider: provider.poolType, model: "deepseek-v4-flash" },
   }, db)
 })
@@ -136,7 +136,7 @@ describe("parseResponsesSearchResult", () => {
   })
 })
 
-describe("deepseekWebSearch", () => {
+describe("webSearch", () => {
   it("直连 Provider 的 Responses 端点并原样返回答案与搜索来源", async () => {
     const callGateway = vi.fn(async (request: Request) => {
       expect(request.url).toBe("https://api.deepseek.com/responses")
@@ -168,11 +168,11 @@ describe("deepseekWebSearch", () => {
       return new Response(JSON.stringify(RESPONSES_PAYLOAD), { status: 200 })
     })
 
-    updateMcpTool("deepseek_web_search", {
+    updateMcpTool("web_search", {
       config: { reasoningEffort: "high", maxToolCalls: 5 },
     }, db)
 
-    const result = await deepseekWebSearch(
+    const result = await webSearch(
       { content: "比特币当前价格是多少？" },
       db,
       { ownerUserId },
@@ -187,27 +187,27 @@ describe("deepseekWebSearch", () => {
   })
 
   it("未配置 Provider 时报错（不按模型自动路由）", async () => {
-    updateMcpTool("deepseek_web_search", { config: { provider: null } }, db)
+    updateMcpTool("web_search", { config: { provider: null } }, db)
     await expect(
-      deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, vi.fn()),
+      webSearch({ content: "测试" }, db, { ownerUserId }, vi.fn()),
     ).rejects.toThrow(/Provider/)
   })
 
   it("未配置模型时报错", async () => {
-    updateMcpTool("deepseek_web_search", { config: { model: "" } }, db)
+    updateMcpTool("web_search", { config: { model: "" } }, db)
     await expect(
-      deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, vi.fn()),
+      webSearch({ content: "测试" }, db, { ownerUserId }, vi.fn()),
     ).rejects.toThrow(/模型/)
   })
 
   it("内容为空时报错", async () => {
-    await expect(deepseekWebSearch({ content: "   " }, db, { ownerUserId }, vi.fn())).rejects.toThrow(/搜索/)
+    await expect(webSearch({ content: "   " }, db, { ownerUserId }, vi.fn())).rejects.toThrow(/搜索/)
   })
 
   it("Provider 没有可用账号时报错", async () => {
     db.prepare("UPDATE accounts SET auth_state='AUTH_ERROR'").run()
     await expect(
-      deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, vi.fn()),
+      webSearch({ content: "测试" }, db, { ownerUserId }, vi.fn()),
     ).rejects.toThrow(/没有可用账号/)
   })
 
@@ -216,7 +216,7 @@ describe("deepseekWebSearch", () => {
       return new Response(JSON.stringify({ error: { message: "invalid api key" } }), { status: 401 })
     })
     await expect(
-      deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, callGateway),
+      webSearch({ content: "测试" }, db, { ownerUserId }, callGateway),
     ).rejects.toThrow(/invalid api key/)
   })
 
@@ -227,7 +227,7 @@ describe("deepseekWebSearch", () => {
       })
     })
     await expect(
-      deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, callGateway),
+      webSearch({ content: "测试" }, db, { ownerUserId }, callGateway),
     ).rejects.toThrow(/模型未返回内容/)
   })
 
@@ -250,7 +250,7 @@ describe("deepseekWebSearch", () => {
         { status: 200 },
       )
     })
-    const result = await deepseekWebSearch({ content: "测试" }, db, { ownerUserId }, callGateway)
+    const result = await webSearch({ content: "测试" }, db, { ownerUserId }, callGateway)
     expect(result.text).toContain("搜索结果来源：")
     expect(result.text).toContain("https://example.com/news")
     expect(result.text).not.toContain("ws_call_id")

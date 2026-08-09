@@ -170,11 +170,11 @@ export function McpPage() {
   const [testResult, setTestResult] = useState<{ text?: string; model?: string } | null>(null);
 
   const selectedCatalog = catalogs.find((catalog) => catalog.poolType === provider) ?? null;
-  const isSearchEditing = editing?.toolType === "deepseek_web_search";
-  const isSearchTesting = testing?.toolType === "deepseek_web_search";
+  const isSearchEditing = editing?.toolType === "web_search";
+  const isSearchTesting = testing?.toolType === "web_search";
   const modelOptions = useMemo(() => {
     if (!editing) return [];
-    if (editing.toolType === "deepseek_web_search") {
+    if (editing.toolType === "web_search") {
       // 搜索工具不做多模态过滤：是否支持 web search 由用户配置 Provider 后自行测试
       return selectedCatalog?.models ?? [];
     }
@@ -214,7 +214,7 @@ export function McpPage() {
   function openEdit(tool: MCPTool) {
     const config = tool.config ?? {};
     setEditing(tool);
-    setProvider(tool.toolType === "deepseek_web_search" ? (config.provider ?? "") : (config.poolType ?? ""));
+    setProvider(tool.toolType === "web_search" ? (config.provider ?? "") : (config.poolType ?? ""));
     setModelInput(config.model ?? "");
     setPrompt(config.prompt ?? "");
     setMaxTokens(config.maxTokens != null ? String(config.maxTokens) : "1024");
@@ -248,7 +248,7 @@ export function McpPage() {
   async function saveConfig(event: FormEvent) {
     event.preventDefault();
     if (!editing) return;
-    const isSearch = editing.toolType === "deepseek_web_search";
+    const isSearch = editing.toolType === "web_search";
     const model = modelInput.trim();
     if (!model) {
       setFormError(isSearch ? "请填写模型（可从下拉选择或直接输入模型名）" : "请填写识图模型（可从下拉选择或直接输入模型名）");
@@ -378,7 +378,7 @@ export function McpPage() {
   async function runTest(event: FormEvent) {
     event.preventDefault();
     if (!testing) return;
-    const isSearch = testing.toolType === "deepseek_web_search";
+    const isSearch = testing.toolType === "web_search";
     if (!isSearch && !testImages.length) {
       setTestError("请至少添加一张图片（URL、上传或粘贴）");
       return;
@@ -502,7 +502,7 @@ export function McpPage() {
                           ) : (
                             <Badge variant="outline" className="border-warning/20 bg-warning-soft text-warning">未配置</Badge>
                           )}
-                          {tool.toolType === "deepseek_web_search" ? (
+                          {tool.toolType === "web_search" ? (
                             <>
                               {tool.config?.provider ? (
                                 <PoolTypeBadge poolType={tool.config.provider} label={providerLabels[tool.config.provider]} />

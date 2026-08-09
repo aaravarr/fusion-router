@@ -6,7 +6,7 @@ import {
   getMcpTool,
   listMcpTools,
   updateMcpTool,
-  type DeepseekWebSearchConfig,
+  type WebSearchConfig,
   type DescribeImageConfig,
 } from "./mcp-tools"
 
@@ -49,11 +49,11 @@ describe("mcp tools", () => {
     expect(listMcpTools(db).length).toBe(before)
   })
 
-  it("ensureDefaultMcpTools 初始化 deepseek_web_search 默认配置且幂等", () => {
+  it("ensureDefaultMcpTools 初始化 web_search 默认配置且幂等", () => {
     ensureDefaultMcpTools(db)
-    const tool = getMcpTool("deepseek_web_search", db)
+    const tool = getMcpTool("web_search", db)
     expect(tool).not.toBeNull()
-    expect(tool!.name).toBe("deepseek_web_search")
+    expect(tool!.name).toBe("web_search")
     expect(tool!.description).toContain("网页搜索")
     expect(tool!.enabled).toBe(true)
     expect(tool!.config).toEqual({
@@ -70,10 +70,10 @@ describe("mcp tools", () => {
     expect(listMcpTools(db).length).toBe(before)
   })
 
-  it("deepseek_web_search 支持配置 provider 并校验字段", () => {
+  it("web_search 支持配置 provider 并校验字段", () => {
     ensureDefaultMcpTools(db)
     const updated = updateMcpTool(
-      "deepseek_web_search",
+      "web_search",
       {
         config: {
           provider: "custom:deepseek-official",
@@ -85,29 +85,29 @@ describe("mcp tools", () => {
       },
       db,
     )
-    expect((updated.config as DeepseekWebSearchConfig).provider).toBe("custom:deepseek-official")
-    expect((updated.config as DeepseekWebSearchConfig).model).toBe("deepseek-v4-flash")
-    expect((updated.config as DeepseekWebSearchConfig).maxTokens).toBe(2048)
-    expect((updated.config as DeepseekWebSearchConfig).reasoningEffort).toBe("high")
-    expect((updated.config as DeepseekWebSearchConfig).maxToolCalls).toBe(5)
+    expect((updated.config as WebSearchConfig).provider).toBe("custom:deepseek-official")
+    expect((updated.config as WebSearchConfig).model).toBe("deepseek-v4-flash")
+    expect((updated.config as WebSearchConfig).maxTokens).toBe(2048)
+    expect((updated.config as WebSearchConfig).reasoningEffort).toBe("high")
+    expect((updated.config as WebSearchConfig).maxToolCalls).toBe(5)
     // 未提供的字段保持原值
-    expect((updated.config as DeepseekWebSearchConfig).temperature).toBe(0.3)
+    expect((updated.config as WebSearchConfig).temperature).toBe(0.3)
   })
 
-  it("deepseek_web_search 拒绝非法 reasoningEffort / maxToolCalls", () => {
+  it("web_search 拒绝非法 reasoningEffort / maxToolCalls", () => {
     ensureDefaultMcpTools(db)
     expect(() =>
-      updateMcpTool("deepseek_web_search", { config: { reasoningEffort: "ultra" as "high" } }, db),
+      updateMcpTool("web_search", { config: { reasoningEffort: "ultra" as "high" } }, db),
     ).toThrow(/reasoningEffort/)
     expect(() =>
-      updateMcpTool("deepseek_web_search", { config: { maxToolCalls: 0 } }, db),
+      updateMcpTool("web_search", { config: { maxToolCalls: 0 } }, db),
     ).toThrow(/maxToolCalls/)
   })
 
-  it("deepseek_web_search 拒绝非法 provider", () => {
+  it("web_search 拒绝非法 provider", () => {
     ensureDefaultMcpTools(db)
     expect(() =>
-      updateMcpTool("deepseek_web_search", { config: { provider: 123 as unknown as string } }, db),
+      updateMcpTool("web_search", { config: { provider: 123 as unknown as string } }, db),
     ).toThrow(/provider/)
   })
 

@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { getDatabase } from "@/server/db"
-import { deepseekWebSearch } from "@/server/mcp/deepseek-web-search"
+import { webSearch } from "@/server/mcp/web-search"
 import { describeImage } from "@/server/mcp/describe-image"
 import { requireAdministrator } from "../../../../_auth"
 
@@ -22,12 +22,12 @@ export async function POST(request: Request, context: { params: Promise<{ toolTy
   }
   const { toolType } = await context.params
   try {
-    if (toolType === "deepseek_web_search") {
+    if (toolType === "web_search") {
       const content = (parsed.data.content ?? "").trim()
       if (!content) {
         return Response.json({ error: { type: "validation_error", message: "请提供要搜索的内容" } }, { status: 400 })
       }
-      const result = await deepseekWebSearch({ content }, getDatabase(), { ownerUserId: user.id })
+      const result = await webSearch({ content }, getDatabase(), { ownerUserId: user.id })
       return Response.json({ result: { text: result.text, model: result.model } })
     }
     if (toolType === "describe_image") {

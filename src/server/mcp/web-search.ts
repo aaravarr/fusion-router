@@ -2,7 +2,7 @@ import type { AppDatabase } from "@/server/db"
 import { tryGetProvider, type PoolType } from "@/server/providers"
 import { AccountRepository } from "@/server/repository"
 import type { AccountRecord } from "@/server/types"
-import { ensureDefaultMcpTools, getMcpTool, type DeepseekWebSearchConfig } from "./mcp-tools"
+import { ensureDefaultMcpTools, getMcpTool, type WebSearchConfig } from "./mcp-tools"
 
 /**
  * Responses API 无版本号 web_search（服务端执行）。
@@ -21,7 +21,7 @@ const SEARCH_INSTRUCTIONS =
 
 const REQUEST_TIMEOUT_MS = 120_000
 
-export interface DeepseekWebSearchResult {
+export interface WebSearchResult {
   text: string
   model: string
   accountName: string | null
@@ -182,25 +182,25 @@ function formatResult(parsed: { answer: string; results: SearchResultEntry[] }):
  * Provider 必须由用户明确指定（不按模型自动路由——同一模型在不同 Provider
  * 支持的能力可能不同），选哪些 Provider/模型不做限制，由用户配置后自行测试。
  */
-export async function deepseekWebSearch(
+export async function webSearch(
   input: { content: string },
   db: AppDatabase,
   ctx: { ownerUserId: string },
   callGateway?: (request: Request, endpoint: string) => Promise<Response>,
-): Promise<DeepseekWebSearchResult> {
+): Promise<WebSearchResult> {
   if (!ctx.ownerUserId) throw new Error("未指定调用用户")
 
   const content = input.content.trim()
   if (!content) throw new Error("请提供要搜索的内容")
 
-  let tool = getMcpTool("deepseek_web_search", db)
+  let tool = getMcpTool("web_search", db)
   if (!tool) {
     ensureDefaultMcpTools(db)
-    tool = getMcpTool("deepseek_web_search", db)
+    tool = getMcpTool("web_search", db)
   }
   if (!tool) throw new Error("网页搜索工具未初始化")
 
-  const config = tool.config as DeepseekWebSearchConfig
+  const config = tool.config as WebSearchConfig
   if (!config.provider) {
     throw new Error("尚未配置 Provider：请先在管理后台 MCP 页面选择 Provider（同一模型在不同 Provider 支持的能力可能不同，需明确指定）")
   }

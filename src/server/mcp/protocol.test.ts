@@ -9,7 +9,7 @@ import { ApiKeyHasher } from "@/server/crypto"
 import { getSystemSecret, initializeSystemSettings } from "@/server/settings"
 import { ensureDefaultMcpTools } from "./mcp-tools"
 import { describeImage, describeImageStream } from "./describe-image"
-import { deepseekWebSearch } from "./deepseek-web-search"
+import { webSearch } from "./web-search"
 import {
   authenticateMcpRequest,
   handleMcpRequest,
@@ -22,13 +22,13 @@ vi.mock("./describe-image", () => ({
   describeImageStream: vi.fn(),
 }))
 
-vi.mock("./deepseek-web-search", () => ({
-  deepseekWebSearch: vi.fn(),
+vi.mock("./web-search", () => ({
+  webSearch: vi.fn(),
 }))
 
 const mockedDescribeImage = vi.mocked(describeImage)
 const mockedDescribeImageStream = vi.mocked(describeImageStream)
-const mockedDeepseekWebSearch = vi.mocked(deepseekWebSearch)
+const mockedWebSearch = vi.mocked(webSearch)
 
 let db: AppDatabase
 let directory: string
@@ -102,9 +102,9 @@ describe("MCP protocol", () => {
       inputSchema: { type: "object" },
     })
     expect(describeImageTool!.inputSchema.required).toContain("image")
-    const webSearchTool = body.result.tools.find((tool: { name: string }) => tool.name === "deepseek_web_search")
+    const webSearchTool = body.result.tools.find((tool: { name: string }) => tool.name === "web_search")
     expect(webSearchTool).toMatchObject({
-      name: "deepseek_web_search",
+      name: "web_search",
       inputSchema: { type: "object" },
     })
     expect(webSearchTool!.inputSchema.required).toContain("content")
@@ -188,14 +188,14 @@ describe("MCP protocol", () => {
     expect(mockedDescribeImageStream).not.toHaveBeenCalled()
   })
 
-  it("tools/call deepseek_web_search 成功返回内容", async () => {
-    mockedDeepseekWebSearch.mockResolvedValue({ text: "根据搜索结果……", model: "deepseek-v4-flash", accountName: null })
+  it("tools/call web_search 成功返回内容", async () => {
+    mockedWebSearch.mockResolvedValue({ text: "根据搜索结果……", model: "deepseek-v4-flash", accountName: null })
     const response = await handleMcpRequest(
       {
         jsonrpc: "2.0",
         id: 8,
         method: "tools/call",
-        params: { name: "deepseek_web_search", arguments: { content: "比特币当前价格" } },
+        params: { name: "web_search", arguments: { content: "比特币当前价格" } },
       },
       db,
       { ownerUserId: "user-1" },
@@ -203,7 +203,7 @@ describe("MCP protocol", () => {
     const body = await response.json()
     expect(body.error).toBeUndefined()
     expect(body.result.content).toEqual([{ type: "text", text: "根据搜索结果……" }])
-    expect(mockedDeepseekWebSearch).toHaveBeenCalledWith(
+    expect(mockedWebSearch).toHaveBeenCalledWith(
       { content: "比特币当前价格" },
       db,
       { ownerUserId: "user-1" },
@@ -211,30 +211,30 @@ describe("MCP protocol", () => {
     )
   })
 
-  it("tools/call deepseek_web_search 内容为空返回 isError", async () => {
+  it("tools/call web_search 内容为空返回 isError", async () => {
     const response = await handleMcpRequest(
       {
         jsonrpc: "2.0",
         id: 9,
         method: "tools/call",
-        params: { name: "deepseek_web_search", arguments: { content: "  " } },
+        params: { name: "web_search", arguments: { content: "  " } },
       },
       db,
       { ownerUserId: "user-1" },
     )
     const body = await response.json()
     expect(body.result.isError).toBe(true)
-    expect(mockedDeepseekWebSearch).not.toHaveBeenCalled()
+    expect(mockedWebSearch).not.toHaveBeenCalled()
   })
 
-  it("tools/call deepseek_web_search 执行错误在成功信封内返回 isError", async () => {
-    mockedDeepseekWebSearch.mockRejectedValue(new Error("未配置 Provider：请先在管理后台 MCP 页面选择 Provider"))
+  it("tools/call web_search 执行错误在成功信封内返回 isError", async () => {
+    mockedWebSearch.mockRejectedValue(new Error("未配置 Provider：请先在管理后台 MCP 页面选择 Provider"))
     const response = await handleMcpRequest(
       {
         jsonrpc: "2.0",
         id: 10,
         method: "tools/call",
-        params: { name: "deepseek_web_search", arguments: { content: "测试" } },
+        params: { name: "web_search", arguments: { content: "测试" } },
       },
       db,
       { ownerUserId: "user-1" },

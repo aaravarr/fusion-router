@@ -14,21 +14,21 @@ export interface DescribeImageConfig {
   reasoningEffort: "none" | "low" | "medium" | "high" | "max" | null
 }
 
-export type DeepseekWebSearchReasoningEffort = "none" | "low" | "medium" | "high" | "max"
+export type WebSearchReasoningEffort = "none" | "low" | "medium" | "high" | "max"
 
-export interface DeepseekWebSearchConfig {
+export interface WebSearchConfig {
   /** 明确指定的 Provider（poolType，内置或自定义）；不做按模型自动路由。 */
   provider: string | null
   model: string
   maxTokens: number
   temperature: number
   /** Responses API reasoning.effort；null 表示不传，走模型默认。 */
-  reasoningEffort: DeepseekWebSearchReasoningEffort | null
+  reasoningEffort: WebSearchReasoningEffort | null
   /** Responses API max_tool_calls，限制本轮服务端工具（含 web_search）调用次数。 */
   maxToolCalls: number
 }
 
-export type McpToolConfig = DescribeImageConfig | DeepseekWebSearchConfig
+export type McpToolConfig = DescribeImageConfig | WebSearchConfig
 
 export interface McpToolRecord {
   id: string
@@ -83,8 +83,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     },
   },
   {
-    toolType: "deepseek_web_search",
-    name: "deepseek_web_search",
+    toolType: "web_search",
+    name: "web_search",
     description: "网页搜索工具：把内容交给配置的 Provider 模型（Responses API + 无版本号 web_search），把搜索结果原样返回",
     inputSchema: {
       type: "object",
@@ -153,6 +153,14 @@ function rowToRecord(row: McpToolRow): McpToolRecord {
 }
 
 export function ensureDefaultMcpTools(db: AppDatabase): void {
+  // 幂等迁移：deepseek_web_search → web_search（工具已泛化为多 Provider 兼容）。
+  // 仅当 name 还是旧默认值时一并改 name，保留用户自定义的名称/描述/配置。
+  db.prepare(
+    `UPDATE mcp_tools SET tool_type = 'web_search',
+       name = CASE WHEN name = 'deepseek_web_search' THEN 'web_search' ELSE name END,
+       updated_at = ?
+     WHERE tool_type = 'deepseek_web_search'`,
+  ).run(new Date().toISOString())
   const now = new Date().toISOString()
   const insert = db.prepare(
     `INSERT INTO mcp_tools(id, tool_type, name, description, enabled, config_json, created_at, updated_at)
@@ -190,7 +198,7 @@ export function updateMcpTool(
     name?: string
     description?: string
     enabled?: boolean
-    config?: Partial<DescribeImageConfig> & Partial<DeepseekWebSearchConfig>
+    config?: Partial<DescribeImageConfig> & Partial<WebSearchConfig>
   },
   db: AppDatabase,
 ): McpToolRecord {
@@ -213,13 +221,13 @@ export function updateMcpTool(
         throw new Error("temperature 必须是 0 到 2 之间的数字")
       }
     }
-    if (existing.toolType === "deepseek_web_search") {
+    if (existing.toolType === "web_search") {
       // 搜索工具必须明确指定 Provider，不允许自动路由
       if ("provider" in input.config && input.config.provider !== null && typeof input.config.provider !== "string") {
         throw new Error("provider 必须是字符串或 null")
       }
       if ("reasoningEffort" in input.config) {
-        const value = input.config.reasoningEffort as DeepseekWebSearchReasoningEffort | null | undefined
+        const value = input.config.reasoningEffort as WebSearchReasoningEffort | null | undefined
         if (
           value !== null &&
           value !== undefined &&

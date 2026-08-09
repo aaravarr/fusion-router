@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { configSchema } from "./route"
 
 describe("mcp tool config schema", () => {
-  it("接受 deepseek_web_search 的 provider 字段（回归：曾被静默剥离）", () => {
+  it("接受 web_search 的 provider 字段（回归：曾被静默剥离）", () => {
     const parsed = configSchema.parse({
       provider: "custom:deepseek-official",
       model: "deepseek-v4-flash",
@@ -31,7 +31,7 @@ describe("mcp tool config schema", () => {
     expect(parsed.model).toBe("minimax-m3")
   })
 
-  it("接受 deepseek_web_search 的思考强度与最大工具调用次数", () => {
+  it("接受 web_search 的思考强度与最大工具调用次数", () => {
     const parsed = configSchema.parse({
       provider: "custom:deepseek-official",
       model: "deepseek-v4-flash",

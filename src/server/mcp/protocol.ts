@@ -1,6 +1,6 @@
 import type { AppDatabase } from "@/server/db"
 import { authenticateApiKey } from "@/server/repository"
-import { deepseekWebSearch } from "./deepseek-web-search"
+import { webSearch } from "./web-search"
 import { describeImage, describeImageStream } from "./describe-image"
 import { MCP_TOOL_DEFINITIONS } from "./mcp-tools"
 
@@ -139,12 +139,12 @@ export async function handleMcpRequest(
           const result = await describeImage({ images, prompt }, db, { ownerUserId: ctx.ownerUserId }, callGateway)
           return rpcResult(id, { content: [{ type: "text", text: result.text }] })
         }
-        if (definition.toolType === "deepseek_web_search") {
+        if (definition.toolType === "web_search") {
           const content = typeof args.content === "string" ? args.content : ""
           if (!content.trim()) {
             return rpcResult(id, { content: [{ type: "text", text: "请提供要搜索的内容" }], isError: true })
           }
-          const result = await deepseekWebSearch(
+          const result = await webSearch(
             { content },
             db,
             { ownerUserId: ctx.ownerUserId },
