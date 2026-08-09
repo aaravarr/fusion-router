@@ -324,6 +324,15 @@ export interface LogsCleanupResponse {
   stripped?: number;
 }
 
+export interface LogStats {
+  dbFileBytes: number;
+  bodies: { count: number; bytes: number };
+  requests: number;
+  retentionDays: number;
+  logBodies: boolean;
+  logBodiesOnError: boolean;
+}
+
 export interface EventRecord {
   id: string;
   createdAt?: string | null;

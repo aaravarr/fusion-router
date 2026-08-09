@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertTriangle,
   Check,
@@ -20,7 +20,7 @@ import { PROVIDER_DOMAIN_PRESETS } from "./domain-presets";
 import { ErrorState, PageIntro, Panel } from "./page-kit";
 import { getPoolLabel } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
-import type { LogsCleanupResponse } from "./types";
+import type { LogsCleanupResponse, LogStats } from "./types";
 import { copyToClipboard } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-provider";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -59,6 +59,13 @@ interface SettingsPayload {
   };
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(2)} GB`;
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 export function SettingsPage() {
   const { isAdmin, sessionFetch } = useSession();
   const confirm = useConfirm();
@@ -71,6 +78,8 @@ export function SettingsPage() {
   const [copied, setCopied] = useState(false);
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [stripDialogOpen, setStripDialogOpen] = useState(false);
+  const [logStats, setLogStats] = useState<LogStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
   const form = draft ?? resource.data?.settings ?? null;
   if (!isAdmin)
     return (
@@ -126,6 +135,21 @@ export function SettingsPage() {
       ...(current ?? resource.data!.settings!),
       [key]: value,
     }));
+  async function loadLogStats() {
+    setStatsLoading(true);
+    try {
+      const response = await sessionFetch("/api/admin/logs/stats");
+      if (response.ok) setLogStats(await response.json().catch(() => null));
+    } catch {
+      setLogStats(null);
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+  useEffect(() => {
+    void loadLogStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   async function cleanupLogs(options: { retentionDays?: number; stripBodies?: boolean }) {
     setCleanupBusy(true);
     setMessage(null);
@@ -146,6 +170,7 @@ export function SettingsPage() {
       setMessage(cause instanceof Error ? cause.message : "清理失败");
     } finally {
       setCleanupBusy(false);
+      void loadLogStats();
     }
   }
   return (
@@ -377,6 +402,22 @@ export function SettingsPage() {
               </Field>
             </div>
             <div className="flex flex-wrap items-center gap-2 border-t bg-[#fafafa] px-4 py-3 sm:px-5">
+              <span className="mr-auto text-[11px] leading-5 text-muted-foreground">
+                {statsLoading ? (
+                  "日志占用统计中…"
+                ) : logStats ? (
+                  <>
+                    当前日志占用：数据库 {formatBytes(logStats.dbFileBytes)} · 请求体{" "}
+                    {formatBytes(logStats.bodies.bytes)}（{logStats.bodies.count} 条）· 请求{" "}
+                    {logStats.requests} 条 · 保留 {logStats.retentionDays} 天
+                    {logStats.logBodies ? (
+                      <span className="ml-1 text-warning">（正在记录请求/响应体）</span>
+                    ) : null}
+                  </>
+                ) : (
+                  "日志占用统计不可用"
+                )}
+              </span>
               <Button
                 type="button"
                 variant="outline"
