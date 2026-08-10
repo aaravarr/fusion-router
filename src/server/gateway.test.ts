@@ -33,7 +33,7 @@ function setup(poolType: "opencode-go" | "xai-grok" | "kimi-code" = "opencode-go
   new RoutingService(ownerUserId, db).setPreferred(accountIds[0])
   return { db, apiKey: apiKey.key, credentials, hasher }
 }
-const request = (key: string) => new Request("http://localhost/v1/responses", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-5.3-codex" }) })
+const request = (key: string) => new Request("http://localhost/v1/responses", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ model: "deepseek-v4-flash" }) })
 const requestWithModel = (key: string, model: string, endpoint = "responses") => new Request(`http://localhost/v1/${endpoint}`, {
   method: "POST",
   headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
@@ -147,7 +147,7 @@ describe("gateway", () => {
     const dashboardRequest = new Request("http://localhost/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-5.3-codex" }),
+      body: JSON.stringify({ model: "deepseek-v4-flash" }),
     })
     const response = await new GatewayService(credentials, db, fetcher).handle(dashboardRequest, "responses", {
       principal: { ownerUserId, label: "chat" },
@@ -606,12 +606,12 @@ describe("gateway logging", () => {
       return Response.json({
         id: "chatcmpl_raw",
         object: "chat.completion",
-        model: "gpt-5.3-codex",
+        model: "deepseek-v4-flash",
         choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
       })
     })
-    const body = { model: "gpt-5.3-codex", messages: [{ role: "user", content: "hello" }], custom_flag: true }
+    const body = { model: "deepseek-v4-flash", messages: [{ role: "user", content: "hello" }], custom_flag: true }
     const req = new Request("http://localhost/raw/v1/chat/completions", {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
@@ -650,7 +650,7 @@ describe("gateway logging", () => {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-5.3-codex",
+        model: "deepseek-v4-flash",
         input: "hello",
         tools: [
           { type: "function", name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
