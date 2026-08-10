@@ -172,7 +172,7 @@ export class RoutingService {
       // raw 直通模式下网关不做任何转换，要求原生支持。
       const supportsRequestFormat = (poolType: PoolType): boolean => {
         if (!this.interfaceFormat) return true
-        const supported = tryGetProvider(poolType)?.supportedInterfaces?.()
+        const supported = tryGetProvider(poolType)?.supportedInterfaces?.(this.currentModel ?? undefined)
         if (!supported?.length) return true
         if (this.interfaceNativeOnly) return supported.includes(this.interfaceFormat)
         return canServeInterface(this.interfaceFormat, supported)

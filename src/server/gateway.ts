@@ -510,7 +510,7 @@ export class GatewayService {
       const upstreamStartedAt = Date.now()
       try {
        const provider = tryGetProvider(selection.account.poolType)
-       const supportedInterfaces = provider?.supportedInterfaces?.() ?? null
+       const supportedInterfaces = provider?.supportedInterfaces?.(model ?? undefined) ?? null
        const isCustomPool = selection.account.poolType.startsWith("custom:")
        let attemptUpstreamBytes = upstreamBytes
        let attemptEndpoint = effectiveEndpoint

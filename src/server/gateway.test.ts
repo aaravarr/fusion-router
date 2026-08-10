@@ -674,6 +674,29 @@ describe("gateway logging", () => {
     expect(String(row.transform_summary || "")).toContain("opencode_go_responses_to_chat")
   })
 
+
+  it("opencode-go gpt-5.6-luna responses stays native (no chat fallback)", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    let sentUrl = ""
+    let sent: Record<string, unknown> = {}
+    const fetcher = vi.fn().mockImplementation(async (url, init) => {
+      sentUrl = String(url)
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({ id: "resp_1", object: "response", status: "completed", output: [] })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-luna", input: "hello" }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect(sentUrl).toContain("/responses")
+    expect(sent.input).toBe("hello")
+    expect(response.headers.get("x-responses-route")).toBe("responses")
+    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(row.transform_summary || "")).not.toContain("opencode_go_responses_to_chat")
+  })
   it("xai-grok keeps client-declared server search tools", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok")
     let sent: Record<string, unknown> = {}

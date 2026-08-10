@@ -8,6 +8,10 @@ import { apiFetchWithMirrorContext } from "../api-fetch"
 // OpenAI Codex models served by the OpenCode Go upstream.
 // Bootstrap catalog used before /models sync succeeds. Runtime routing must
 // still honor the cached remote list once available — never "any model".
+// GPT 系模型在 OpenCode Go 上游原生走 /v1/responses（官方文档 API 端点表）。
+// responses 入口遇到这些模型保持原生直通，避免转 chat 后兼容性下降。
+const OPENCODE_GO_RESPONSES_MODELS = new Set(["gpt-5.6-luna"])
+
 const OPENCODE_GO_MODELS = [
   "claude-sonnet-4-5",
   "claude-sonnet-4-5-20250929",
@@ -21,6 +25,7 @@ const OPENCODE_GO_MODELS = [
   "glm-5.2",
   "gpt-5.3-codex",
   "gpt-5.4-mini",
+  "gpt-5.6-luna",
   "grok-4.5",
   "kimi-k2.5",
   "kimi-k2.6",
@@ -96,7 +101,11 @@ export class OpenCodeGoProvider implements Provider {
     return ["FIVE_HOUR", "WEEKLY", "MONTHLY"] as const
   }
 
-  supportedInterfaces(): readonly import("../messages/route-decision").InterfaceFormat[] {
+  supportedInterfaces(model?: string): readonly import("../messages/route-decision").InterfaceFormat[] {
+    // GPT 系模型原生支持 responses；其余模型走 chat/messages（chat 是所有模型的通用兜底）。
+    if (model && OPENCODE_GO_RESPONSES_MODELS.has(model)) {
+      return ["responses", "chat", "messages"] as const
+    }
     return ["chat", "messages"] as const
   }
 

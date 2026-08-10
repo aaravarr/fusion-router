@@ -109,7 +109,11 @@ export interface Provider {
    * 上游原生支持的接口格式（chat / responses / messages）。未声明时网关
    * 不做格式决策，保持现状直通。
    */
-  supportedInterfaces?(): readonly InterfaceFormat[]
+  /**
+   * 账号原生支持的上游接口格式。可选 model 参数：某些 provider（如 opencode-go）
+   * 按模型支持不同端点（gpt 系走 responses，其余走 chat/messages），可据此返回差异能力。
+   */
+  supportedInterfaces?(model?: string): readonly InterfaceFormat[]
   /**
    * Optional live catalog fetch using a ready account credential.
    * Return null when this provider cannot list models remotely.
