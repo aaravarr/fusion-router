@@ -120,9 +120,9 @@ export function McpPage() {
       },
     });
     return {
-      stdio: { label: "stdio（本地桥，推荐）", json: JSON.stringify(stdio, null, 2) },
-      http: { label: "http（Streamable HTTP 直连）", json: JSON.stringify(remote("http"), null, 2) },
-      sse: { label: "sse（SSE 直连）", json: JSON.stringify(remote("sse"), null, 2) },
+      stdio: { label: "STDIO", json: JSON.stringify(stdio, null, 2) },
+      http: { label: "HTTP", json: JSON.stringify(remote("http"), null, 2) },
+      sse: { label: "SSE", json: JSON.stringify(remote("sse"), null, 2) },
     };
   }, [endpoint]);
   const mcpServerConfig = mcpServerConfigs?.[transport].json ?? "";
