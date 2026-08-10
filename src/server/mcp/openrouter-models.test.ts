@@ -5,8 +5,10 @@ import {
   fetchOpenRouterModalities,
   filterVisionModels,
   modelSupportsImage,
+  isVisionModel,
   hasImageInBody,
   rewriteImagesToText,
+  MODEL_SLUG_ALIASES,
 } from "./openrouter-models"
 
 function mockFetch(payload: unknown): typeof fetch {
@@ -22,6 +24,7 @@ const OR_PAYLOAD = {
     { id: "deepseek/deepseek-v4-flash", architecture: { input_modalities: ["text"] } },
     { id: "qwen/qwen3.7-max", architecture: { input_modalities: ["text"] } },
     { id: "xiaomi/mimo-v2.5", architecture: { input_modalities: ["text", "audio", "image", "video"] } },
+    { id: "moonshotai/kimi-k3", architecture: { input_modalities: ["text", "image"] } },
   ],
 }
 
@@ -33,7 +36,7 @@ function makeDb(): AppDatabase {
 describe("parseOpenRouterModels", () => {
   it("解析 input_modalities", () => {
     const infos = parseOpenRouterModels(OR_PAYLOAD)
-    expect(infos).toHaveLength(5)
+    expect(infos).toHaveLength(6)
     expect(infos.find((i) => i.id === "qwen/qwen3.7-plus")?.inputModalities).toEqual(["text", "image"])
   })
 
@@ -53,6 +56,7 @@ describe("fetchOpenRouterModalities", () => {
       "deepseek-v4-flash": ["text"],
       "qwen3.7-max": ["text"],
       "mimo-v2.5": ["text", "audio", "image", "video"],
+      "kimi-k3": ["text", "image"],
     })
   })
 
@@ -163,6 +167,135 @@ describe("rewriteImagesToText 完整 URL", () => {
     )
     const content = (result.body as any).messages[0].content as Array<{ type: string; text: string }>
     expect(content[0].text).toBe("[图片: https://example.com/a.png]")
+    db.close()
+  })
+})
+
+
+describe("kimi-code 池别名映射（MODEL_SLUG_ALIASES）", () => {
+  it("别名常量覆盖四个 kimi-code 池模型 id", () => {
+    expect(MODEL_SLUG_ALIASES).toEqual({
+      "k3": "kimi-k3",
+      "k3-256k": "kimi-k3",
+      "kimi-for-coding": "kimi-k3",
+      "kimi-for-coding-highspeed": "kimi-k3",
+    })
+  })
+
+  it("modelSupportsImage 对 kimi-code 池模型经别名映射返回 true", async () => {
+    const db = makeDb()
+    for (const m of ["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"]) {
+      expect(await modelSupportsImage(m, db, mockFetch(OR_PAYLOAD))).toBe(true)
+    }
+    db.close()
+  })
+
+  it("isVisionModel 对 kimi-code 池模型返回 true", async () => {
+    const db = makeDb()
+    for (const m of ["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"]) {
+      expect(await isVisionModel(m, db, mockFetch(OR_PAYLOAD))).toBe(true)
+    }
+    db.close()
+  })
+
+  it("filterVisionModels 返回全部 kimi-code 池模型", async () => {
+    const db = makeDb()
+    const input = ["k3-256k", "k3", "kimi-for-coding", "kimi-for-coding-highspeed"]
+    const vision = await filterVisionModels(input, db, mockFetch(OR_PAYLOAD))
+    expect(vision.sort()).toEqual(input.slice().sort())
+    db.close()
+  })
+})
+
+describe("hasImageInBody Anthropic messages 图片 block", () => {
+  it("messages[].content 数组里的 Anthropic image block 返回 true", () => {
+    expect(hasImageInBody({
+      model: "k3-256k",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "描述这张图" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+        ],
+      }],
+    })).toBe(true)
+  })
+
+  it("url source 的 Anthropic image block 返回 true", () => {
+    expect(hasImageInBody({
+      model: "k3-256k",
+      messages: [{
+        role: "user",
+        content: [{ type: "image", source: { type: "url", url: "https://example.com/a.png" } }],
+      }],
+    })).toBe(true)
+  })
+
+  it("纯文本 content 返回 false", () => {
+    expect(hasImageInBody({
+      model: "k3-256k",
+      messages: [{ role: "user", content: "纯文本" }],
+    })).toBe(false)
+  })
+})
+
+describe("rewriteImagesToText Anthropic messages 图片 block", () => {
+  it("base64 source 归一化 data URI 落盘为签名 URL 文本 part 且 converted=true", async () => {
+    const db = createDatabase(":memory:")
+    const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    const result = await rewriteImagesToText(
+      {
+        model: "k3-256k",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "看看" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data } },
+          ],
+        }],
+      },
+      db,
+      "http://49.233.103.93:13600",
+    )
+    expect(result.converted).toBe(true)
+    const content = (result.body as any).messages[0].content as Array<{ type: string; text: string }>
+    const imageText = content.find((p) => p.type === "text" && p.text.includes("图片"))
+    expect(imageText).toBeTruthy()
+    expect(imageText!.text).toMatch(/^\[图片: http:\/\/49\.233\.103\.93:13600\/mcp\/media\/[0-9a-f]{32}\?exp=\d+&sig=[0-9a-f]{32}\]$/)
+    db.close()
+  })
+
+  it("url source 直接文本化 URL，不需要 db", async () => {
+    const db = createDatabase(":memory:")
+    const result = await rewriteImagesToText(
+      {
+        model: "k3-256k",
+        messages: [{
+          role: "user",
+          content: [{ type: "image", source: { type: "url", url: "https://example.com/a.png" } }],
+        }],
+      },
+      db,
+      "http://49.233.103.93:13600",
+    )
+    expect(result.converted).toBe(true)
+    const content = (result.body as any).messages[0].content as Array<{ type: string; text: string }>
+    expect(content[0].text).toBe("[图片: https://example.com/a.png]")
+    db.close()
+  })
+
+  it("source 缺失时 fallback 文本且 converted=true", async () => {
+    const db = createDatabase(":memory:")
+    const result = await rewriteImagesToText(
+      {
+        model: "k3-256k",
+        messages: [{ role: "user", content: [{ type: "image" }] }],
+      },
+      db,
+    )
+    expect(result.converted).toBe(true)
+    const content = (result.body as any).messages[0].content as Array<{ type: string; text: string }>
+    expect(content[0].text).toBe("[用户上传了一张图片，图片数据未随请求发送]")
     db.close()
   })
 })

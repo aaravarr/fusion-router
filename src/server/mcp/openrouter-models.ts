@@ -132,6 +132,21 @@ export async function getOpenRouterModalityMap(
 }
 
 /**
+ * kimi-code 上游模型 id -> OpenRouter slug 的别名映射。
+ *
+ * kimi-code 池的模型 id（k3 / k3-256k / kimi-for-coding / kimi-for-coding-highspeed）
+ * 在 OpenRouter /api/v1/models 目录中不存在；OpenRouter 上实际对应
+ * moonshotai/kimi-k3（slug = kimi-k3，input_modalities 含 "image"，本身是多模态）。
+ * 查询前先把这些上游 id 归一化为 OpenRouter slug，再走目录 map 与兜底白名单。
+ */
+export const MODEL_SLUG_ALIASES: Record<string, string> = {
+  "k3": "kimi-k3",
+  "k3-256k": "kimi-k3",
+  "kimi-for-coding": "kimi-k3",
+  "kimi-for-coding-highspeed": "kimi-k3",
+}
+
+/**
  * 兜底白名单：OpenRouter 不可达且无缓存时使用。
  * 覆盖本池常见的已验证多模态模型；正常情况以 OpenRouter 数据为准。
  */
@@ -144,6 +159,8 @@ const FALLBACK_VISION_SLUGS = new Set([
   "mimo-v2.5",
   "grok-4.5",
   "gpt-5.6-luna",
+  // Kimi K3 多模态已验证（OpenRouter moonshotai/kimi-k3，input_modalities 含 image）
+  "kimi-k3",
 ])
 
 /** 返回给定模型名是否为多模态（支持图片输入）。 */
@@ -152,7 +169,7 @@ export async function isVisionModel(
   db: AppDatabase = getDatabase(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
-  const slug = model.trim().toLowerCase()
+  const slug = MODEL_SLUG_ALIASES[model.trim().toLowerCase()] ?? model.trim().toLowerCase()
   if (!slug) return false
   const map = await getOpenRouterModalityMap(db, fetchImpl)
   const mods = map[slug]
@@ -169,7 +186,7 @@ export async function filterVisionModels(
   const map = await getOpenRouterModalityMap(db, fetchImpl)
   const out: string[] = []
   for (const model of models) {
-    const slug = model.trim().toLowerCase()
+    const slug = MODEL_SLUG_ALIASES[model.trim().toLowerCase()] ?? model.trim().toLowerCase()
     if (!slug) continue
     const mods = map[slug]
     if (mods ? mods.includes("image") : FALLBACK_VISION_SLUGS.has(slug)) {
@@ -192,7 +209,7 @@ export async function modelSupportsImage(
   db: AppDatabase = getDatabase(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean | null> {
-  const slug = model.trim().toLowerCase()
+  const slug = MODEL_SLUG_ALIASES[model.trim().toLowerCase()] ?? model.trim().toLowerCase()
   if (!slug) return null
   const map = await getOpenRouterModalityMap(db, fetchImpl)
   const mods = map[slug]
@@ -235,7 +252,8 @@ export function hasImageInBody(body: unknown): boolean {
         for (const part of content) {
           if (!part || typeof part !== "object") continue
           const type = String((part as Record<string, unknown>).type ?? "")
-          if (type === "image_url" || type === "input_image" || type === "input_file") return true
+          // Anthropic messages 图片 block：{type:"image", source:{type:"base64"|"url", ...}}
+          if (type === "image_url" || type === "input_image" || type === "input_file" || type === "image") return true
         }
       }
     }
@@ -274,6 +292,43 @@ async function imagePartToText(
 }
 
 /**
+ * 把 Anthropic messages 格式的 image block 转成文本信息 part。
+ * - source.type === "url"：直接文本化 URL（模型能看到图片来源）
+ * - source.type === "base64"：归一化为 data URI 后复用 imagePartToText 落盘为签名 URL 引用
+ * - source 缺失或无法解析：fallback 文本
+ */
+async function anthropicImageToText(
+  part: Record<string, unknown>,
+  db: AppDatabase,
+  baseUrl: string,
+): Promise<Record<string, unknown>> {
+  const source = part.source
+  if (!source || typeof source !== "object") {
+    return { type: "text", text: "[用户上传了一张图片，图片数据未随请求发送]" }
+  }
+  const src = source as Record<string, unknown>
+  const sourceType = String(src.type ?? "")
+  if (sourceType === "url") {
+    const url = typeof src.url === "string" ? src.url : ""
+    if (!url) return { type: "text", text: "[用户上传了一张图片，图片数据未随请求发送]" }
+    return { type: "text", text: `[图片: ${url}]` }
+  }
+  if (sourceType === "base64") {
+    const mediaType = typeof src.media_type === "string" ? src.media_type : "image/png"
+    const data = typeof src.data === "string" ? src.data : ""
+    if (data) {
+      // 归一化为 OpenAI 兼容的 image_url part（data:<media_type>;base64,<data>），复用落盘逻辑
+      const normalized = {
+        type: "image_url",
+        image_url: { url: `data:${mediaType};base64,${data}` },
+      }
+      return imagePartToText(normalized, db, baseUrl)
+    }
+  }
+  return { type: "text", text: "[用户上传了一张图片，图片数据未随请求发送]" }
+}
+
+/**
  * 接口兼容：把请求体中的图片 part 改写为文本信息（chat 的 image_url /
  * responses 的 input_image / input_file），返回改写后的深拷贝与是否发生了改写。
  * 用于"模型不支持图片输入"的场景：不把图片字节发给模型，只让模型知道图的存在与来源，
@@ -298,9 +353,14 @@ export async function rewriteImagesToText(
       for (const part of record.content) {
         if (!part || typeof part !== "object") { parts.push(part); continue }
         const p = part as Record<string, unknown>
-        if (String(p.type ?? "") === "image_url") {
+        const pt = String(p.type ?? "")
+        if (pt === "image_url") {
           converted = true
           parts.push(await imagePartToText(p, db, baseUrl))
+        } else if (pt === "image") {
+          // Anthropic messages 图片 block：{type:"image", source:{...}}
+          converted = true
+          parts.push(await anthropicImageToText(p, db, baseUrl))
         } else {
           parts.push(p)
         }

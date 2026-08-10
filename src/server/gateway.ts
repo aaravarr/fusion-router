@@ -155,6 +155,18 @@ function parseRetryAfter(response: Response): number | null {
   return Number.isNaN(date) ? null : Math.max(0, Math.ceil((date - Date.now()) / 1000))
 }
 
+/**
+ * 同账号退避重试的等待毫秒数：
+ * - 有明确的 retry-after（秒，含 0 = 立即重试）→ 换算毫秒，封顶 30s；
+ * - 否则指数退避 base 1s（2^retries），封顶 30s。
+ */
+export function computeBackoffMs(retries: number, retryAfterSeconds: number | null | undefined): number {
+  if (retryAfterSeconds != null && retryAfterSeconds >= 0) {
+    return Math.min(retryAfterSeconds * 1000, 30_000)
+  }
+  return Math.min(1000 * Math.pow(2, retries), 30_000)
+}
+
 export function classifyGoUsageLimit(response: Response, body: string): GoLimit | null {
   if (response.status !== 429) return null
   try {
@@ -421,6 +433,9 @@ export class GatewayService {
     if (inboundFormat) routing.setInterfaceFormat(inboundFormat, options?.raw === true)
     const tried = new Set<string>()
     const permanentlyDisabled = new Set<string>()
+    const sameAccountRetryCounts = new Map<string, number>()
+    // 同账号退避重试计数（accountId → 已重试次数），每次 handle 新建；
+    // 重试成功或请求结束都无需清理。
     let attemptNumber = 0
     let lastAttemptAccountId: string | undefined
     let lastAttemptAccountName: string | undefined
@@ -662,6 +677,12 @@ export class GatewayService {
             this.finishAttempt(attemptId, upstream.status, "RETRY_NEXT_ACCOUNT", errorClass.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name, body)
             continue
           }
+          if (errorClass?.retrySameAccount) {
+            if (await this.retrySameAccountWithBackoff(
+              sameAccountRetryCounts, errorClass, selection.account.id, selection.account.name,
+              attemptId, upstream.status, attemptStartedAt, parseRetryAfter(upstream), body,
+            )) continue
+          }
           if (errorClass?.shouldSwitchAccount) {
             tried.add(selection.account.id)
             const attemptRetryAfterSeconds = errorClass.retryAfterSeconds ?? parseRetryAfter(upstream)
@@ -725,6 +746,17 @@ export class GatewayService {
             routing.markPermanentlyDisabled(selection.account.id, sseLimit.errorType, extractBodyError(safeParse(sseData ?? "")) ?? sseLimit.errorType)
             this.finishAttempt(attemptId, embeddedStatus ?? 403, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, "账号已被上游永久禁用", selection.account.name, first.text)
             continue
+          }
+          if (sseLimit?.retrySameAccount) {
+            // 返回 true = 已发起同账号重试（此时再取消流后 continue，不 tried.add/markQuota）；
+            // 返回 false = 重试用尽，不 cancel，落到下方 shouldSwitchAccount 分支由其统一 cancel。
+            if (await this.retrySameAccountWithBackoff(
+              sameAccountRetryCounts, sseLimit, selection.account.id, selection.account.name,
+              attemptId, embeddedStatus ?? upstream.status, attemptStartedAt, parseRetryAfter(upstream), first.text,
+            )) {
+              await reader.cancel()
+              continue
+            }
           }
           if (sseLimit?.shouldSwitchAccount) {
             await reader.cancel(); tried.add(selection.account.id)
@@ -919,6 +951,41 @@ export class GatewayService {
         return Response.json({ error: { type: "upstream_transport_error", message } }, { status: 502 })
       } finally { routing.releaseLease(selection.leaseId) }
     }
+  }
+
+  /**
+   * retrySameAccount 分支的公共处理：在相同账号上指数退避重试。
+   * 返回 true 表示已发起重试（调用方应 continue，不 tried.add / markQuota）；
+   * 返回 false 表示重试次数用尽，调用方应落到 shouldSwitchAccount 分支。
+   */
+  private async retrySameAccountWithBackoff(
+    sameAccountRetryCounts: Map<string, number>,
+    classification: Pick<UpstreamErrorClassification, "retrySameAccount" | "retryAfterSeconds" | "errorType">,
+    accountId: string,
+    accountName: string,
+    attemptId: string,
+    status: number,
+    attemptStartedAt: number,
+    retryAfterHeaderSeconds: number | null,
+    responseBody: string,
+  ): Promise<boolean> {
+    const retries = sameAccountRetryCounts.get(accountId) ?? 0
+    if (!classification.retrySameAccount || retries >= classification.retrySameAccount.maxRetries) return false
+    sameAccountRetryCounts.set(accountId, retries + 1)
+    const retryAfter = classification.retryAfterSeconds ?? retryAfterHeaderSeconds
+    const backoffMs = computeBackoffMs(retries, retryAfter)
+    if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs))
+    this.finishAttempt(
+      attemptId,
+      status,
+      "RETRY_SAME_ACCOUNT_BACKOFF",
+      classification.errorType,
+      Date.now() - attemptStartedAt,
+      `${classification.errorType} (退避重试 ${retries + 1}/${classification.retrySameAccount.maxRetries})`,
+      accountName,
+      responseBody,
+    )
+    return true
   }
 
   private finishAttempt(id: string, status: number, decision: string, error: string | null, latencyMs?: number, errorMessage?: string | null, accountName?: string | null, responseBody?: string | null) {

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createDatabase } from "./db"
 import { ApiKeyHasher, SecretVault } from "./crypto"
-import { AccountRepository, ApiKeyRepository } from "./repository"
-import { classifyGoUsageLimit, GatewayService, type CredentialProvider } from "./gateway"
+import { AccountRepository, ApiKeyRepository, ProviderCredentialRepository } from "./repository"
+import { classifyGoUsageLimit, computeBackoffMs, GatewayService, type CredentialProvider } from "./gateway"
 import { RoutingService } from "./routing"
 import { getSystemSettings, initializeSystemSettings, updateSystemSettings } from "./settings"
 
@@ -10,14 +10,24 @@ const encryptionKey = Buffer.alloc(32, 8).toString("base64")
 const ownerUserId = "user-1"
 const usage = { FIVE_HOUR: { usagePercent: 1, resetInSeconds: 3600 }, WEEKLY: { usagePercent: 2, resetInSeconds: 86400 }, MONTHLY: { usagePercent: 3, resetInSeconds: 2592000 } }
 
-function setup(poolType: "opencode-go" | "xai-grok" = "opencode-go", accountCount = 2) {
+function setup(poolType: "opencode-go" | "xai-grok" | "kimi-code" = "opencode-go", accountCount = 2) {
   const db = createDatabase(":memory:"); const timestamp = new Date().toISOString()
   db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES (?,?,?,?,?,'ACTIVE',?,?,?)")
     .run(ownerUserId, "owner", "owner", "Owner", "USER", "hash", timestamp, timestamp)
   const accounts = new AccountRepository(ownerUserId, db, new SecretVault(encryptionKey))
-  const accountIds = Array.from({ length: accountCount }, (_, index) => ["one", "two"][index] ?? `account-${index + 1}`).map((suffix) => poolType === "xai-grok"
-    ? accounts.createProviderAccount({ name: `grok-${suffix}`, poolType })
-    : accounts.upsertBrowserAccount({ workspaceId: `wrk_${suffix}`, authCookie: `cookie-${suffix}`, goApiKey: `sk-go-${suffix}`, goKeyId: `key_${suffix}`, subscriptionState: "ACTIVE", billingGuard: "VERIFIED_GO_ONLY", useBalance: false, usage })).map((account) => account.id)
+  const accountIds = Array.from({ length: accountCount }, (_, index) => ["one", "two"][index] ?? `account-${index + 1}`).map((suffix) => {
+    if (poolType === "xai-grok") return accounts.createProviderAccount({ name: `grok-${suffix}`, poolType }).id
+    if (poolType === "kimi-code") {
+      const account = accounts.createProviderAccount({ name: `kimi-${suffix}`, poolType })
+      new ProviderCredentialRepository(ownerUserId, db, new SecretVault(encryptionKey)).upsert({
+        accountId: account.id,
+        poolType,
+        credentialData: { token: `sk-kimi-${suffix}` },
+      })
+      return account.id
+    }
+    return accounts.upsertBrowserAccount({ workspaceId: `wrk_${suffix}`, authCookie: `cookie-${suffix}`, goApiKey: `sk-go-${suffix}`, goKeyId: `key_${suffix}`, subscriptionState: "ACTIVE", billingGuard: "VERIFIED_GO_ONLY", useBalance: false, usage }).id
+  })
   const hasher = new ApiKeyHasher("test-pepper"); const apiKey = new ApiKeyRepository(ownerUserId, db, hasher).create("test")
   const credentials: CredentialProvider = { async get(ownerId, accountId) { expect(ownerId).toBe(ownerUserId); const value = accounts.getCredential(accountId)!; return { accountId, goApiKey: value.goApiKey, credentialVersion: value.credentialVersion } } }
   new RoutingService(ownerUserId, db).setPreferred(accountIds[0])
@@ -39,6 +49,16 @@ describe("gateway", () => {
     expect(classifyGoUsageLimit(new Response("{}", { status: 429 }), "{}")).toBeNull()
   })
 
+  it("computeBackoffMs 按 retry-after 与指数退避计算并封顶", () => {
+    expect(computeBackoffMs(0, null)).toBe(1000)
+    expect(computeBackoffMs(3, null)).toBe(8000)
+    expect(computeBackoffMs(8, null)).toBe(30_000)
+    expect(computeBackoffMs(0, 5)).toBe(5000)
+    expect(computeBackoffMs(9, 5)).toBe(5000)
+    expect(computeBackoffMs(0, 0)).toBe(0)
+    expect(computeBackoffMs(0, 60)).toBe(30_000)
+  })
+
   it("额度错误内部切号，并且上游只收到 Go Bearer 密钥", async () => {
     const { db, apiKey, credentials, hasher } = setup()
     const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ error: { type: "GoUsageLimitError" }, metadata: { limitName: "5 hour" } }), { status: 429, headers: { "retry-after": "3600" } })).mockResolvedValueOnce(Response.json({ id: "ok" }))
@@ -47,6 +67,46 @@ describe("gateway", () => {
     const headers = fetcher.mock.calls[0][1]?.headers as Headers
     expect(headers.get("authorization")).toBe("Bearer sk-go-one")
     expect(headers.get("x-org-id")).toBeNull(); expect(headers.get("x-api-key")).toBeNull()
+  })
+  
+  it("kimi 普通 429 先在相同账号退避重试，成功后结束", async () => {
+    const { db, apiKey, credentials, hasher } = setup("kimi-code", 1)
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response("rate limit exceeded, retry later", { status: 429, headers: { "retry-after": "0" } }))
+      .mockResolvedValueOnce(Response.json({ id: "ok" }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(requestWithModel(apiKey, "k3-256k", "chat/completions"), "chat/completions")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await response.text(); await new Promise((resolve) => setTimeout(resolve, 0))
+    const attempts = db.prepare("SELECT attempt_number,status,decision,account_id FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; status: number; decision: string; account_id: string }>
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({ attempt_number: 1, status: 429, decision: "RETRY_SAME_ACCOUNT_BACKOFF" })
+    expect(attempts[1]).toMatchObject({ attempt_number: 2, status: 200, decision: "SUCCESS" })
+    // 同账号重试：两次尝试落在同一个 kimi 账号
+    expect(attempts[0].account_id).toBe(attempts[1].account_id)
+    expect(db.prepare("SELECT COUNT(*) AS value FROM quota_windows WHERE kind='PROVIDER_RATE_LIMIT'").get()).toEqual({ value: 0 })
+  })
+
+  it("kimi 普通 429 退避 10 次用尽后仍切账号", async () => {
+    const { db, apiKey, credentials, hasher } = setup("kimi-code", 2)
+    const fetcher = vi.fn()
+    for (let index = 0; index < 11; index += 1) {
+      fetcher.mockResolvedValueOnce(new Response("rate limit exceeded, retry later", { status: 429, headers: { "retry-after": "0" } }))
+    }
+    fetcher.mockResolvedValueOnce(Response.json({ id: "ok" }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(requestWithModel(apiKey, "k3-256k", "chat/completions"), "chat/completions")
+    expect(response.status).toBe(200)
+    // 1 次原始失败 + 10 次同账号退避重试 + 切到第二个账号成功
+    expect(fetcher).toHaveBeenCalledTimes(12)
+    await response.text(); await new Promise((resolve) => setTimeout(resolve, 0))
+    const attempts = db.prepare("SELECT attempt_number,decision,account_id FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; decision: string; account_id: string }>
+    expect(attempts).toHaveLength(12)
+    expect(attempts[0]).toMatchObject({ decision: "RETRY_SAME_ACCOUNT_BACKOFF" })
+    for (let index = 0; index < 11; index += 1) expect(attempts[index].account_id).toBe(attempts[0].account_id)
+    // 第 11 次（重试用尽）走 RETRY_NEXT_ACCOUNT 切到第二个账号
+    expect(attempts[10].decision).toBe("RETRY_NEXT_ACCOUNT")
+    expect(attempts[11].decision).toBe("SUCCESS")
+    expect(attempts[11].account_id).not.toBe(attempts[0].account_id)
   })
 
   it("一次客户端请求的切号过程只写一条请求记录，并为每次尝试保留完整上游错误报文", async () => {

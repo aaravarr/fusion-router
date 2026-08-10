@@ -35,6 +35,13 @@ import {
 } from "../kimi-oauth"
 
 const REQUEST_TIMEOUT_MS = 30_000
+
+/**
+ * 普通 429（瞬时限流，非配额耗尽）同账号退避重试的最大次数：
+ * 第 1 次失败后还能再重试 10 次，全部失败后再走切账号逻辑。
+ */
+export const KIMI_RATE_LIMIT_MAX_RETRIES = 10
+
 const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
 const DEFAULT_MODELS = ["k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"] as const
 const PASSTHROUGH_HEADERS = ["accept-language", "anthropic-version", "anthropic-beta"] as const
@@ -111,9 +118,9 @@ function windowsFromUsage(summary: KimiUsageRow | null, limits: KimiUsageRow[]):
 function retryAfterSeconds(value: string | null): number | null {
   if (!value) return null
   const numeric = Number(value)
-  if (Number.isFinite(numeric)) return Math.max(1, Math.ceil(numeric))
+  if (Number.isFinite(numeric)) return Math.max(0, Math.ceil(numeric))
   const parsed = Date.parse(value)
-  return Number.isNaN(parsed) ? null : Math.max(1, Math.ceil((parsed - Date.now()) / 1000))
+  return Number.isNaN(parsed) ? null : Math.max(0, Math.ceil((parsed - Date.now()) / 1000))
 }
 
 // 对齐官方 kimi-errors.ts：Moonshot 用 429 + 结构化 error.type/code
@@ -377,8 +384,9 @@ export class KimiCodeProvider implements Provider {
       }
       return {
         shouldSwitchAccount: true,
+        retrySameAccount: { maxRetries: KIMI_RATE_LIMIT_MAX_RETRIES },
         quotaKind: "PROVIDER_RATE_LIMIT",
-        retryAfterSeconds: retryAfterSeconds(headers.get("retry-after")) ?? 30,
+        retryAfterSeconds: retryAfterSeconds(headers.get("retry-after")),
         errorType: "KIMI_RATE_LIMITED",
       }
     }

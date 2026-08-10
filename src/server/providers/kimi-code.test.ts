@@ -27,6 +27,7 @@ describe("KimiCodeProvider.classifyError", () => {
     const result = provider.classifyError(429, "rate limit exceeded, retry later", new Headers())
     expect(result).toMatchObject({
       shouldSwitchAccount: true,
+      retrySameAccount: { maxRetries: 10 },
       quotaKind: "PROVIDER_RATE_LIMIT",
       errorType: "KIMI_RATE_LIMITED",
     })

@@ -62,6 +62,14 @@ export interface UpstreamErrorClassification {
   retryAfterSeconds?: number | null
   errorType: string
   permanentlyDisableAccount?: boolean
+  /**
+   * 遇到该错误时先在相同账号上指数退避重试，全部失败后再按
+   * shouldSwitchAccount 切账号。maxRetries 是“重试次数”：第 1 次失败后
+   * 还能再重试 maxRetries 次（即最多产生 maxRetries 次额外尝试）。
+   * 硬配额耗尽类错误（FIVE_HOUR/WEEKLY 等）不应携带此字段，保持直接切账号；
+   * 瞬时限流（如 PROVIDER_RATE_LIMIT）可携带，先同号退避重试，用尽后再切号。
+   */
+  retrySameAccount?: { maxRetries: number }
 }
 
 // Forward Request
