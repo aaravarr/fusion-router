@@ -27,19 +27,31 @@ function num(value: unknown): number | undefined {
 }
 
 function readUsageObject(usage: Record<string, unknown>): TokenUsage | undefined {
-  const promptTokens = num(usage.prompt_tokens) ?? num(usage.input_tokens);
+  const promptTokensRaw = num(usage.prompt_tokens) ?? num(usage.input_tokens);
   const completionTokens = num(usage.completion_tokens) ?? num(usage.output_tokens);
   const totalTokens = num(usage.total_tokens);
   // 缓存命中 token 在不同上游协议里位置不同：
-  //   Anthropic Messages: 根对象 cache_read_input_tokens
+  //   Anthropic Messages: 根对象 cache_read_input_tokens / cache_creation_input_tokens
   //   OpenAI Chat Completions: 嵌套 prompt_tokens_details.cached_tokens
   //   OpenAI Responses API: 嵌套 input_tokens_details.cached_tokens
   // 只取根对象会漏掉 OpenAI 的两种，导致缓存数恒为 0。
+  const cacheRead = num(usage.cache_read_input_tokens);
+  const cacheCreation = num(usage.cache_creation_input_tokens);
   const cachedTokens =
     num(usage.cached_tokens)
-    ?? num(usage.cache_read_input_tokens)
+    ?? cacheRead
     ?? num((usage.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens)
     ?? num((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens);
+  // 口径统一：Prompt 统一为"总输入（含缓存）"。
+  // Anthropic Messages 的 input_tokens 不含缓存读取（cache_read_input_tokens 单独计），
+  // OpenAI（chat/responses）的 prompt_tokens / input_tokens 已含缓存。这里把 Anthropic
+  // 的缓存读取部分加回，使不同入口记录到库里的 Prompt/Total 口径一致。
+  // 注意：cache_creation_input_tokens 属于 input_tokens 的子集，不在此重复累加。
+  const anthropicCache = cacheRead ?? 0;
+  const promptTokens =
+    promptTokensRaw !== undefined && anthropicCache > 0
+      ? promptTokensRaw + anthropicCache
+      : promptTokensRaw;
   const reasoningTokens =
     num(usage.reasoning_tokens)
     ?? num((usage.completion_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens)

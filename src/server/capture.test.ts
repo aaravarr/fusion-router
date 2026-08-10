@@ -39,8 +39,24 @@ describe("capture.extractUsage", () => {
    expect(extractUsage({ usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150, input_tokens_details: { cached_tokens: 80 } } })).toMatchObject({ cachedTokens: 80 })
  })
  
- it("从根对象 cache_read_input_tokens 读取 Anthropic 缓存命中", () => {
-   expect(extractUsage({ usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 70 } })).toMatchObject({ cachedTokens: 70 })
+ it("从根对象 cache_read_input_tokens 读取 Anthropic 缓存命中，并归一 Prompt 为总输入（含缓存）", () => {
+   // Anthropic 语义：input_tokens 不含缓存读取，总输入 = input_tokens + cache_read_input_tokens
+   const usage = extractUsage({ usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 70 } })
+   expect(usage).toMatchObject({ promptTokens: 170, cachedTokens: 70, totalTokens: 220 })
+ })
+
+ it("Anthropic 全缓存命中时 input_tokens=0，总输入来自 cache_read", () => {
+   expect(extractUsage({ usage: { input_tokens: 0, output_tokens: 8, cache_read_input_tokens: 146 } })).toMatchObject({ promptTokens: 146, totalTokens: 154 })
+ })
+
+ it("OpenAI 已含缓存的 prompt_tokens 不做重复累加", () => {
+   const usage = extractUsage({ usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, prompt_tokens_details: { cached_tokens: 80 } } })
+   expect(usage).toMatchObject({ promptTokens: 100, totalTokens: 150 })
+ })
+
+ it("OpenAI Responses 的 input_tokens 已含缓存，不重复累加", () => {
+   const usage = extractUsage({ usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150, input_tokens_details: { cached_tokens: 80 } } })
+   expect(usage).toMatchObject({ promptTokens: 100, totalTokens: 150, cachedTokens: 80 })
  })
 
   it("支持 message.usage 嵌套", () => {
