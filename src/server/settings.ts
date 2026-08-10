@@ -19,7 +19,6 @@ export const SYSTEM_SETTING_KEYS = {
   logBodiesOnError: "log_bodies_on_error",
   logRetentionDays: "log_retention_days",
   maxBodyCaptureBytes: "max_body_capture_bytes",
-  opencodeGoMirrorFilter: "opencode_go_mirror_filter",
 } as const;
 
 export const LOG_SETTING_KEYS = [
@@ -70,18 +69,6 @@ export interface DomainMirrorGroup {
   rules: DomainMirrorRule[];
 }
 
-export interface OpenCodeGoMirrorRule {
-  path: string          // body 字段路径，如 "model" 或 "a.b"；body['model'] 这种写法归一化为 model
-  operator: "contains" | "equals" | "startsWith" | "regex"
-  values: string[]      // 任一命中即规则命中（OR 语义）
-}
-
-export interface OpenCodeGoMirrorFilter {
-  enabled: boolean
-  mirrorBaseUrl: string   // 命中规则时的上游 base URL（完整，如 https://mirror.example.com/zen/go/v1）
-  rules: OpenCodeGoMirrorRule[]
-}
-
 export interface SystemSettings {
   domainMirrorMap: DomainMirrorMap;
   domainMirrorGroups: DomainMirrorGroup[];
@@ -94,7 +81,6 @@ export interface SystemSettings {
   refreshConcurrency: number;
   mediaTtlHours: number;
   mediaMaxBytes: number;
-  opencodeGoMirrorFilter: OpenCodeGoMirrorFilter;
 }
 
 export interface UpdateSystemSettingsInput {
@@ -114,7 +100,6 @@ export interface UpdateSystemSettingsInput {
   logBodiesOnError?: boolean;
   logRetentionDays?: number;
   maxBodyCaptureBytes?: number;
-  opencodeGoMirrorFilter?: OpenCodeGoMirrorFilter;
 }
 
 export interface LogSettings {
@@ -142,7 +127,6 @@ const defaults: SystemSettings & LogSettings = {
   logBodiesOnError: true,
   logRetentionDays: 7,
   maxBodyCaptureBytes: 1_048_576,
-  opencodeGoMirrorFilter: { enabled: false, mirrorBaseUrl: "", rules: [] },
 };
 
 type SettingRow = { value_json: string; is_secret: number };
@@ -263,12 +247,6 @@ export function initializeSystemSettings(db: AppDatabase): void {
       0,
       now,
     );
-    insert.run(
-      SYSTEM_SETTING_KEYS.opencodeGoMirrorFilter,
-      JSON.stringify(defaults.opencodeGoMirrorFilter),
-      0,
-      now,
-    );
   })();
 }
 
@@ -325,7 +303,6 @@ export function getSystemSettings(
     ),
     mediaTtlHours: readPublic(db, SYSTEM_SETTING_KEYS.mediaTtlHours, defaults.mediaTtlHours),
     mediaMaxBytes: readPublic(db, SYSTEM_SETTING_KEYS.mediaMaxBytes, defaults.mediaMaxBytes),
-    opencodeGoMirrorFilter: normalizeOpenCodeGoMirrorFilter(readPublic<unknown>(db, SYSTEM_SETTING_KEYS.opencodeGoMirrorFilter, defaults.opencodeGoMirrorFilter)),
   };
 }
 
@@ -478,35 +455,6 @@ export function updateSystemSettings(
       ),
     ]);
   }
-  if (input.opencodeGoMirrorFilter !== undefined) {
-    const filter = input.opencodeGoMirrorFilter
-    const mirrorBaseUrl = filter.mirrorBaseUrl.trim().replace(/\/$/, "")
-    if (filter.enabled) {
-      if (!mirrorBaseUrl) throw new Error("启用镜像过滤时必须配置镜像上游地址 mirrorBaseUrl")
-      try {
-        const url = new URL(mirrorBaseUrl)
-        if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol")
-        if (url.username || url.password) throw new Error("credentials")
-        if (url.search || url.hash) throw new Error("query/hash")
-      } catch {
-        throw new Error("镜像上游地址必须是有效的 http(s) URL，且不能包含账号密码、查询参数或锚点")
-      }
-    }
-    const rules = filter.rules.map((rule) => {
-      const path = rule.path.trim()
-      if (!path) throw new Error("镜像过滤规则 path 不能为空")
-      if (!OPENCODE_GO_MIRROR_OPERATORS.has(rule.operator)) {
-        throw new Error(`镜像过滤规则操作符不合法: ${rule.operator}`)
-      }
-      const values = rule.values.map((value) => value.trim()).filter((value) => value !== "")
-      if (!values.length) throw new Error("镜像过滤规则 values 至少需要一项非空值")
-      return { path, operator: rule.operator, values }
-    })
-    entries.push([
-      SYSTEM_SETTING_KEYS.opencodeGoMirrorFilter,
-      JSON.stringify({ enabled: filter.enabled, mirrorBaseUrl, rules }),
-    ])
-  }
   const statement = db.prepare(
     `UPDATE system_settings SET value_json = ?, updated_by_user_id = ?, updated_at = ?
      WHERE key = ? AND is_secret = 0`,
@@ -577,89 +525,6 @@ export function normalizeDomainMirrorGroups(value: unknown): DomainMirrorGroup[]
       rules: Array.isArray(group.rules) ? group.rules.filter((item): item is DomainMirrorRule => Boolean(item && typeof item.id === "string" && typeof item.pattern === "string" && typeof item.mirrorId === "string")) : [],
     }]
   })
-}
-
-const OPENCODE_GO_MIRROR_OPERATORS = new Set(["contains", "equals", "startsWith", "regex"])
-
-export function normalizeOpenCodeGoMirrorFilter(value: unknown): OpenCodeGoMirrorFilter {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { enabled: false, mirrorBaseUrl: "", rules: [] }
-  }
-  const raw = value as Partial<OpenCodeGoMirrorFilter>
-  const rules = Array.isArray(raw.rules)
-    ? raw.rules.filter((rule): rule is OpenCodeGoMirrorRule => {
-        if (!rule || typeof rule !== "object" || Array.isArray(rule)) return false
-        const r = rule as Partial<OpenCodeGoMirrorRule>
-        return typeof r.path === "string" && r.path.trim() !== ""
-          && typeof r.operator === "string" && OPENCODE_GO_MIRROR_OPERATORS.has(r.operator)
-          && Array.isArray(r.values) && r.values.length > 0
-          && r.values.every((item) => typeof item === "string" && item.trim() !== "")
-      })
-    : []
-  return {
-    enabled: raw.enabled === true,
-    mirrorBaseUrl: typeof raw.mirrorBaseUrl === "string" ? raw.mirrorBaseUrl : "",
-    rules,
-  }
-}
-
-/**
- * 解析 body 字段路径：支持点路径 "a.b"；把 "body['model']" / "body[\"model\"]"
- * 归一化为 "model"（去掉 body 前缀和引号）。找不到返回 undefined。
- */
-export function resolveBodyPath(obj: unknown, path: string): unknown {
-  if (obj === null || obj === undefined || typeof obj !== "object") return undefined
-  const normalized = normalizeOpenCodeGoBodyPath(path)
-  if (!normalized) return undefined
-  let current: unknown = obj
-  for (const segment of normalized.split(".")) {
-    if (current === null || current === undefined || typeof current !== "object") return undefined
-    current = (current as Record<string, unknown>)[segment]
-  }
-  return current
-}
-
-function normalizeOpenCodeGoBodyPath(path: string): string {
-  let value = path.trim()
-  if (!value) return ""
-  const bracket = /^body\s*\[(['"])(.*?)\1\]$/.exec(value)
-  if (bracket) return bracket[2]
-  if (value.startsWith("body.")) value = value.slice("body.".length)
-  if (value === "body") return ""
-  return value
-}
-
-export function matchOpenCodeGoMirrorRule(value: unknown, rule: OpenCodeGoMirrorRule): boolean {
-  if (typeof value === "string") {
-    switch (rule.operator) {
-      case "contains":
-        return rule.values.some((item) => value.toLowerCase().includes(item.toLowerCase()))
-      case "equals":
-        return rule.values.some((item) => value.toLowerCase() === item.toLowerCase())
-      case "startsWith":
-        return rule.values.some((item) => value.toLowerCase().startsWith(item.toLowerCase()))
-      case "regex": {
-        try {
-          return new RegExp(rule.values[0] ?? "", "i").test(value)
-        } catch {
-          return false
-        }
-      }
-    }
-    return false
-  }
-  if (Array.isArray(value)) return value.some((item) => matchOpenCodeGoMirrorRule(item, rule))
-  return false
-}
-
-export function shouldUseOpenCodeGoMirror(body: unknown, filter: OpenCodeGoMirrorFilter): boolean {
-  if (!filter.enabled) return false
-  if (!filter.mirrorBaseUrl) return false
-  if (!filter.rules || filter.rules.length === 0) return true
-  for (const rule of filter.rules) {
-    if (matchOpenCodeGoMirrorRule(resolveBodyPath(body, rule.path), rule)) return true
-  }
-  return false
 }
 
 export function getSystemSecret(db: AppDatabase, key: SystemSecretKey): string {
