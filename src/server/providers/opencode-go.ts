@@ -2,7 +2,7 @@ import type { Provider, QuotaWindow, ProviderCredential, ForwardRequestInput, Fo
 import type { AccountRecord, QuotaKind } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
-import { getSystemSettings, normalizeOfficialOpenCodeUpstreamUrl } from "../settings"
+import { getSystemSettings, normalizeOfficialOpenCodeUpstreamUrl, shouldUseOpenCodeGoMirror } from "../settings"
 import { apiFetchWithMirrorContext } from "../api-fetch"
 
 // OpenAI Codex models served by the OpenCode Go upstream.
@@ -197,7 +197,18 @@ export class OpenCodeGoProvider implements Provider {
     // messages endpoint uses x-api-key; others use Bearer
     if (input.endpoint === "messages") headers.set("x-api-key", credential.token)
     else headers.set("authorization", `Bearer ${credential.token}`)
-    const baseUrl = normalizeOfficialOpenCodeUpstreamUrl(getSystemSettings(getDatabase()).upstreamBaseUrl)
+    const settings = getSystemSettings(getDatabase())
+    let baseUrl = normalizeOfficialOpenCodeUpstreamUrl(settings.upstreamBaseUrl)
+    const mirror = settings.opencodeGoMirrorFilter
+    if (mirror?.enabled && mirror.mirrorBaseUrl) {
+      let bodyObj: unknown = null
+      if (input.body) {
+        try { bodyObj = JSON.parse(new TextDecoder().decode(input.body)) } catch { bodyObj = null }
+      }
+      if (shouldUseOpenCodeGoMirror(bodyObj, mirror)) {
+        baseUrl = mirror.mirrorBaseUrl.replace(/\/$/, "")
+      }
+    }
     const path = input.endpoint.replace(/^\/+/, "")
     return { url: `${baseUrl}/${path}`, headers, body: input.body }
   }

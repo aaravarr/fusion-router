@@ -30,6 +30,15 @@ const schema = z.object({
   logBodiesOnError: z.boolean(),
   logRetentionDays: z.number().int().min(1).max(365),
   maxBodyCaptureBytes: z.number().int().min(1024).max(16777216),
+  opencodeGoMirrorFilter: z.object({
+    enabled: z.boolean(),
+    mirrorBaseUrl: z.string().trim().max(500),
+    rules: z.array(z.object({
+      path: z.string().trim().min(1).max(100),
+      operator: z.enum(["contains", "equals", "startsWith", "regex"]),
+      values: z.array(z.string().trim().min(1).max(200)).min(1),
+    })),
+  }).optional(),
 });
 function secretStatus() { const value = getPublicSecretStatus(); return { masterKeyReady: true, apiKeyPepperReady: value.apiKeyPepper.configured, cronSecretReady: value.cronSecret.configured }; }
 function mergedSettings() { return { ...getSystemSettings(), ...getLogSettings() }; }

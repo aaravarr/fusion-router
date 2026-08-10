@@ -30,6 +30,7 @@ interface Settings {
   domainMirrorMap: DomainMirrorMap;
   domainMirrorGroups: MirrorGroup[];
   upstreamBaseUrl: string;
+  opencodeGoMirrorFilter: OpenCodeGoMirrorFilter;
   upstreamRequestTimeoutMs: number;
   maxFailoverAttempts: number;
   maintenanceEnabled: boolean;
@@ -50,6 +51,8 @@ interface DomainMirrorConfig { mirrors: MirrorTarget[]; accountAssignments: Reco
 type DomainMirrorMap = Record<string, DomainMirrorConfig>;
 interface MirrorAccount { id: string; name: string; email?: string | null; poolType: string; poolLabel?: string | null; workspaceId?: string | null }
 interface MirrorGroup { id: string; name: string; enabled: boolean; domains: string[]; accountIds: string[]; mirrors: MirrorTarget[]; rules: MirrorRule[] }
+interface OpenCodeGoMirrorRule { path: string; operator: "contains" | "equals" | "startsWith" | "regex"; values: string[] }
+interface OpenCodeGoMirrorFilter { enabled: boolean; mirrorBaseUrl: string; rules: OpenCodeGoMirrorRule[] }
 interface SettingsPayload {
   settings?: Settings;
   secrets?: {
@@ -218,6 +221,19 @@ export function SettingsPage() {
                   required
                 />
               </Field>
+              <div className="lg:col-span-2">
+                <Field
+                  label="OpenCode Go 按模型镜像"
+                  description="opencode.ai 官方对部分模型存在地区限制（如中国大陆出口 403），可为这些模型单独配置镜像地址；未命中规则的模型仍走官方直连。"
+                >
+                  <OpenCodeGoMirrorEditor
+                    value={form.opencodeGoMirrorFilter ?? { enabled: false, mirrorBaseUrl: "", rules: [] }}
+                    onChange={(next) => {
+                      if (form.opencodeGoMirrorFilter) update("opencodeGoMirrorFilter", next);
+                    }}
+                  />
+                </Field>
+              </div>
               <Field label="上游请求超时（毫秒）" description="单次上游请求的超时上限，超时后中断连接。范围 1000-600000 毫秒。">
                 <Input
                   type="number"
@@ -625,6 +641,88 @@ function Toggle({
     </label>
   );
 }
+function OpenCodeGoMirrorEditor({ value, onChange }: { value: OpenCodeGoMirrorFilter; onChange: (value: OpenCodeGoMirrorFilter) => void }) {
+  function updateRule(index: number, rule: OpenCodeGoMirrorRule) {
+    onChange({ ...value, rules: value.rules.map((item, i) => (i === index ? rule : item)) });
+  }
+  function removeRule(index: number) {
+    onChange({ ...value, rules: value.rules.filter((_, i) => i !== index) });
+  }
+  function addRule() {
+    onChange({ ...value, rules: [...value.rules, { path: "", operator: "contains", values: [] }] });
+  }
+  return (
+    <div className="space-y-3">
+      <Toggle
+        checked={value.enabled}
+        onChange={(enabled) => onChange({ ...value, enabled })}
+        label="启用按模型镜像"
+        description="为受地区限制的模型单独配置镜像地址，其余模型保持官方直连。"
+      />
+      <Field label="镜像基础地址" description="命中规则的上游请求会替换为该镜像地址。">
+        <Input
+          type="url"
+          value={value.mirrorBaseUrl}
+          onChange={(event) => onChange({ ...value, mirrorBaseUrl: event.target.value })}
+          placeholder="https://mirror.example.com"
+        />
+      </Field>
+      <Field
+        label={`匹配规则（${value.rules.length} 条）`}
+        description="命中任一规则的请求走镜像地址；规则为空时启用后全部请求走镜像。"
+      >
+        <div className="space-y-2">
+          {value.rules.map((rule, index) => (
+            <div key={index} className="grid items-center gap-2 sm:grid-cols-[1fr_150px_1fr_34px]">
+              <Input
+                className="h-8 font-mono text-xs"
+                value={rule.path}
+                onChange={(event) => updateRule(index, { ...rule, path: event.target.value })}
+                placeholder="例如 model"
+              />
+              <Select
+                value={rule.operator}
+                onValueChange={(operator) => updateRule(index, { ...rule, operator: operator as OpenCodeGoMirrorRule["operator"] })}
+              >
+                <SelectTrigger className="w-full bg-white text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="contains">contains</SelectItem>
+                  <SelectItem value="equals">equals</SelectItem>
+                  <SelectItem value="startsWith">startsWith</SelectItem>
+                  <SelectItem value="regex">regex</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                className="h-8 font-mono text-xs"
+                value={rule.values.join(", ")}
+                onChange={(event) =>
+                  updateRule(index, {
+                    ...rule,
+                    values: event.target.value.split(",").map((item) => item.trim()).filter(Boolean),
+                  })
+                }
+                placeholder="grok, gpt"
+              />
+              <Button type="button" variant="ghost" size="icon-sm" onClick={() => removeRule(index)}>
+                <Trash2 />
+              </Button>
+            </div>
+          ))}
+          <Button type="button" variant="outline" size="sm" onClick={addRule}>
+            <Plus />添加规则
+          </Button>
+        </div>
+      </Field>
+      <p className="text-xs leading-5 text-muted-foreground">
+        命中任一规则的请求走镜像地址，其余走官方直连；例如 path=model、operator=contains、values=grok,gpt
+        表示模型名含 grok 或 gpt 时走镜像。
+      </p>
+    </div>
+  );
+}
+
 function SecretRow({
   label,
   ready,
