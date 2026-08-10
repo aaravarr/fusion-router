@@ -41,7 +41,9 @@ function readUsageObject(usage: Record<string, unknown>): TokenUsage | undefined
     num(usage.cached_tokens)
     ?? cacheRead
     ?? num((usage.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens)
-    ?? num((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens);
+    ?? num((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens)
+    // DeepSeek 等上游只返回 prompt_cache_hit_tokens / prompt_cache_miss_tokens 时兜底。
+    ?? num(usage.prompt_cache_hit_tokens);
   // 口径统一：Prompt 统一为"总输入（含缓存）"。
   // Anthropic Messages 的 input_tokens 不含缓存读取（cache_read_input_tokens 单独计），
   // OpenAI（chat/responses）的 prompt_tokens / input_tokens 已含缓存。这里把 Anthropic

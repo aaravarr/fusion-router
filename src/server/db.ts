@@ -362,6 +362,7 @@ export function createDatabase(filename: string): AppDatabase {
   ensureCurrentImportJobColumns(db)
   ensureCustomProviderSlugColumn(db)
   ensureCustomProviderInterfaceTypesColumn(db)
+  ensureCurrentMediaColumns(db)
   db.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
   return db
 }
@@ -451,6 +452,12 @@ function ensureResponseConversationColumns(db: AppDatabase): void {
   if (!cols.has("reasoning_items_json")) db.exec("ALTER TABLE response_conversations ADD COLUMN reasoning_items_json TEXT NOT NULL DEFAULT '[]'")
   db.exec("CREATE INDEX IF NOT EXISTS response_conversations_updated_idx ON response_conversations(updated_at DESC)")
 }
+function ensureCurrentMediaColumns(db: AppDatabase): void {
+  const cols = new Set((db.prepare("PRAGMA table_info(media_cache)").all() as { name: string }[]).map((column) => column.name))
+  // 固定同一张图片（md5）的带签名 URL，避免每次请求重新签名破坏提示词缓存。
+  if (!cols.has("signed_path")) db.exec("ALTER TABLE media_cache ADD COLUMN signed_path TEXT")
+}
+
 function ensureCurrentGatewayRequestColumns(db: AppDatabase): void {
   const requestCols = new Set((db.prepare("PRAGMA table_info(gateway_requests)").all() as { name: string }[]).map((column) => column.name))
   const requestAdditions = [

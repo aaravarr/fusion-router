@@ -54,13 +54,40 @@ function signingKey(): Buffer {
   return createHash("sha256").update("opencode-media-sign").digest()
 }
 
-/** 生成 /mcp/media/<md5>?exp=<epoch>&sig=<hmac> 的带签名 URL 路径（不含 host）。 */
+/** 生成 /mcp/media/<md5>?exp=<epoch>&sig=<hmac> 的带签名 URL 路径（不含 host）。
+ * 同一张图片（md5）在签名有效期内返回固定的路径，绝不重新签名。
+ * 原实现每次调用都用 Date.now() 重新生成 exp/sig，让同一张图片写进消息文本后每次都不同，
+ * 导致 DeepSeek 等提示词缓存（prefix cache）在第一张图片处就断裂。 */
 export function buildSignedMediaPath(md5: string, ttlHours?: number, db: AppDatabase = getDatabase()): string {
+  const existing = db
+    .prepare("SELECT signed_path FROM media_cache WHERE md5 = ?")
+    .get(md5) as { signed_path: string | null } | undefined
+  if (existing && typeof existing.signed_path === "string" && existing.signed_path) {
+    const exp = parseSignedPathExp(existing.signed_path)
+    // 剩余有效期充足就复用，避免每次请求都变化的签名（破坏缓存）。
+    if (exp != null && Number.isFinite(exp) && exp - Math.floor(Date.now() / 1000) > SIGNED_PATH_REUSE_MARGIN_SECONDS) {
+      return existing.signed_path
+    }
+  }
   const ttl = ttlHours ?? getMediaConfig(db).ttlHours
   const exp = Math.floor(Date.now() / 1000) + ttl * 3600
   const sig = createHmac("sha256", signingKey()).update(`${md5}:${exp}`).digest("hex").slice(0, 32)
-  return `${MEDIA_URL_PREFIX}/${md5}?exp=${exp}&sig=${sig}`
+  const path = `${MEDIA_URL_PREFIX}/${md5}?exp=${exp}&sig=${sig}`
+  if (existing) {
+    // 固定到图片记录上，后续请求再复用。
+    db.prepare("UPDATE media_cache SET signed_path = ? WHERE md5 = ?").run(path, md5)
+  }
+  return path
 }
+
+/** 从签名路径中提取 exp（秒），解析失败返回 null。 */
+function parseSignedPathExp(path: string): number | null {
+  const match = /[?&]exp=(\d+)/.exec(path)
+  return match ? Number(match[1]) : null
+}
+
+/** 签名复用阈值：剩余有效期小于该值则重新签名。 */
+const SIGNED_PATH_REUSE_MARGIN_SECONDS = 5 * 60
 
 /** 校验带签名路径的签名与有效期。 */
 export function verifySignedMediaPath(

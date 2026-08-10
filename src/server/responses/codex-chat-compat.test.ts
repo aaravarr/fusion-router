@@ -177,6 +177,27 @@ describe("responses to chat reasoning replay", () => {
     expect(Array.isArray(assistants[0].tool_calls)).toBe(true)
     expect((assistants[0].tool_calls as unknown[]).length).toBe(1)
   })
+
+  it("缺 call_id 的历史工具调用生成稳定 id（不破坏前缀缓存）", () => {
+    const input = [
+      { type: "function_call", name: "apply_patch", arguments: "{\"input\":\"diff\"}" },
+      { type: "function_call_output", call_id: "x", output: "ok" },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+    ]
+    const first = responsesToChatCompletions({ model: "deepseek-v4-flash", input })
+    const second = responsesToChatCompletions({ model: "deepseek-v4-flash", input })
+    const idOf = (body: { messages?: Array<Record<string, unknown>> }) => {
+      const assistant = (body.messages ?? []).find((m) => m.role === "assistant" && Array.isArray(m.tool_calls)) as
+        | { tool_calls?: Array<{ id: string }> }
+        | undefined
+      return assistant?.tool_calls?.[0]?.id
+    }
+    const id1 = idOf(first.body)
+    const id2 = idOf(second.body)
+    expect(id1).toBeTruthy()
+    expect(id1).toMatch(/^call_/)
+    expect(id1).toBe(id2)
+  })
 })
 
 describe("chat stream id stability", () => {

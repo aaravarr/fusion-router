@@ -8,6 +8,8 @@
  * - Skip: Anthropic transforms, multi-provider reasoning quirks, non-Grok adapters.
  */
 
+import { createHash } from "node:crypto"
+
 type Obj = Record<string, unknown>;
 
 function isObj(v: unknown): v is Obj {
@@ -510,8 +512,22 @@ function flushPendingToolCalls(messages: Obj[], pending: PendingToolCall[], reas
   pending.length = 0;
 }
 
-function functionCallToChatToolCall(item: Obj, ctx: CodexToolContext): Obj {
-  const callId = String(item.call_id || item.id || 'call_' + Math.random().toString(16).slice(2));
+/**
+ * 缺 call_id/id 的历史工具调用：用内容的确定性哈希生成稳定 id。
+ * 原来用 Math.random()，同一段历史每次转换都会得到不同 id，
+ * 写入上游 tool_calls 后破坏 DeepSeek 等提示词缓存的前缀一致性。
+ */
+function deterministicFallbackCallId(item: Obj, index: number): string {
+  const seed = JSON.stringify({
+    index,
+    name: pickName(item.name),
+    args: item.arguments ?? item.input ?? item.id ?? '',
+  });
+  return 'call_' + createHash('sha1').update(seed).digest('hex').slice(0, 16);
+}
+
+function functionCallToChatToolCall(item: Obj, ctx: CodexToolContext, index = 0): Obj {
+  const callId = String(item.call_id || item.id || deterministicFallbackCallId(item, index));
   const name = pickName(item.name) || 'tool';
   const namespace = typeof item.namespace === 'string' ? item.namespace : null;
   let chatName = name;
@@ -534,8 +550,8 @@ function functionCallToChatToolCall(item: Obj, ctx: CodexToolContext): Obj {
   };
 }
 
-function customToolCallToChatToolCall(item: Obj): Obj {
-  const callId = String(item.call_id || item.id || 'call_' + Math.random().toString(16).slice(2));
+function customToolCallToChatToolCall(item: Obj, index = 0): Obj {
+  const callId = String(item.call_id || item.id || deterministicFallbackCallId(item, index));
   const name = pickName(item.name) || 'tool';
   const input = item.input ?? item.arguments ?? '';
   const args =
@@ -552,8 +568,8 @@ function customToolCallToChatToolCall(item: Obj): Obj {
   };
 }
 
-function toolSearchCallToChatToolCall(item: Obj): Obj {
-  const callId = String(item.call_id || item.id || 'call_' + Math.random().toString(16).slice(2));
+function toolSearchCallToChatToolCall(item: Obj, index = 0): Obj {
+  const callId = String(item.call_id || item.id || deterministicFallbackCallId(item, index));
   return {
     id: callId,
     type: 'function',
@@ -594,7 +610,7 @@ function reasoningItemText(item: Obj): string {
   return text;
 }
 
-function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToolCall[], ctx: CodexToolContext, reasoningQueue: ReasoningQueue = []) {
+function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToolCall[], ctx: CodexToolContext, reasoningQueue: ReasoningQueue = [], index = 0) {
   if (!isObj(item)) return;
   const type = String(item.type || '').toLowerCase();
 
@@ -608,15 +624,15 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
   }
 
   if (type === 'function_call') {
-    pending.push(functionCallToChatToolCall(item, ctx));
+    pending.push(functionCallToChatToolCall(item, ctx, index));
     return;
   }
   if (type === 'custom_tool_call') {
-    pending.push(customToolCallToChatToolCall(item));
+    pending.push(customToolCallToChatToolCall(item, index));
     return;
   }
   if (type === 'tool_search_call') {
-    pending.push(toolSearchCallToChatToolCall(item));
+    pending.push(toolSearchCallToChatToolCall(item, index));
     return;
   }
   if (type === 'function_call_output' || type === 'custom_tool_call_output' || type === 'tool_search_output') {
@@ -657,7 +673,9 @@ function appendResponsesItem(item: unknown, messages: Obj[], pending: PendingToo
 function appendResponsesInput(input: unknown, messages: Obj[], ctx: CodexToolContext, reasoningQueue: ReasoningQueue = []) {
   const pending: PendingToolCall[] = [];
   const items = Array.isArray(input) ? input : input != null ? [input] : [];
-  for (const item of items) appendResponsesItem(item, messages, pending, ctx, reasoningQueue);
+  for (let index = 0; index < items.length; index++) {
+    appendResponsesItem(items[index], messages, pending, ctx, reasoningQueue, index);
+  }
   flushPendingToolCalls(messages, pending, reasoningQueue);
 }
 

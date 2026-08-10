@@ -90,6 +90,15 @@ describe("signed path", () => {
     const pastExp = String(Math.floor(Date.now() / 1000) - 100)
     expect(verifySignedMediaPath(stored.md5, pastExp, url.searchParams.get("sig"))).toBe(false)
   })
+
+  it("同一图片多次写入返回固定签名路径（保持提示词缓存前缀稳定）", () => {
+    const first = storeDataUri(PNG_1, db)
+    const second = storeDataUri(PNG_1, db)
+    expect(second.urlPath).toBe(first.urlPath)
+    // 数据库里持久化了同一个签名路径，后续请求复用
+    const row = db.prepare("SELECT signed_path FROM media_cache WHERE md5 = ?").get(first.md5) as { signed_path: string }
+    expect(row.signed_path).toBe(first.urlPath)
+  })
 })
 
 describe("readMedia", () => {
