@@ -111,12 +111,12 @@ export function toResponsesUsage(usage: unknown): Obj {
         : 0;
   const total =
     typeof u.total_tokens === 'number' ? u.total_tokens : Number(input || 0) + Number(output || 0);
-  const ptd = isObj(u.input_tokens_details)
+  const ptdRaw = isObj(u.input_tokens_details)
     ? u.input_tokens_details
     : isObj(u.prompt_tokens_details)
       ? u.prompt_tokens_details
       : undefined;
-  const otd = isObj(u.output_tokens_details)
+  const otdRaw = isObj(u.output_tokens_details)
     ? u.output_tokens_details
     : isObj(u.completion_tokens_details)
       ? u.completion_tokens_details
@@ -126,9 +126,23 @@ export function toResponsesUsage(usage: unknown): Obj {
     output_tokens: Number.isFinite(output) ? output : 0,
     total_tokens: Number.isFinite(total) ? total : 0,
   };
-  if (ptd) out.input_tokens_details = ptd;
-  if (otd) out.output_tokens_details = otd;
-  else out.output_tokens_details = { reasoning_tokens: 0 };
+  // Codex 客户端（codex-rs codex-api/src/sse/responses.rs）解析 response.completed 时，
+  // input_tokens_details.cached_tokens 与 output_tokens_details.reasoning_tokens 都是必需字段
+  // （serde 无 default，缺字段即解析失败）。上游可能返回空 details 对象或缺少 reasoning_tokens
+  // （例如 Kimi 纯工具调用轮返回 completion_tokens_details: {}），直接透传会让 Codex 报
+  // "failed to parse ResponseCompleted: missing field `reasoning_tokens`"。这里补齐必需字段。
+  if (ptdRaw) {
+    const ptd = { ...ptdRaw };
+    if (typeof ptd.cached_tokens !== 'number') ptd.cached_tokens = 0;
+    out.input_tokens_details = ptd;
+  }
+  if (otdRaw) {
+    const otd = { ...otdRaw };
+    if (typeof otd.reasoning_tokens !== 'number') otd.reasoning_tokens = 0;
+    out.output_tokens_details = otd;
+  } else {
+    out.output_tokens_details = { reasoning_tokens: 0 };
+  }
   if (typeof u.num_sources_used === 'number') out.num_sources_used = u.num_sources_used;
   if (typeof u.cost_in_usd_ticks === 'number') out.cost_in_usd_ticks = u.cost_in_usd_ticks;
   return out;

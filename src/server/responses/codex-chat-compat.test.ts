@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapXaiResponsesJsonForCodex, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex, responsesToChatCompletions } from "./codex-chat-compat"
+import { buildCodexToolContextFromRequest, chatCompletionToResponse, remapXaiResponsesJsonForCodex, toResponsesUsage, transformChatSseToResponsesSse, transformXaiResponsesSseForCodex, responsesToChatCompletions } from "./codex-chat-compat"
 
 describe("chat to Responses reasoning compatibility", () => {
   it("preserves reasoning in non-stream responses", () => {
@@ -196,5 +196,63 @@ describe("chat stream id stability", () => {
     expect(output).toContain('"id":"resp_chat_a"')
     expect(output).not.toContain('"id":"resp_chat_b"')
     expect(output).toContain('"type":"response.completed"')
+  })
+})
+
+
+describe("toResponsesUsage Codex required fields", () => {
+  it("fills reasoning_tokens when upstream completion_tokens_details is empty (Kimi tool-call turn)", () => {
+    const usage = toResponsesUsage({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+      completion_tokens_details: {},
+    })
+    expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 0 })
+  })
+
+  it("keeps existing reasoning_tokens and fills text-only details", () => {
+    const usage = toResponsesUsage({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+      completion_tokens_details: { text_tokens: 3 },
+    })
+    expect(usage.output_tokens_details).toEqual({ text_tokens: 3, reasoning_tokens: 0 })
+  })
+
+  it("preserves upstream reasoning_tokens", () => {
+    const usage = toResponsesUsage({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+      completion_tokens_details: { reasoning_tokens: 8 },
+    })
+    expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 8 })
+  })
+
+  it("fills cached_tokens when prompt_tokens_details lacks it", () => {
+    const usage = toResponsesUsage({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+      prompt_tokens_details: {},
+    })
+    expect(usage.input_tokens_details).toEqual({ cached_tokens: 0 })
+  })
+
+  it("keeps upstream cached_tokens", () => {
+    const usage = toResponsesUsage({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+      prompt_tokens_details: { cached_tokens: 7 },
+    })
+    expect(usage.input_tokens_details).toEqual({ cached_tokens: 7 })
+  })
+
+  it("defaults output_tokens_details when no details present", () => {
+    const usage = toResponsesUsage({ prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 })
+    expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 0 })
   })
 })
