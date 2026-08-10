@@ -648,7 +648,9 @@ export class GatewayService {
             body: attemptUpstreamBytes, headers: request.headers,
             signal: AbortSignal.any([request.signal, AbortSignal.timeout(getSystemSettings(this.db).upstreamRequestTimeoutMs)]),
           }, credential, selection.account)
-          upstream = await this.fetcher(resolveMirrorUrlForContext(target.url, { account: selection.account }), {
+          let mirrorBody: unknown = null
+if (target.body) { try { mirrorBody = JSON.parse(new TextDecoder().decode(target.body)) } catch { mirrorBody = null } }
+upstream = await this.fetcher(resolveMirrorUrlForContext(target.url, { account: selection.account, body: mirrorBody, headers: target.headers }), {
             method: request.method,
             headers: target.headers,
             body: target.body,
@@ -658,7 +660,9 @@ export class GatewayService {
         } else {
           const credential = await this.credentials.get(apiKey.ownerUserId, selection.account.id)
           const path = attemptEndpoint.replace(/^\/+/, "")
-          upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.baseUrl}/${path}`, { account: selection.account }), {
+          let mirrorBody2: unknown = null
+if (attemptUpstreamBytes) { try { mirrorBody2 = JSON.parse(new TextDecoder().decode(attemptUpstreamBytes)) } catch { mirrorBody2 = null } }
+upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.baseUrl}/${path}`, { account: selection.account, body: mirrorBody2, headers: request.headers }), {
             method: request.method,
             headers: upstreamHeaders(request, credential.goApiKey, effectiveEndpoint),
             body: attemptUpstreamBytes,

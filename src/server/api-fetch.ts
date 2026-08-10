@@ -11,7 +11,7 @@
 // routing through whatever proxy/mirror the operator has configured.
 
 import { getSystemSettings } from "./settings"
-import type { DomainMirrorConfig, DomainMirrorGroup, DomainMirrorMap, DomainMirrorTarget } from "./settings"
+import type { DomainMirrorConfig, DomainMirrorGroup, DomainMirrorMap, DomainMirrorTarget, RequestMirrorRule, RequestMirrorRuleGroup, RequestMirrorSource } from "./settings"
 import { getDatabase } from "./db"
 import { createHash } from "node:crypto"
 
@@ -63,6 +63,10 @@ export interface MirrorSelectionAccount {
 export interface MirrorSelectionContext {
   account?: MirrorSelectionAccount | null
   shardKey?: string | null
+  /** 已解析的请求体 JSON（可选，用于请求规则匹配） */
+  body?: unknown
+  /** 请求头（可选，用于请求规则匹配） */
+  headers?: Headers | null
 }
 
 function enabledMirrors(config: DomainMirrorConfig): DomainMirrorTarget[] {
@@ -73,6 +77,13 @@ export function selectDomainMirror(config: DomainMirrorConfig, context: MirrorSe
   const enabled = enabledMirrors(config)
   if (!enabled.length) return null
   const byId = new Map(enabled.map((mirror) => [mirror.id, mirror]))
+
+  // 请求规则优先：按请求体/请求头规则选择镜像，未命中再回退账号规则/hash 分片。
+  const requestMirrorId = evaluateRequestRuleGroups(context, config.requestRules ?? [], new Set(enabled.map((mirror) => mirror.id)))
+  if (requestMirrorId) {
+    const assigned = byId.get(requestMirrorId)
+    if (assigned) return assigned
+  }
 
   const account = context.account
   if (account) {
@@ -93,7 +104,7 @@ export function selectDomainMirror(config: DomainMirrorConfig, context: MirrorSe
 }
 
 export function selectMirrorGroupTarget(group: DomainMirrorGroup, context: MirrorSelectionContext = {}): DomainMirrorTarget | null {
-  return selectDomainMirror({ mirrors: group.mirrors, rules: group.rules, accountAssignments: {} }, context)
+  return selectDomainMirror({ mirrors: group.mirrors, rules: group.rules, accountAssignments: {}, requestRules: group.requestRules }, context)
 }
 
 export function selectDomainMirrorGroup(groups: DomainMirrorGroup[], hostname: string, accountId?: string): DomainMirrorGroup | null {
@@ -147,4 +158,71 @@ export function apiFetchWithMirrorContext(input: string | URL | Request, init?: 
   }
   // Request object — need to reconstruct with resolved URL
   return fetch(new Request(resolved, input), init as RequestInit)
+}
+/** 归一化请求字段路径：支持点路径 a.b；body['model'] / body.model 归一化为 model。 */
+function normalizeRequestFieldPath(path: string): string {
+  let value = path.trim()
+  if (!value) return ""
+  const bracket = /^body\s*\[(['"])(.*?)\1\]$/.exec(value)
+  if (bracket) return bracket[2]
+  if (value.startsWith("body.")) value = value.slice("body.".length)
+  if (value === "body") return ""
+  return value
+}
+
+/**
+ * 从请求上下文取字段值：
+ * - body：context.body 为对象时按点路径取值，取到转字符串；
+ * - header：context.headers 存在时 headers.get(field)。
+ * 找不到返回 null。
+ */
+export function resolveMirrorField(context: MirrorSelectionContext, source: RequestMirrorSource, field: string): string | null {
+  if (source === "header") {
+    if (!context.headers) return null
+    const value = context.headers.get(field)
+    return value == null ? null : value
+  }
+  if (context.body === null || context.body === undefined || typeof context.body !== "object") return null
+  const path = normalizeRequestFieldPath(field)
+  if (!path) return null
+  let current: unknown = context.body
+  for (const segment of path.split(".")) {
+    if (current === null || current === undefined || typeof current !== "object") return null
+    current = (current as Record<string, unknown>)[segment]
+  }
+  if (current === null || current === undefined) return null
+  return typeof current === "string" ? current : JSON.stringify(current)
+}
+
+/** 单条请求规则匹配（equals/notEquals/contains 均大小写不敏感）。 */
+export function matchRequestMirrorRule(context: MirrorSelectionContext, rule: RequestMirrorRule): boolean {
+  const value = resolveMirrorField(context, rule.source, rule.field)
+  if (value === null) return false
+  const v = value.toLowerCase()
+  const target = rule.value.toLowerCase()
+  switch (rule.operator) {
+    case "equals": return v === target
+    case "notEquals": return v !== target
+    case "contains": return v.includes(target)
+    case "startsWith": return v.startsWith(target)
+    default: return false
+  }
+}
+
+/** 评估请求规则组：返回命中的镜像 id 或 null（顺序即优先级，第一个命中的生效）。 */
+export function evaluateRequestRuleGroups(
+  context: MirrorSelectionContext,
+  requestRules: RequestMirrorRuleGroup[],
+  mirrorIds: Set<string>,
+): string | null {
+  for (const group of requestRules) {
+    if (group.enabled === false) continue
+    const enabledRules = group.rules.filter((rule) => rule.enabled !== false)
+    if (!enabledRules.length) continue
+    const hit = group.condition === "and"
+      ? enabledRules.every((rule) => matchRequestMirrorRule(context, rule))
+      : enabledRules.some((rule) => matchRequestMirrorRule(context, rule))
+    if (hit && mirrorIds.has(group.mirrorId)) return group.mirrorId
+  }
+  return null
 }

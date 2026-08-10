@@ -62,3 +62,62 @@ describe("domain mirror selection", () => {
       .toBe("https://mirror.ahao1.tech/api.x.ai/v1/models?limit=10")
   })
 })
+describe("request mirror rules (body/header)", () => {
+  const withRules: DomainMirrorGroup = {
+    id: "req-group", name: "Req Group", enabled: true,
+    domains: ["api.example.com"], accountIds: [],
+    mirrors: [
+      { id: "a", name: "A", url: "https://a.example.com", enabled: true },
+      { id: "b", name: "B", url: "https://b.example.com", enabled: true },
+    ],
+    rules: [],
+    requestRules: [
+      {
+        id: "gpt-group", enabled: true, mirrorId: "a", condition: "or",
+        rules: [
+          { id: "r1", enabled: true, source: "body", field: "model", operator: "contains", value: "gpt" },
+          { id: "r2", enabled: true, source: "body", field: "model", operator: "contains", value: "grok" },
+        ],
+      },
+      {
+        id: "auth-group", enabled: true, mirrorId: "b", condition: "and",
+        rules: [
+          { id: "r3", enabled: true, source: "header", field: "authorization", operator: "startsWith", value: "Bearer sk-" },
+          { id: "r4", enabled: true, source: "body", field: "stream", operator: "equals", value: "true" },
+        ],
+      },
+    ],
+  }
+
+  it("routes by body model contains gpt/grok before account rules", () => {
+    const ctx = { account: { id: "prod-account" }, body: { model: "gpt-5.6-luna", stream: false }, headers: new Headers() }
+    expect(selectMirrorGroupTarget(withRules, ctx)?.id).toBe("a")
+    const grok = { account: { id: "prod-account" }, body: { model: "grok-4.5" }, headers: new Headers() }
+    expect(selectMirrorGroupTarget(withRules, grok)?.id).toBe("a")
+  })
+
+  it("routes by header+body and-condition to a different mirror", () => {
+    const ctx = { account: { id: "x" }, body: { model: "deepseek-v4-flash", stream: true }, headers: new Headers({ authorization: "Bearer sk-test" }) }
+    expect(selectMirrorGroupTarget(withRules, ctx)?.id).toBe("b")
+  })
+
+  it("falls back to account regex / hash when no request rule matches", () => {
+    const ctx = { account: { id: "x" }, body: { model: "deepseek-v4-flash", stream: false }, headers: new Headers() }
+    const selected = selectMirrorGroupTarget(withRules, ctx)
+    expect(selected?.id).toBeDefined()
+    // 未命中请求规则时行为应与无请求规则配置一致（回退账号规则/hash）
+    const noReq: DomainMirrorGroup = { ...withRules, requestRules: [] }
+    expect(selected?.id).toBe(selectMirrorGroupTarget(noReq, ctx)?.id)
+  })
+
+  it("request rules take precedence over explicit account assignment", () => {
+    const cfg: DomainMirrorConfig = { mirrors: withRules.mirrors, accountAssignments: { assigned: "b" }, rules: [], requestRules: withRules.requestRules }
+    const ctx = { account: { id: "assigned" }, body: { model: "gpt-5.6-luna" }, headers: new Headers() }
+    expect(selectDomainMirror(cfg, ctx)?.id).toBe("a")
+  })
+
+  it("missing requestRules keeps legacy behavior", () => {
+    const ctx = { account: { id: "assigned" }, body: { model: "gpt-5.6-luna" }, headers: new Headers() }
+    expect(selectDomainMirror(config, ctx)?.id).toBe("b")
+  })
+})

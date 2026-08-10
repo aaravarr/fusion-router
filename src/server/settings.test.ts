@@ -54,6 +54,7 @@ describe("system settings", () => {
         mirrors: [{ id: "legacy", name: "默认镜像", url: "https://mirror.example.com", enabled: true }],
         accountAssignments: {},
         rules: [],
+        requestRules: [],
       },
     })
   })
@@ -89,7 +90,7 @@ describe("system settings", () => {
       ],
       rules: [{ id: "prod", pattern: "^account-a$", mirrorId: "primary", enabled: true }],
     }
-    expect(updateSystemSettings({ domainMirrorGroups: [group] }, null, db).domainMirrorGroups).toEqual([group])
+    expect(updateSystemSettings({ domainMirrorGroups: [group] }, null, db).domainMirrorGroups).toEqual([{ ...group, requestRules: [] }])
     expect(() => updateSystemSettings({ domainMirrorGroups: [{ ...group, rules: [{ ...group.rules[0], mirrorId: "missing" }] }] }, null, db)).toThrow(/不存在的镜像/)
   })
 

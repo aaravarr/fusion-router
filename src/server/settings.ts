@@ -51,10 +51,35 @@ export interface DomainMirrorRule {
   enabled: boolean;
 }
 
+export type RequestMirrorSource = "body" | "header";
+export type RequestMirrorOperator = "equals" | "notEquals" | "contains" | "startsWith";
+
+export interface RequestMirrorRule {
+  id: string;
+  enabled: boolean;
+  /** body=请求体字段；header=请求头字段 */
+  source: RequestMirrorSource;
+  /** 字段名，如 model / authorization */
+  field: string;
+  operator: RequestMirrorOperator;
+  value: string;
+}
+
+export interface RequestMirrorRuleGroup {
+  id: string;
+  enabled: boolean;
+  /** 命中该组时使用的镜像节点 id（必须在 mirrors 内） */
+  mirrorId: string;
+  /** 组内规则连接符 */
+  condition: "and" | "or";
+  rules: RequestMirrorRule[];
+}
+
 export interface DomainMirrorConfig {
   mirrors: DomainMirrorTarget[];
   accountAssignments: Record<string, string>;
   rules: DomainMirrorRule[];
+  requestRules?: RequestMirrorRuleGroup[];
 }
 
 export type DomainMirrorMap = Record<string, DomainMirrorConfig>;
@@ -67,6 +92,7 @@ export interface DomainMirrorGroup {
   accountIds: string[];
   mirrors: DomainMirrorTarget[];
   rules: DomainMirrorRule[];
+  requestRules?: RequestMirrorRuleGroup[];
 }
 
 export interface SystemSettings {
@@ -341,7 +367,8 @@ export function updateSystemSettings(
       if (rules.some((rule) => !rule.id) || new Set(rules.map((rule) => rule.id)).size !== rules.length) {
         throw new Error(`域名 ${d} 的规则 ID 为空或重复`)
       }
-      cleaned[d] = { mirrors, accountAssignments, rules }
+      const requestRules = validateRequestMirrorRuleGroups(config.requestRules ?? [], ids, `域名 ${d}`)
+      cleaned[d] = { mirrors, accountAssignments, rules, requestRules }
     }
     entries.push([SYSTEM_SETTING_KEYS.domainMirrorMap, JSON.stringify(cleaned)])
   }
@@ -369,7 +396,8 @@ export function updateSystemSettings(
         return { id: rule.id.trim(), pattern: rule.pattern, mirrorId: rule.mirrorId, enabled: rule.enabled !== false }
       })
       if (rules.some((rule) => !rule.id) || new Set(rules.map((rule) => rule.id)).size !== rules.length) throw new Error(`镜像组 ${group.name || id} 的规则 ID 为空或重复`)
-      return { id, name: group.name.trim() || id, enabled: group.enabled !== false, domains, accountIds: [...new Set(group.accountIds.filter(Boolean))], mirrors, rules }
+      const requestRules = validateRequestMirrorRuleGroups(group.requestRules ?? [], mirrorIds, `镜像组 ${group.name || id}`)
+      return { id, name: group.name.trim() || id, enabled: group.enabled !== false, domains, accountIds: [...new Set(group.accountIds.filter(Boolean))], mirrors, rules, requestRules }
     })
     entries.push([SYSTEM_SETTING_KEYS.domainMirrorGroups, JSON.stringify(cleaned)])
   }
@@ -491,17 +519,19 @@ export function normalizeDomainMirrorMap(value: unknown): DomainMirrorMap {
   const result: DomainMirrorMap = {}
   for (const [domain, raw] of Object.entries(value as Record<string, unknown>)) {
     if (typeof raw === "string" && raw.trim()) {
-      result[domain.toLowerCase()] = { mirrors: [{ id: "legacy", name: "默认镜像", url: raw.trim().replace(/\/$/, ""), enabled: true }], accountAssignments: {}, rules: [] }
+      result[domain.toLowerCase()] = { mirrors: [{ id: "legacy", name: "默认镜像", url: raw.trim().replace(/\/$/, ""), enabled: true }], accountAssignments: {}, rules: [], requestRules: [] }
       continue
     }
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
     const config = raw as Partial<DomainMirrorConfig>
     const mirrors = Array.isArray(config.mirrors) ? config.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && typeof item.url === "string")) : []
     if (!mirrors.length) continue
+        const configMirrorIds = new Set(mirrors.map((item) => item.id))
     result[domain.toLowerCase()] = {
       mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: item.url, enabled: item.enabled !== false })),
       accountAssignments: config.accountAssignments && typeof config.accountAssignments === "object" ? config.accountAssignments : {},
       rules: Array.isArray(config.rules) ? config.rules.filter((item): item is DomainMirrorRule => Boolean(item && typeof item.id === "string" && typeof item.pattern === "string" && typeof item.mirrorId === "string")) : [],
+      requestRules: normalizeRequestMirrorRuleGroups(config.requestRules, configMirrorIds),
     }
   }
   return result
@@ -515,6 +545,7 @@ export function normalizeDomainMirrorGroups(value: unknown): DomainMirrorGroup[]
     if (typeof group.id !== "string" || !group.id || !Array.isArray(group.domains) || !Array.isArray(group.mirrors)) return []
     const mirrors = group.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && typeof item.url === "string"))
     if (!mirrors.length) return []
+        const groupMirrorIds = new Set(mirrors.map((item) => item.id))
     return [{
       id: group.id,
       name: typeof group.name === "string" ? group.name : group.id,
@@ -523,10 +554,88 @@ export function normalizeDomainMirrorGroups(value: unknown): DomainMirrorGroup[]
       accountIds: Array.isArray(group.accountIds) ? group.accountIds.filter((id): id is string => typeof id === "string") : [],
       mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: item.url, enabled: item.enabled !== false })),
       rules: Array.isArray(group.rules) ? group.rules.filter((item): item is DomainMirrorRule => Boolean(item && typeof item.id === "string" && typeof item.pattern === "string" && typeof item.mirrorId === "string")) : [],
+      requestRules: normalizeRequestMirrorRuleGroups(group.requestRules, groupMirrorIds),
     }]
   })
 }
 
+const REQUEST_MIRROR_SOURCES = new Set(["body", "header"])
+const REQUEST_MIRROR_OPERATORS = new Set(["equals", "notEquals", "contains"])
+
+function isRequestMirrorRule(value: unknown): value is RequestMirrorRule {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const rule = value as Partial<RequestMirrorRule>
+  return typeof rule.id === "string" && rule.id.trim() !== ""
+    && typeof rule.source === "string" && REQUEST_MIRROR_SOURCES.has(rule.source)
+    && typeof rule.field === "string" && rule.field.trim() !== ""
+    && typeof rule.operator === "string" && REQUEST_MIRROR_OPERATORS.has(rule.operator)
+    && typeof rule.value === "string" && rule.value.trim() !== ""
+}
+
+/** 归一化请求规则组：只保留合法项，非法组/规则直接丢弃（不抛错）。 */
+export function normalizeRequestMirrorRuleGroups(
+  value: unknown,
+  mirrorIds: ReadonlySet<string>,
+): RequestMirrorRuleGroup[] {
+  if (!Array.isArray(value)) return []
+  const out: RequestMirrorRuleGroup[] = []
+  const seen = new Set<string>()
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
+    const group = raw as Partial<RequestMirrorRuleGroup>
+    if (typeof group.id !== "string" || !group.id.trim() || seen.has(group.id)) continue
+    if (typeof group.mirrorId !== "string" || !mirrorIds.has(group.mirrorId)) continue
+    if (group.condition !== "and" && group.condition !== "or") continue
+    const ruleIds = new Set<string>()
+    const validRules: RequestMirrorRule[] = []
+    for (const item of Array.isArray(group.rules) ? group.rules : []) {
+      if (!isRequestMirrorRule(item)) continue
+      const id = item.id.trim()
+      if (!id || ruleIds.has(id)) continue
+      ruleIds.add(id)
+      validRules.push({ ...item, id, field: item.field.trim(), value: item.value.trim(), enabled: item.enabled !== false })
+    }
+    if (!validRules.length) continue
+    seen.add(group.id.trim())
+    out.push({
+      id: group.id.trim(),
+      enabled: group.enabled !== false,
+      mirrorId: group.mirrorId,
+      condition: group.condition,
+      rules: validRules,
+    })
+  }
+  return out
+}
+
+/** 保存校验：非法配置直接抛中文错误。 */
+export function validateRequestMirrorRuleGroups(
+  groups: RequestMirrorRuleGroup[],
+  mirrorIds: ReadonlySet<string>,
+  label: string,
+): RequestMirrorRuleGroup[] {
+  const seen = new Set<string>()
+  return groups.map((group) => {
+    const id = group.id.trim()
+    if (!id || seen.has(id)) throw new Error(label + ' 的请求规则组 ID 为空或重复')
+    seen.add(id)
+    if (!mirrorIds.has(group.mirrorId)) throw new Error(label + ' 的请求规则引用了不存在的镜像')
+    if (group.condition !== "and" && group.condition !== "or") throw new Error(label + ' 的请求规则 condition 必须为 and 或 or')
+    if (!Array.isArray(group.rules) || group.rules.length === 0) throw new Error(label + ' 的请求规则组至少需要一条规则')
+    const ruleIds = new Set<string>()
+    const rules = group.rules.map((rule) => {
+      const rid = rule.id.trim()
+      if (!rid || ruleIds.has(rid)) throw new Error(label + ' 的请求规则 ID 为空或重复')
+      ruleIds.add(rid)
+      if (!REQUEST_MIRROR_SOURCES.has(rule.source)) throw new Error(label + ' 的请求规则数据源不合法: ' + rule.source)
+      if (!REQUEST_MIRROR_OPERATORS.has(rule.operator)) throw new Error(label + ' 的请求规则操作符不合法: ' + rule.operator)
+      if (!rule.field.trim()) throw new Error(label + ' 的请求规则字段不能为空')
+      if (!rule.value.trim()) throw new Error(label + ' 的请求规则内容不能为空')
+      return { ...rule, id: rid, field: rule.field.trim(), value: rule.value.trim(), enabled: rule.enabled !== false }
+    })
+    return { ...group, id, condition: group.condition, rules }
+  })
+}
 export function getSystemSecret(db: AppDatabase, key: SystemSecretKey): string {
   const row = db
     .prepare("SELECT value_json, is_secret FROM system_settings WHERE key = ?")
