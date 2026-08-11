@@ -18,12 +18,12 @@ export async function POST(request: Request): Promise<Response> {
   const db = getDatabase();
   const result: { deletedRequests?: number; deletedBodies?: number; stripped?: number } = {};
   if (input.data.retentionDays !== undefined) {
-    const cleanup = cleanupOldRequests(db, input.data.retentionDays);
+    const cleanup = await cleanupOldRequests(db, input.data.retentionDays);
     result.deletedRequests = cleanup.deletedRequests;
     result.deletedBodies = cleanup.deletedBodies;
   }
   if (input.data.stripBodies) {
-    const strip = stripAllBodies(db);
+    const strip = await stripAllBodies(db);
     result.stripped = strip.stripped;
   }
   return Response.json(result);

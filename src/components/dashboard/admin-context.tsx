@@ -44,19 +44,32 @@ export function SessionProvider({ children }: PropsWithChildren) {
   const pathname = usePathname();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   const refreshSession = useCallback(async () => {
     setLoading(true);
+    setVerifyError(null);
     try {
-      const response = await fetch("/api/auth/me", { cache: "no-store", credentials: "same-origin" });
+      const response = await fetch("/api/auth/me", {
+        cache: "no-store",
+        credentials: "same-origin",
+        // 防止服务端被慢查询阻塞时（例如日志统计大表全表扫描）前端无限停留在"正在验证会话"。
+        signal: AbortSignal.timeout(20000),
+      });
       if (response.ok) {
         const payload = await response.json();
         setUser(payload.user);
         return;
       }
       setUser(null);
-      const status = await fetch("/api/bootstrap/status", { cache: "no-store" }).then((result) => result.json()).catch(() => null);
+      const status = await fetch("/api/bootstrap/status", { cache: "no-store", signal: AbortSignal.timeout(10000) })
+        .then((result) => result.json()).catch(() => null);
       router.replace(status?.initialized ? `/login?next=${encodeURIComponent(pathname)}` : "/setup");
+    } catch (cause) {
+      const aborted = cause instanceof DOMException && cause.name === "AbortError";
+      if (!aborted) console.error("会话验证失败", cause);
+      setUser(null);
+      setVerifyError(aborted ? "会话验证超时，请重试" : "会话验证失败，请重试");
     } finally {
       setLoading(false);
     }
@@ -99,8 +112,23 @@ export function SessionProvider({ children }: PropsWithChildren) {
   if (loading || !value) {
     return (
       <main className="grid min-h-[100dvh] place-items-center bg-[#fafafa]">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />正在验证会话
+        <div className="flex flex-col items-center gap-3 text-sm text-muted-foreground">
+          {verifyError ? (
+            <>
+              <div>{verifyError}</div>
+              <button
+                type="button"
+                onClick={() => void refreshSession()}
+                className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background hover:opacity-90"
+              >
+                重试
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />正在验证会话
+            </div>
+          )}
         </div>
       </main>
     );

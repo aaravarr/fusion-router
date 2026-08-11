@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS gateway_requests (
 );
 CREATE INDEX IF NOT EXISTS gateway_requests_owner_idx ON gateway_requests(owner_user_id, started_at);
 CREATE INDEX IF NOT EXISTS gateway_requests_time_idx ON gateway_requests(owner_user_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS gateway_requests_started_at_idx ON gateway_requests(started_at);
 
 CREATE TABLE IF NOT EXISTS gateway_attempts (
   id TEXT PRIMARY KEY,
@@ -363,6 +364,7 @@ export function createDatabase(filename: string): AppDatabase {
   ensureCustomProviderSlugColumn(db)
   ensureCustomProviderInterfaceTypesColumn(db)
   ensureCurrentMediaColumns(db)
+  ensureCurrentRequestBodyColumns(db)
   db.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
   return db
 }
@@ -452,6 +454,12 @@ function ensureResponseConversationColumns(db: AppDatabase): void {
   if (!cols.has("reasoning_items_json")) db.exec("ALTER TABLE response_conversations ADD COLUMN reasoning_items_json TEXT NOT NULL DEFAULT '[]'")
   db.exec("CREATE INDEX IF NOT EXISTS response_conversations_updated_idx ON response_conversations(updated_at DESC)")
 }
+function ensureCurrentRequestBodyColumns(db: AppDatabase): void {
+  const cols = new Set((db.prepare("PRAGMA table_info(request_bodies)").all() as { name: string }[]).map((column) => column.name))
+  // 记录每行 body 的真实字节数（写入时算好），避免日志统计时对超大 JSON 全表 LENGTH 扫描阻塞事件循环。
+  if (!cols.has("body_bytes")) db.exec("ALTER TABLE request_bodies ADD COLUMN body_bytes INTEGER NOT NULL DEFAULT 0")
+}
+
 function ensureCurrentMediaColumns(db: AppDatabase): void {
   const cols = new Set((db.prepare("PRAGMA table_info(media_cache)").all() as { name: string }[]).map((column) => column.name))
   // 固定同一张图片（md5）的带签名 URL，避免每次请求重新签名破坏提示词缓存。

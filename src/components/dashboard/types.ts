@@ -327,6 +327,8 @@ export interface LogsCleanupResponse {
 export interface LogStats {
   dbFileBytes: number;
   bodies: { count: number; bytes: number };
+  /** 加列前写入的旧日志行数（body_bytes=0），回填后归零。 */
+  unmeasuredRows?: number;
   requests: number;
   retentionDays: number;
   logBodies: boolean;

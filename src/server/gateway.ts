@@ -1027,17 +1027,27 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
   private writeBodies(id: string, maxBytes: number, requestBodyJson: unknown, responseBody: unknown, responseTruncated: boolean | undefined, meta: { headers: Record<string, string> } | undefined): void {
     const reqCloned = requestBodyJson !== undefined ? safeCloneBody(requestBodyJson, maxBytes) : { value: undefined as unknown, truncated: false }
     const resCloned = responseBody !== undefined ? safeCloneBody(responseBody, maxBytes) : { value: undefined as unknown, truncated: false }
-    this.db.prepare("INSERT OR REPLACE INTO request_bodies(request_id,request_body_json,response_body_json,request_headers_json,request_truncated,response_truncated,has_request,has_response,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
+    const reqJson = reqCloned.value === undefined ? null : JSON.stringify(reqCloned.value)
+    const resJson = resCloned.value === undefined ? null : JSON.stringify(resCloned.value)
+    const headersJson = meta ? JSON.stringify(meta.headers) : null
+    // 写入时算好真实字节数，日志统计直接用 SUM(body_bytes) 聚合整数列，
+    // 避免对超大 JSON 字段做全表 LENGTH() 扫描（3.2GB 库实测要 55s，会同步阻塞整个事件循环）。
+    const bodyBytes =
+      (reqJson ? Buffer.byteLength(reqJson) : 0)
+      + (resJson ? Buffer.byteLength(resJson) : 0)
+      + (headersJson ? Buffer.byteLength(headersJson) : 0)
+    this.db.prepare("INSERT OR REPLACE INTO request_bodies(request_id,request_body_json,response_body_json,request_headers_json,request_truncated,response_truncated,has_request,has_response,created_at,body_bytes) VALUES(?,?,?,?,?,?,?,?,?,?)")
       .run(
         id,
-        reqCloned.value === undefined ? null : JSON.stringify(reqCloned.value),
-        resCloned.value === undefined ? null : JSON.stringify(resCloned.value),
-        meta ? JSON.stringify(meta.headers) : null,
+        reqJson,
+        resJson,
+        headersJson,
         reqCloned.truncated ? 1 : 0,
         responseTruncated || resCloned.truncated ? 1 : 0,
         reqCloned.value !== undefined ? 1 : 0,
         resCloned.value !== undefined ? 1 : 0,
         new Date().toISOString(),
+        bodyBytes,
       )
   }
 

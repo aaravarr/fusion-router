@@ -412,6 +412,9 @@ export function SettingsPage() {
                     当前日志占用：数据库 {formatBytes(logStats.dbFileBytes)} · 请求体{" "}
                     {formatBytes(logStats.bodies.bytes)}（{logStats.bodies.count} 条）· 请求{" "}
                     {logStats.requests} 条 · 保留 {logStats.retentionDays} 天
+                    {logStats.unmeasuredRows ? (
+                      <span className="ml-1 text-warning">（{logStats.unmeasuredRows} 条旧日志待统计）</span>
+                    ) : null}
                     {logStats.logBodies ? (
                       <span className="ml-1 text-warning">（正在记录请求/响应体）</span>
                     ) : null}
