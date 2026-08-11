@@ -4,10 +4,18 @@ import { requireAdministrator } from "../../_auth";
 
 export const runtime = "nodejs";
 
+// SUM(body_bytes) 仍需全表扫描（3.2GB 库实测 ~3.5s），加短缓存避免每次打开设置页都阻塞事件循环。
+const STATS_CACHE_TTL_MS = 60_000;
+let statsCache: { at: number; payload: Record<string, unknown> } | null = null;
+
 /** 日志磁盘占用统计：给「是否保存请求体」的决策提供依据。 */
 export function GET(request: Request): Response {
   const user = requireAdministrator(request);
   if (user instanceof Response) return user;
+  const now = Date.now();
+  if (statsCache && now - statsCache.at < STATS_CACHE_TTL_MS) {
+    return Response.json(statsCache.payload);
+  }
   const db = getDatabase();
   const pageCount = Number((db.prepare("PRAGMA page_count").get() as { page_count: number }).page_count ?? 0);
   const pageSize = Number((db.prepare("PRAGMA page_size").get() as { page_size: number }).page_size ?? 0);
@@ -25,7 +33,7 @@ export function GET(request: Request): Response {
   );
   const requests = Number((db.prepare("SELECT COUNT(*) AS value FROM gateway_requests").get() as { value: number }).value ?? 0);
   const settings = getLogSettings(db);
-  return Response.json({
+  const payload: Record<string, unknown> = {
     dbFileBytes: pageCount * pageSize,
     bodies: { count: bodies.count, bytes: bodies.bytes },
     unmeasuredRows: unmeasured,
@@ -33,5 +41,7 @@ export function GET(request: Request): Response {
     retentionDays: settings.logRetentionDays,
     logBodies: settings.logBodies,
     logBodiesOnError: settings.logBodiesOnError,
-  });
+  };
+  statsCache = { at: now, payload };
+  return Response.json(payload);
 }
