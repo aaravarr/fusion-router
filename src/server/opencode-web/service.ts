@@ -103,6 +103,38 @@ export class OpenCodeWebService {
     this.repository.updateState(accountId, { useChinaProviders: enabled })
     return this.repository.get(accountId)
   }
+
+  async listReferralRewards(accountId: string) {
+    const account = this.repository.getCredential(accountId)
+    if (!account) throw new OpenCodeWebError("Account not found", "PROTOCOL")
+    try {
+      const summary = await this.client.referrals(account.authCookie, account.workspaceId)
+      return {
+        referralCode: summary?.referralCode ?? null,
+        rewardAmount: summary?.rewardAmount ?? null,
+        rewards: summary?.rewards ?? [],
+      }
+    } catch (cause) {
+      if (cause instanceof OpenCodeWebError && cause.code === "AUTH") this.repository.markAuthError(accountId, true)
+      throw cause
+    }
+  }
+
+  async applyReferralReward(accountId: string, referralId: string) {
+    const account = this.repository.getCredential(accountId)
+    if (!account) throw new OpenCodeWebError("Account not found", "PROTOCOL")
+    let applied = false
+    try {
+      await this.client.applyReferralReward(account.authCookie, account.workspaceId, referralId)
+      applied = true
+    } catch (cause) {
+      if (cause instanceof OpenCodeWebError && cause.code === "AUTH") this.repository.markAuthError(accountId, true)
+      throw cause
+    }
+    // 兑换成功后立即同步一次额度，让奖励计入后的余额尽快反映到配额。
+    if (applied) await this.refreshUsage(accountId).catch(() => undefined)
+    return { applied, account: this.repository.get(accountId) }
+  }
 }
 
 

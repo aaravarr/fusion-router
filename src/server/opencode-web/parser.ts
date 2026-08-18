@@ -121,6 +121,58 @@ export function parseGoKeys(html: string): ParsedGoKey[] {
   return result
 }
 
+export interface ParsedReferralReward {
+  id: string
+  source: "inviter" | "invitee"
+  status: "available" | "applied" | "pending"
+  email: string | null
+  amount: number
+  timeCreated: string | null
+  timeApplied: string | null
+}
+
+export interface ParsedReferralSummary {
+  referralCode: string | null
+  rewardAmount: number | null
+  rewards: ParsedReferralReward[]
+}
+
+// WorkSpace Go 页面 hydration 中 go.referral.get 序列化片段样例：
+//   {id:"ref_01KX08X8V2NC05H3BV6RW49WNH",source:"inviter",status:"available",email:"ahao.study@gmail.com",amount:500,timeCreated:$R[35]=new Date("2026-07-08T04:32:05.000Z"),timeApplied:null}
+//   {id:"<referralId>:inviter",source:"inviter",status:"pending",email:null,amount:500,timeCreated:...}
+// email 可能带引号或为 null；timeApplied 可能为 null；时间值可能带 $R[x]= 引用前缀。
+const REFERRAL_REWARD_PATTERN = /{id:"([^"]+)",source:"([a-z]+)",status:"([a-z]+)",email:([^,}]+),amount:(\d+),timeCreated:[^}]*?new Date\("([^"]+)"\),timeApplied:(?:[^}]*?new Date\("([^"]+)"\)|null)\}/g
+const REFERRAL_SLICE_LENGTH = 20_000
+
+function cleanReferralEmail(raw: string): string | null {
+  const value = raw.trim()
+  if (value === "null" || value === "") return null
+  if (value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1)
+  return value
+}
+
+export function parseReferralSummary(html: string): ParsedReferralSummary | null {
+  const markerIndex = html.indexOf("go.referral.get")
+  if (markerIndex < 0) return null
+  const slice = html.slice(markerIndex, markerIndex + REFERRAL_SLICE_LENGTH)
+  const referralCode = /referralCode:"([^"]+)"/.exec(slice)?.[1] ?? null
+  const rewardAmountRaw = /rewardAmount:(\d+)/.exec(slice)?.[1]
+  const rewards: ParsedReferralReward[] = []
+  REFERRAL_REWARD_PATTERN.lastIndex = 0
+  for (const match of slice.matchAll(REFERRAL_REWARD_PATTERN)) {
+    rewards.push({
+      id: match[1],
+      source: match[2] === "invitee" ? "invitee" : "inviter",
+      status: match[3] === "applied" ? "applied" : match[3] === "pending" ? "pending" : "available",
+      email: cleanReferralEmail(match[4]),
+      amount: Number(match[5]),
+      timeCreated: match[6] ?? null,
+      timeApplied: match[7] ?? null,
+    })
+  }
+  return { referralCode, rewardAmount: rewardAmountRaw ? Number(rewardAmountRaw) : null, rewards }
+}
+
 export function isLoginPage(html: string): boolean {
   const head = html.slice(0, 1_500)
   return head.includes("<title>OpenAuth</title>") || head.includes("/github/authorize") || head.includes("/google/authorize")

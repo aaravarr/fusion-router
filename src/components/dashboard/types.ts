@@ -411,3 +411,20 @@ export interface ModelRouteRule {
   createdAt: string;
   updatedAt: string;
 }
+
+/** OpenCode Go 邀请奖励（来自 /api/admin/accounts/{id}/referrals）。 */
+export interface ReferralReward {
+  id: string;
+  source: "inviter" | "invitee";
+  status: "available" | "applied" | "pending";
+  email: string | null;
+  amount: number;
+  timeCreated: string | null;
+  timeApplied: string | null;
+}
+
+export interface ReferralSummary {
+  referralCode: string | null;
+  rewardAmount: number | null;
+  rewards: ReferralReward[];
+}

@@ -3,6 +3,7 @@ import { createDatabase } from "../db"
 import { SecretVault } from "../crypto"
 import { AccountRepository } from "../repository"
 import { OpenCodeWebService } from "./service"
+import { OpenCodeWebError as ClientError } from "./client"
 import type { OpenCodeWebClient } from "./client"
 
 const encryptionKey = Buffer.alloc(32, 3).toString("base64")
@@ -13,7 +14,7 @@ function setup() {
   db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
     .run("owner", "owner", "owner", "Owner", "USER", "hash", now, now)
   const repository = new AccountRepository("owner", db, new SecretVault(encryptionKey))
-  const client = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_1", name: "OpenCode to API", key: "sk-go-secret", userId: "usr", email: "a@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard), setChinaProviders: vi.fn().mockResolvedValue(undefined) } as unknown as OpenCodeWebClient
+  const client = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_1", name: "OpenCode to API", key: "sk-go-secret", userId: "usr", email: "a@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard), setChinaProviders: vi.fn().mockResolvedValue(undefined), referrals: vi.fn().mockResolvedValue(null), applyReferralReward: vi.fn().mockResolvedValue(undefined) } as unknown as OpenCodeWebClient
   return { db, repository, client, service: new OpenCodeWebService("owner", repository, client) }
 }
 
@@ -51,3 +52,52 @@ describe("OpenCodeWebService", () => {
     expect(second).toMatchObject({ name: "手动名称", extensionVersion: "2.0.0" })
   })
 })
+
+describe("OpenCodeWebService referral", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  it("listReferralRewards 返回解析后的奖励摘要", async () => {
+    const { client, service } = setup()
+    await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_xyz" })
+    const reported = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_xyz" })
+    vi.mocked(client.referrals).mockResolvedValue({
+      referralCode: "CODE1",
+      rewardAmount: 500,
+      rewards: [{ id: "ref_1", source: "inviter", status: "available", email: "a@b.com", amount: 500, timeCreated: "2026-01-01T00:00:00.000Z", timeApplied: null }],
+    })
+    const result = await service.listReferralRewards(reported!.id)
+    expect(result).toEqual({
+      referralCode: "CODE1",
+      rewardAmount: 500,
+      rewards: [{ id: "ref_1", source: "inviter", status: "available", email: "a@b.com", amount: 500, timeCreated: "2026-01-01T00:00:00.000Z", timeApplied: null }],
+    })
+  })
+
+  it("listReferralRewards 无奖励数据时返回空结构", async () => {
+    const { client, service } = setup()
+    await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_empty" })
+    const acc = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_empty" })
+    vi.mocked(client.referrals).mockResolvedValue(null)
+    expect(await service.listReferralRewards(acc!.id)).toEqual({ referralCode: null, rewardAmount: null, rewards: [] })
+  })
+
+  it("applyReferralReward 成功后触发 usage 刷新", async () => {
+    const { client, service } = setup()
+    const acc = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_apply" })
+    vi.mocked(client.applyReferralReward).mockResolvedValue(undefined)
+    const result = await service.applyReferralReward(acc!.id, "ref_1")
+    expect(result.applied).toBe(true)
+    expect(client.applyReferralReward).toHaveBeenCalledWith("browser-cookie-secret", "wrk_apply", "ref_1")
+    // refreshUsage 被触发（dashboard 调用次数增加：report 1 次 + refresh 1 次）
+    expect(client.dashboard).toHaveBeenCalledTimes(2)
+  })
+
+  it("applyReferralReward AUTH 失败标记凭据失效", async () => {
+    const { client, repository, service } = setup()
+    const acc = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_authfail" })
+    vi.mocked(client.applyReferralReward).mockRejectedValue(new ClientError("expired", "AUTH"))
+    await expect(service.applyReferralReward(acc!.id, "ref_1")).rejects.toMatchObject({ code: "AUTH" })
+    expect(repository.get(acc!.id)!.authState).toBe("REAUTH_REQUIRED")
+  })
+})
+

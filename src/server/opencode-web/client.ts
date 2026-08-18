@@ -1,4 +1,4 @@
-import { isLoginPage, parseGoDashboard, parseGoKeys, type ParsedGoDashboard, type ParsedGoKey } from "./parser"
+import { isLoginPage, parseGoDashboard, parseGoKeys, parseReferralSummary, type ParsedGoDashboard, type ParsedGoKey, type ParsedReferralSummary } from "./parser"
 
 const BASE = "https://opencode.ai"
 export const MANAGED_GO_KEY_NAME = "OpenCode to API"
@@ -17,6 +17,7 @@ export interface OpenCodeWebClientOptions {
 
 let cachedCreateAction: string | undefined
 let cachedProviderRoutingAction: string | undefined
+let cachedApplyRewardAction: string | undefined
 
 export class OpenCodeWebClient {
   private readonly fetcher: typeof globalThis.fetch
@@ -112,6 +113,69 @@ export class OpenCodeWebClient {
     if (failed) throw new OpenCodeWebError(`OpenCode provider routing update failed (${response.status})`, response.status === 401 || response.status === 403 ? "AUTH" : "UPSTREAM")
   }
 
+  async referrals(authCookie: string, workspaceId: string): Promise<ParsedReferralSummary | null> {
+    const html = await this.page(authCookie, workspaceId, "go")
+    return parseReferralSummary(html)
+  }
+
+  // 兑换邀请奖励。上游当前版本只接受 GET /_server?id=<actionId>&args=<JSON 数组> 通道
+  // （POST + URLSearchParams 会 302 到 /auth/authorize，见实测）。成功通道为 302 + Set-Cookie flash（flash 无 error），
+  // 失败判定兼容 flash.error / flash.result.error（302 通道）与 x-error 响应头（200 通道）。
+  async applyReferralReward(authCookie: string, workspaceId: string, referralId: string, retried = false): Promise<void> {
+    const actionId = await this.discoverApplyRewardAction(retried)
+    const args = JSON.stringify([workspaceId, referralId])
+    const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}&args=${encodeURIComponent(args)}`, {
+      method: "GET",
+      headers: this.serverActionHeaders(authCookie, actionId, `${BASE}/workspace/${workspaceId}/go`),
+      redirect: "manual",
+      signal: AbortSignal.timeout(this.timeoutMs),
+    })
+    const redirecting = response.status === 302
+    const xError = response.headers.get("x-error")
+    if ((redirecting || xError !== null || !response.ok) && !retried) {
+      cachedApplyRewardAction = undefined
+      return this.applyReferralReward(authCookie, workspaceId, referralId, true)
+    }
+    if (redirecting) {
+      const location = response.headers.get("location") ?? ""
+      if (location.includes("/auth/")) throw new OpenCodeWebError("OpenCode auth cookie has expired", "AUTH")
+      const flash = parseFlash(response.headers.get("set-cookie"))
+      if (flash) {
+        const flashFailed = flash.error === true || Boolean(flash.result && typeof flash.result === "object" && "error" in flash.result)
+        if (flashFailed) throw new OpenCodeWebError(extractFlashMessage(flash.result), "UPSTREAM")
+        return
+      }
+      throw new OpenCodeWebError(`OpenCode referral reward apply failed (${response.status})`, "UPSTREAM")
+    }
+    if (!response.ok) throw new OpenCodeWebError(`OpenCode referral reward apply failed (${response.status})`, response.status === 401 || response.status === 403 ? "AUTH" : "UPSTREAM")
+    if (xError) {
+      const body = await response.text()
+      throw new OpenCodeWebError(extractServerErrorText(body) ?? xError, "UPSTREAM")
+    }
+  }
+
+  private async discoverApplyRewardAction(force: boolean): Promise<string> {
+    if (!force && cachedApplyRewardAction) return cachedApplyRewardAction
+    const home = await this.fetchText(`${BASE}/`)
+    const entry = /(?:src|href)="(\/_build\/assets\/entry-client-[^"]+\.js)"/.exec(home)?.[1]
+    if (!entry) throw new OpenCodeWebError("OpenCode client entry asset was not found", "PROTOCOL")
+    const manifest = await this.fetchText(`${BASE}${entry}`)
+    const route = /src\/routes\/workspace\/\[id\]\/go\/index\.tsx[\s\S]{0,700}?import\([\s\S]*?"(\.\/index-[^"]+\.js)"/.exec(manifest)?.[1]
+    if (!route) throw new OpenCodeWebError("OpenCode Go route asset was not found", "PROTOCOL")
+    const chunk = await this.fetchText(new URL(route, `${BASE}${entry}`).toString())
+    const action = /createServerReference\("([a-f0-9]{64})"\);[\s\S]{0,200}?action\(\w+,\s*"go\.referral\.reward\.apply"\)/.exec(chunk)?.[1]
+    if (!action) throw new OpenCodeWebError("OpenCode go.referral.reward.apply action was not found", "PROTOCOL")
+    cachedApplyRewardAction = action
+    return action
+  }
+
+  private serverActionHeaders(authCookie: string, actionId: string, referer: string): Headers {
+    const headers = this.headers(authCookie, referer)
+    headers.set("X-Server-Id", actionId)
+    headers.set("X-Server-Instance", `server-fn:${Date.now().toString(36)}`)
+    return headers
+  }
+
   private async discoverProviderRoutingAction(force = false): Promise<string> {
     if (!force && cachedProviderRoutingAction) return cachedProviderRoutingAction
     const home = await this.fetchText(`${BASE}/`)
@@ -161,4 +225,23 @@ function parseFlash(value: string | null): { error?: boolean; result?: unknown }
 
 export function clearActionDiscoveryCacheForTests(): void {
   cachedCreateAction = undefined
+  cachedProviderRoutingAction = undefined
+  cachedApplyRewardAction = undefined
+}
+
+function extractServerErrorText(body: string): string | null {
+  const match = /new Error\("((?:[^"\\]|\\.)*)"\)/.exec(body)
+  return match ? match[1] : null
+}
+
+function extractFlashMessage(result: unknown): string {
+  if (result && typeof result === "object" && "error" in result) {
+    const error = (result as { error?: unknown }).error
+    if (typeof error === "string") return error
+  }
+  if (result && typeof result === "object" && "message" in result) {
+    const message = (result as { message?: unknown }).message
+    if (typeof message === "string") return message
+  }
+  return "OpenCode referral reward apply failed"
 }

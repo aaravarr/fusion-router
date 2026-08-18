@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { isLoginPage, parseGoDashboard, parseGoKeys, parseGoUsage } from "./parser"
+import { isLoginPage, parseGoDashboard, parseGoKeys, parseGoUsage, parseReferralSummary } from "./parser"
 
 const usageHtml = `rollingUsage:$R[1]={usagePercent:12.5,resetInSec:300}
 weeklyUsage:$R[2]={resetInSec:600,usagePercent:45}
@@ -53,3 +53,34 @@ describe("OpenCode Go 页面解析", () => {
     expect(isLoginPage("<html><head><title>OpenAuth</title></head></html>")).toBe(true)
   })
 })
+
+describe("邀请奖励解析", () => {
+  const availableEntry = '{id:"ref_01KX08X8V2NC05H3BV6RW49WNH",source:"inviter",status:"available",email:"ahao.study@gmail.com",amount:500,timeCreated:$R[35]=new Date("2026-07-08T04:32:05.000Z"),timeApplied:null}'
+  const appliedEntry = '{id:"ref_01KWZZSTG7J5W3CCDCKHGCCDEN",source:"inviter",status:"applied",email:"roseanncorbinn1sim@alazinst.org",amount:500,timeCreated:$R[35]=new Date("2026-07-08T04:32:05.000Z"),timeApplied:$R[36]=new Date("2026-07-08T07:18:37.000Z")}'
+  const pendingEntry = '{id:"ref_abc123:inviter",source:"inviter",status:"pending",email:null,amount:500,timeCreated:new Date("2026-07-09T00:00:00.000Z"),timeApplied:null}'
+
+  it("解析 available/applied/pending 奖励与 summary 字段", () => {
+    const html = `window.xxx\u0022go.referral.get[\u0022wrk_01KRWCTZC3S4H5GXG0RACMCM36\u0022]\u0022]=$R[13]=$R[2]($R[14]={p:0,s:0,f:0});referralCode:"VNWWDQARJ6",rewardAmount:500,rewards:[${availableEntry},${appliedEntry},${pendingEntry}]`
+    const summary = parseReferralSummary(html)
+    expect(summary).toEqual({
+      referralCode: "VNWWDQARJ6",
+      rewardAmount: 500,
+      rewards: [
+        { id: "ref_01KX08X8V2NC05H3BV6RW49WNH", source: "inviter", status: "available", email: "ahao.study@gmail.com", amount: 500, timeCreated: "2026-07-08T04:32:05.000Z", timeApplied: null },
+        { id: "ref_01KWZZSTG7J5W3CCDCKHGCCDEN", source: "inviter", status: "applied", email: "roseanncorbinn1sim@alazinst.org", amount: 500, timeCreated: "2026-07-08T04:32:05.000Z", timeApplied: "2026-07-08T07:18:37.000Z" },
+        { id: "ref_abc123:inviter", source: "inviter", status: "pending", email: null, amount: 500, timeCreated: "2026-07-09T00:00:00.000Z", timeApplied: null },
+      ],
+    })
+  })
+
+  it("email 为 null 与 invitee 来源的奖励", () => {
+    const html = `go.referral.get[\u0022wrk_x\u0022],referralCode:"X1",rewardAmount:500,rewards:[${' {id:"ref_a:invitee",source:"invitee",status:"pending",email:null,amount:500,timeCreated:new Date("2026-07-10T00:00:00.000Z"),timeApplied:null}' }]`
+    const summary = parseReferralSummary(html)
+    expect(summary?.rewards[0]).toMatchObject({ id: "ref_a:invitee", source: "invitee", status: "pending", email: null })
+  })
+
+  it("找不到 go.referral.get 标记时返回 null", () => {
+    expect(parseReferralSummary("<html><body>no referrals here</body></html>")).toBeNull()
+  })
+})
+

@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, PaginationBar, StatsStrip, formatDate } from "./page-kit";
 import { QuotaForecastPanel } from "./quota-forecast-panel";
+import { InviteRewardsSection } from "./invite-rewards";
 import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
@@ -774,6 +775,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
   onCopyCredential: (account: Account) => Promise<boolean>;
   busy: boolean;
 }) {
+  const { adminFetch } = useAdmin();
   const [copyState, setCopyState] = useState<"idle" | "busy" | "copied" | "error">("idle");
   const [copyError, setCopyError] = useState<string | null>(null);
   const quotaKinds = account ? getPoolQuotaKinds(account.poolType) : ["fiveHour", "weekly", "monthly"];
@@ -847,6 +849,9 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                       </span>
                       <input type="checkbox" className="size-4" checked={account.useChinaProviders === true} disabled={busy} onChange={(event) => void onSetChinaProviders(account, event.currentTarget.checked)} />
                     </label>
+                  </DetailSection>
+                  <DetailSection title="邀请奖励" description="OpenCode Go 邀请计划发放的奖励，兑换后计入可用余额。">
+                    <InviteRewardsSection account={account} adminFetch={adminFetch} onRefresh={onRefresh} />
                   </DetailSection>
                   <DetailSection title="连接信息">
                     <div className="divide-y rounded-md border">
