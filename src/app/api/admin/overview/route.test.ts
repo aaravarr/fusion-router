@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const mocks = vi.hoisted(() => ({
   requireSession: vi.fn(() => ({ id: "owner" })),
   db: null as unknown,
-  routingState: { currentAccountId: "acct-1", preferredAccountId: null },
+  routingState: { currentAccountId: "acct-1", preferredAccountId: null } as { currentAccountId: string | null; preferredAccountId: string | null },
   poolTypeStats: {} as Record<string, { total: number; ready: number; blocked: number; inactive: number }>,
 }))
 

@@ -27,7 +27,9 @@ import {
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
 import { getPoolLabel, PoolTypeBadge } from "./status-ui";
-import type { Bucket, UsageStats } from "./types";
+import { AccountPicker } from "./account-picker";
+import { RangeDatePicker } from "./range-date-picker";
+import type { AccountListResponse, Bucket, UsageStats } from "./types";
 
 const palette = ["#0070f3", "#7928ca", "#0a7a3e", "#ab570a", "#ee0000", "#00a0a0", "#333", "#888"];
 
@@ -107,11 +109,36 @@ export function UsagePage() {
   const [granularity, setGranularity] = useState<Granularity>("auto");
   const [poolType, setPoolType] = useState<PoolTypeFilter>("all");
   const [model, setModel] = useState<string>("all");
-  const effectiveGranularity = granularity === "auto" ? autoGranularity(range) : granularity;
-  const hours = rangeHours[range];
-  const poolParam = poolType && poolType !== "all" ? `&poolType=${poolType}` : "";
-  const modelParam = model && model !== "all" ? `&model=${encodeURIComponent(model)}` : "";
-  const path = `/api/admin/usage?hours=${hours}&granularity=${granularity}${poolParam}${modelParam}`;
+  const [accountId, setAccountId] = useState("");
+  // 自定义时间范围（yyyy-mm-dd）；激活时预设按钮组不高亮、不传 hours。
+  const [customRange, setCustomRange] = useState<{ start: string | null; end: string | null } | null>(null);
+  const customRangeActive = customRange !== null;
+  // 自定义范围时粒度固定为 auto（后端按 from/to 跨度自适应），预设时维持现有联动。
+  const effectiveGranularity = customRangeActive
+    ? "auto"
+    : granularity === "auto"
+      ? autoGranularity(range)
+      : granularity;
+  const queryParts: string[] = [];
+  if (customRangeActive) {
+    // 本地时区语义：开始取本地零点、结束取本地 23:59:59.999，与总览页实现一致。
+    if (customRange?.start) {
+      queryParts.push(`from=${encodeURIComponent(new Date(`${customRange.start}T00:00:00`).toISOString())}`);
+    }
+    if (customRange?.end) {
+      queryParts.push(`to=${encodeURIComponent(new Date(`${customRange.end}T23:59:59.999`).toISOString())}`);
+    }
+    queryParts.push("granularity=auto");
+  } else {
+    queryParts.push(`hours=${rangeHours[range]}`, `granularity=${granularity}`);
+  }
+  if (poolType && poolType !== "all") queryParts.push(`poolType=${poolType}`);
+  if (model && model !== "all") queryParts.push(`model=${encodeURIComponent(model)}`);
+  if (accountId) queryParts.push(`accountId=${encodeURIComponent(accountId)}`);
+  const path = `/api/admin/usage?${queryParts.join("&")}`;
+  // 账号筛选数据源：不带 pageSize 拉全量（items / accounts 同源，均为完整 AccountRecord）。
+  const accountsResource = useAdminResource<AccountListResponse>("/api/admin/accounts");
+  const accounts = accountsResource.data?.items ?? accountsResource.data?.accounts ?? [];
   const resource = useAdminResource<UsageStats>(path);
   const data = resource.data;
   const apiPoolTypes = resource.data?.poolTypes;
@@ -140,6 +167,7 @@ export function UsagePage() {
 
   function selectRange(next: RangeKey) {
     setRange(next);
+    setCustomRange(null);
     const auto = autoGranularity(next);
     if (granularity !== "auto" && granularity !== auto) {
       setGranularity("auto");
@@ -154,7 +182,7 @@ export function UsagePage() {
         description="按时间、模型、账号和 API Key 维度查看请求量、Token 消耗与延迟趋势。"
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Select value={granularity} onValueChange={(value) => setGranularity(value as Granularity)}>
+            <Select value={granularity} onValueChange={(value) => setGranularity(value as Granularity)} disabled={customRangeActive}>
               <SelectTrigger size="sm" className="w-32">
                 <SelectValue />
               </SelectTrigger>
@@ -177,16 +205,22 @@ export function UsagePage() {
             <Button
               key={key}
               type="button"
-              variant={range === key ? "default" : "ghost"}
+              variant={!customRangeActive && range === key ? "default" : "ghost"}
               size="sm"
               onClick={() => selectRange(key)}
-              className={range === key ? undefined : "text-muted-foreground"}
-              aria-current={range === key ? "true" : undefined}
+              className={!customRangeActive && range === key ? undefined : "text-muted-foreground"}
+              aria-current={!customRangeActive && range === key ? "true" : undefined}
             >
               {rangeLabels[key]}
             </Button>
           ))}
         </div>
+        <RangeDatePicker
+          startDate={customRange?.start ?? null}
+          endDate={customRange?.end ?? null}
+          highlighted={customRangeActive}
+          onChange={(next) => setCustomRange(next.start || next.end ? next : null)}
+        />
         <span className="text-xs text-muted-foreground">
           粒度：{granLabels[effectiveGranularity]}
         </span>
@@ -211,6 +245,7 @@ export function UsagePage() {
             ))}
           </SelectContent>
         </Select>
+        <AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} />
       </div>
 
       {resource.error ? (

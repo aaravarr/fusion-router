@@ -6,12 +6,12 @@ import { ArrowRight, CheckCircle2, Clock3, RefreshCw, ShieldAlert, UsersRound, X
 import { Bar, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, formatDate } from "./page-kit";
 import { getPoolLabel, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
-import type { OverviewPayload, UsageStats } from "./types";
+import { AccountPicker } from "./account-picker";
+import { RangeDatePicker } from "./range-date-picker";
+import type { AccountListResponse, OverviewPayload, UsageStats } from "./types";
 
 const trendPalette = ["#0070f3", "#00a0a0", "#0a7a3e", "#7928ca"];
 const trendConfig: ChartConfig = {
@@ -22,24 +22,17 @@ const trendConfig: ChartConfig = {
   requests: { label: "请求数", color: "#ab570a" },
 };
 
-/** 本地日期 yyyy-mm-dd（用于结束日期默认今天）。 */
-function todayString(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
 export function OverviewPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [accountId, setAccountId] = useState("all");
+  const [accountId, setAccountId] = useState("");
   // 日期转 ISO：本地时区语义 —— 开始取本地零点、结束取本地 23:59:59.999，
   // 避免直接 new Date("yyyy-mm-dd") 的 UTC 零点语义导致边界偏差。
   const { overviewPath, usagePath } = useMemo(() => {
     const params: string[] = [];
     if (startDate) params.push(`from=${encodeURIComponent(new Date(`${startDate}T00:00:00`).toISOString())}`);
     if (endDate) params.push(`to=${encodeURIComponent(new Date(`${endDate}T23:59:59.999`).toISOString())}`);
-    if (accountId && accountId !== "all") params.push(`accountId=${encodeURIComponent(accountId)}`);
+    if (accountId) params.push(`accountId=${encodeURIComponent(accountId)}`);
     const query = params.length ? `?${params.join("&")}` : "";
     // 自定义范围时不传 hours，由后端按 from/to 跨度选粒度；无范围保持现状 24h
     const usageParams = params.length ? [...params, "granularity=auto"] : ["hours=24", "granularity=auto"];
@@ -50,27 +43,23 @@ export function OverviewPage() {
   }, [startDate, endDate, accountId]);
   const resource = useAdminResource<OverviewPayload>(overviewPath);
   const usageResource = useAdminResource<UsageStats>(usagePath);
+  // 账号下拉与用量页统一走全量接口（items / accounts 同源，均为完整 AccountRecord，含 adminState）。
+  const accountsResource = useAdminResource<AccountListResponse>("/api/admin/accounts");
+  const accounts = accountsResource.data?.items ?? accountsResource.data?.accounts ?? [];
   const data = resource.data;
   const customRange = Boolean(startDate || endDate);
   const poolLabels = useMemo(
     () => Object.fromEntries((data?.poolTypes ?? []).map((item) => [item.type, item.label])),
     [data?.poolTypes],
   );
-  const accounts = data?.accounts ?? [];
-
-  function handleStartDateChange(value: string) {
-    setStartDate(value);
-    // 选了开始没选结束 → 结束默认今天
-    if (value && !endDate) setEndDate(todayString());
-  }
 
   function clearFilters() {
     setStartDate("");
     setEndDate("");
-    setAccountId("all");
+    setAccountId("");
   }
 
-  const hasFilters = Boolean(startDate || endDate) || accountId !== "all";
+  const hasFilters = Boolean(startDate || endDate) || accountId !== "";
 
   return (
     <>
@@ -88,40 +77,15 @@ export function OverviewPage() {
       {resource.error ? <Panel><ErrorState message={resource.error} onRetry={() => void resource.refresh()} /></Panel> : null}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          开始
-          <Input
-            type="date"
-            value={startDate}
-            max={endDate || undefined}
-            onChange={(event) => handleStartDateChange(event.target.value)}
-            className="h-7 w-40"
-          />
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          结束
-          <Input
-            type="date"
-            value={endDate}
-            min={startDate || undefined}
-            max={todayString()}
-            onChange={(event) => setEndDate(event.target.value)}
-            className="h-7 w-40"
-          />
-        </label>
-        <Select value={accountId} onValueChange={(value) => setAccountId(value)}>
-          <SelectTrigger size="sm" className="w-44">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部账号</SelectItem>
-            {accounts.map((account) => (
-              <SelectItem key={account.id} value={account.id}>
-                {account.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <RangeDatePicker
+          startDate={startDate || null}
+          endDate={endDate || null}
+          onChange={(range) => {
+            setStartDate(range.start ?? "");
+            setEndDate(range.end ?? "");
+          }}
+        />
+        <AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} />
         <Button variant="ghost" size="sm" onClick={clearFilters} disabled={!hasFilters}>
           <X data-icon="inline-start" />清除筛选
         </Button>
