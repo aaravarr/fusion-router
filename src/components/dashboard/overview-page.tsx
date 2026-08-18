@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Clock3, RefreshCw, ShieldAlert, UsersRound } from "lucide-react";
+import { ArrowRight, CheckCircle2, Clock3, RefreshCw, ShieldAlert, UsersRound, X } from "lucide-react";
 import { Bar, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, formatDate } from "./page-kit";
 import { getPoolLabel, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
@@ -20,14 +22,55 @@ const trendConfig: ChartConfig = {
   requests: { label: "请求数", color: "#ab570a" },
 };
 
+/** 本地日期 yyyy-mm-dd（用于结束日期默认今天）。 */
+function todayString(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
 export function OverviewPage() {
-  const resource = useAdminResource<OverviewPayload>("/api/admin/overview");
-  const usageResource = useAdminResource<UsageStats>("/api/admin/usage?hours=24&granularity=auto");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [accountId, setAccountId] = useState("all");
+  // 日期转 ISO：本地时区语义 —— 开始取本地零点、结束取本地 23:59:59.999，
+  // 避免直接 new Date("yyyy-mm-dd") 的 UTC 零点语义导致边界偏差。
+  const { overviewPath, usagePath } = useMemo(() => {
+    const params: string[] = [];
+    if (startDate) params.push(`from=${encodeURIComponent(new Date(`${startDate}T00:00:00`).toISOString())}`);
+    if (endDate) params.push(`to=${encodeURIComponent(new Date(`${endDate}T23:59:59.999`).toISOString())}`);
+    if (accountId && accountId !== "all") params.push(`accountId=${encodeURIComponent(accountId)}`);
+    const query = params.length ? `?${params.join("&")}` : "";
+    // 自定义范围时不传 hours，由后端按 from/to 跨度选粒度；无范围保持现状 24h
+    const usageParams = params.length ? [...params, "granularity=auto"] : ["hours=24", "granularity=auto"];
+    return {
+      overviewPath: `/api/admin/overview${query}`,
+      usagePath: `/api/admin/usage?${usageParams.join("&")}`,
+    };
+  }, [startDate, endDate, accountId]);
+  const resource = useAdminResource<OverviewPayload>(overviewPath);
+  const usageResource = useAdminResource<UsageStats>(usagePath);
   const data = resource.data;
+  const customRange = Boolean(startDate || endDate);
   const poolLabels = useMemo(
     () => Object.fromEntries((data?.poolTypes ?? []).map((item) => [item.type, item.label])),
     [data?.poolTypes],
   );
+  const accounts = data?.accounts ?? [];
+
+  function handleStartDateChange(value: string) {
+    setStartDate(value);
+    // 选了开始没选结束 → 结束默认今天
+    if (value && !endDate) setEndDate(todayString());
+  }
+
+  function clearFilters() {
+    setStartDate("");
+    setEndDate("");
+    setAccountId("all");
+  }
+
+  const hasFilters = Boolean(startDate || endDate) || accountId !== "all";
 
   return (
     <>
@@ -43,6 +86,47 @@ export function OverviewPage() {
       />
 
       {resource.error ? <Panel><ErrorState message={resource.error} onRetry={() => void resource.refresh()} /></Panel> : null}
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          开始
+          <Input
+            type="date"
+            value={startDate}
+            max={endDate || undefined}
+            onChange={(event) => handleStartDateChange(event.target.value)}
+            className="h-7 w-40"
+          />
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          结束
+          <Input
+            type="date"
+            value={endDate}
+            min={startDate || undefined}
+            max={todayString()}
+            onChange={(event) => setEndDate(event.target.value)}
+            className="h-7 w-40"
+          />
+        </label>
+        <Select value={accountId} onValueChange={(value) => setAccountId(value)}>
+          <SelectTrigger size="sm" className="w-44">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部账号</SelectItem>
+            {accounts.map((account) => (
+              <SelectItem key={account.id} value={account.id}>
+                {account.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button variant="ghost" size="sm" onClick={clearFilters} disabled={!hasFilters}>
+          <X data-icon="inline-start" />清除筛选
+        </Button>
+      </div>
+
       {!resource.error ? (
         <div className="space-y-4">
           <section className="dashboard-surface grid overflow-hidden rounded-lg bg-white sm:grid-cols-2 xl:grid-cols-4">
@@ -62,13 +146,13 @@ export function OverviewPage() {
             </Panel>
           ) : null}
 
-          <Panel title="24 小时 Token 趋势" description="堆叠柱图展示 Token 分段，折线展示请求数。">
+          <Panel title={customRange ? "Token 趋势" : "24 小时 Token 趋势"} description={customRange ? "按所选时间范围展示 Token 分段与请求数。" : "堆叠柱图展示 Token 分段，折线展示请求数。"}>
             {usageResource.loading ? <LoadingTable rows={3} columns={6} /> : usageResource.error ? (
               <ErrorState message={usageResource.error} onRetry={() => void usageResource.refresh()} />
             ) : usageResource.data?.byTime?.length ? (
               <MiniTokenTrend data={usageResource.data} />
             ) : (
-              <EmptyState title="暂无趋势数据" description="最近 24 小时没有请求记录。" />
+              <EmptyState title="暂无趋势数据" description={customRange ? "所选时间范围内没有请求记录。" : "最近 24 小时没有请求记录。"} />
             )}
           </Panel>
 

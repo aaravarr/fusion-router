@@ -48,12 +48,64 @@ interface OverviewAttemptRow {
   completed_at: string | null
 }
 
+interface OverviewAccount {
+  id: string
+  name: string
+  email: string | null
+}
+
+/** 解析可选 ISO 时间参数：空值返回 null，非空但非法时抛出 400 响应。 */
+function parseIsoParam(value: string | null): string | null {
+  if (value === null) return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const date = new Date(trimmed)
+  if (Number.isNaN(date.getTime())) {
+    throw new Response(JSON.stringify({ error: "时间参数格式无效" }), { status: 400, headers: { "content-type": "application/json" } })
+  }
+  return date.toISOString()
+}
+
+/** 解析逗号分隔的账号 ID 列表：trim 后过滤空串，上限 100 个。 */
+function parseAccountIds(value: string | null): string[] {
+  if (value === null) return []
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .slice(0, 100)
+}
+
 export function GET(request: Request) {
   const user = requireSession(request)
   if (user instanceof Response) return user
+  const url = new URL(request.url)
+  let fromIso: string | null = null
+  let toIso: string | null = null
+  try {
+    fromIso = parseIsoParam(url.searchParams.get("from"))
+    toIso = parseIsoParam(url.searchParams.get("to"))
+  } catch (cause) {
+    if (cause instanceof Response) return cause
+    throw cause
+  }
+  if (fromIso && toIso && fromIso > toIso) {
+    return Response.json({ error: "开始时间不能晚于结束时间" }, { status: 400 })
+  }
+  const accountIds = parseAccountIds(url.searchParams.get("accountId"))
   const db = getDatabase()
   const scalar = (sql: string) => Number((db.prepare(sql).get(user.id) as { value: number }).value)
-  const requestRows = db.prepare("SELECT g.id,g.endpoint,g.model,g.status,g.outcome,g.ok,g.stream,g.api_key_prefix,k.name AS api_key_name,g.account_id,g.account_name,g.attempt_count,g.started_at,g.completed_at,g.latency_ms,g.first_token_ms,g.prompt_tokens,g.completion_tokens,g.total_tokens,g.cached_tokens,g.reasoning_tokens,g.client,g.error,rb.has_request,rb.has_response FROM gateway_requests g LEFT JOIN request_bodies rb ON rb.request_id = g.id LEFT JOIN api_keys k ON k.id = g.api_key_id WHERE g.owner_user_id=? ORDER BY g.started_at DESC LIMIT 50").all(user.id) as OverviewRequestRow[]
+  // 最近请求：按 from/to 时间范围与账号列表动态追加 WHERE 条件
+  const requestConditions = ["g.owner_user_id=?"]
+  const requestParams: (string | number)[] = [user.id]
+  if (fromIso) { requestConditions.push("g.started_at >= ?"); requestParams.push(fromIso) }
+  if (toIso) { requestConditions.push("g.started_at <= ?"); requestParams.push(toIso) }
+  if (accountIds.length) {
+    const placeholders = accountIds.map(() => "?").join(",")
+    requestConditions.push(`g.account_id IN (${placeholders})`)
+    requestParams.push(...accountIds)
+  }
+  const requestRows = db.prepare(`SELECT g.id,g.endpoint,g.model,g.status,g.outcome,g.ok,g.stream,g.api_key_prefix,k.name AS api_key_name,g.account_id,g.account_name,g.attempt_count,g.started_at,g.completed_at,g.latency_ms,g.first_token_ms,g.prompt_tokens,g.completion_tokens,g.total_tokens,g.cached_tokens,g.reasoning_tokens,g.client,g.error,rb.has_request,rb.has_response FROM gateway_requests g LEFT JOIN request_bodies rb ON rb.request_id = g.id LEFT JOIN api_keys k ON k.id = g.api_key_id WHERE ${requestConditions.join(" AND ")} ORDER BY g.started_at DESC LIMIT 50`).all(...requestParams) as OverviewRequestRow[]
   const recentRequests = requestRows.map((row) => ({
     id: row.id,
     endpoint: row.endpoint,
@@ -93,9 +145,20 @@ export function GET(request: Request) {
       recentAttempts[attempt.request_id] = list
     }
   }
-  const recentEvents = (db.prepare("SELECT id, type, severity AS level, severity, account_id AS accountId, request_id AS requestId, metadata_json AS metadata, created_at AS createdAt FROM events WHERE owner_user_id=? ORDER BY created_at DESC LIMIT 50").all(user.id) as Array<Record<string, unknown>>).map((event) => ({ ...event, message: String(event.type), metadata: JSON.parse(String(event.metadata)) }))
+  // 最近事件：同样按 created_at 与 account_id 过滤
+  const eventConditions = ["owner_user_id=?"]
+  const eventParams: (string | number)[] = [user.id]
+  if (fromIso) { eventConditions.push("created_at >= ?"); eventParams.push(fromIso) }
+  if (toIso) { eventConditions.push("created_at <= ?"); eventParams.push(toIso) }
+  if (accountIds.length) {
+    const placeholders = accountIds.map(() => "?").join(",")
+    eventConditions.push(`account_id IN (${placeholders})`)
+    eventParams.push(...accountIds)
+  }
+  const recentEvents = (db.prepare(`SELECT id, type, severity AS level, severity, account_id AS accountId, request_id AS requestId, metadata_json AS metadata, created_at AS createdAt FROM events WHERE ${eventConditions.join(" AND ")} ORDER BY created_at DESC LIMIT 50`).all(...eventParams) as Array<Record<string, unknown>>).map((event) => ({ ...event, message: String(event.type), metadata: JSON.parse(String(event.metadata)) }))
   const routing = new RoutingService(user.id, db).getState()
-  const accountNames = db.prepare("SELECT id, name FROM accounts WHERE owner_user_id=?").all(user.id) as { id: string; name: string }[]
+  // 账号下拉数据源：供前端筛选账号使用
+  const accounts = db.prepare("SELECT id, name, email FROM accounts WHERE owner_user_id=? ORDER BY name").all(user.id) as OverviewAccount[]
   // Pool type statistics
   const poolTypeStats = new RoutingService(user.id, db).getPoolTypeStats()
   const aggregatePoolStat = (key: "ready" | "blocked" | "inactive") => Object.values(poolTypeStats).reduce((sum, value) => sum + value[key], 0)
@@ -125,10 +188,11 @@ export function GET(request: Request) {
       apiKeys: scalar("SELECT COUNT(*) AS value FROM api_keys WHERE owner_user_id=? AND enabled=1"),
       byPoolType: poolTypeStats,
     },
-    routing: { ...routing, currentAccountName: accountNames.find((account) => account.id === routing.currentAccountId)?.name ?? null, preferredAccountName: accountNames.find((account) => account.id === routing.preferredAccountId)?.name ?? null, nextRecoveryAt: readyRows.map((row) => row.ready_at).sort()[0] ?? null },
+    routing: { ...routing, currentAccountName: accounts.find((account) => account.id === routing.currentAccountId)?.name ?? null, preferredAccountName: accounts.find((account) => account.id === routing.preferredAccountId)?.name ?? null, nextRecoveryAt: readyRows.map((row) => row.ready_at).sort()[0] ?? null },
     recentRequests,
     recentEvents,
     recentAttempts: recentAttemptsPayload,
     poolTypes: listPoolTypeOptions(user.id, db),
+    accounts,
   })
 }

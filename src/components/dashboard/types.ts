@@ -394,6 +394,8 @@ export interface OverviewPayload {
  recentRequests?: RequestRecord[];
  recentEvents?: EventRecord[];
  recentAttempts?: Record<string, AttemptDetail[]>;
+  /** 账号下拉数据源（来自 /api/admin/overview 的 accounts 字段）。 */
+  accounts?: Array<{ id: string; name: string; email: string | null }>;
 }
 
 export interface PoolTypeInfo {

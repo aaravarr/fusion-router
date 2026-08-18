@@ -15,6 +15,9 @@ interface UsageStats {
 
 const MAX_BUCKETS = 1000;
 const CACHE_TTL_MS = 15_000;
+// 自定义时间范围（from/to 同时存在）的跨度上限：92 天。
+// 对齐 hours 上限 720h=30d 与 MAX_BUCKETS 的平衡，并给趋势图留出余量。
+const MAX_CUSTOM_RANGE_MS = 92 * 24 * 3600 * 1000;
 const cache = new Map<string, { ts: number; data: UsageStats }>();
 
 function granularitySeconds(gran: string): number {
@@ -52,31 +55,78 @@ function bucketLabel(bucketStartMs: number, gran: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/** 解析可选 ISO 时间参数：空值返回 null，非空但非法时抛出 400 响应。 */
+function parseIsoParam(value: string | null): string | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) {
+    throw new Response(JSON.stringify({ error: "时间参数格式无效" }), { status: 400, headers: { "content-type": "application/json" } });
+  }
+  return date.toISOString();
+}
+
+/** 解析逗号分隔的账号 ID 列表：单值兼容（无逗号即单值），trim 后过滤空串，上限 100 个。 */
+function parseAccountIds(value: string | null): string[] {
+  if (value === null) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .slice(0, 100);
+}
+
 export function GET(request: Request): Response {
   const user = requireSession(request);
   if (user instanceof Response) return user;
   const url = new URL(request.url);
+  let fromIso: string | null = null;
+  let toIso: string | null = null;
+  try {
+    fromIso = parseIsoParam(url.searchParams.get("from"));
+    toIso = parseIsoParam(url.searchParams.get("to"));
+  } catch (cause) {
+    if (cause instanceof Response) return cause;
+    throw cause;
+  }
+  if (fromIso && toIso) {
+    if (fromIso > toIso) {
+      return Response.json({ error: "开始时间不能晚于结束时间" }, { status: 400 });
+    }
+    if (Date.parse(toIso) - Date.parse(fromIso) > MAX_CUSTOM_RANGE_MS) {
+      return Response.json({ error: "自定义时间范围最长 92 天" }, { status: 400 });
+    }
+  }
   const hours = clampInt(url.searchParams.get("hours"), 1, 720, 24);
+  // 自定义范围时按真实跨度选择粒度，避免长范围仍按默认 24h 计算
+  const windowHours = fromIso ? (Date.parse(toIso ?? new Date().toISOString()) - Date.parse(fromIso)) / 3600000 : hours;
   const requestedGran = url.searchParams.get("granularity") ?? "auto";
-  const gran = clampGranularity(hours, requestedGran === "auto" ? autoGranularity(hours) : requestedGran);
+  const gran = clampGranularity(windowHours, requestedGran === "auto" ? autoGranularity(windowHours) : requestedGran);
   const model = url.searchParams.get("model");
   const accountId = url.searchParams.get("accountId");
- const apiKeyId = url.searchParams.get("apiKeyId");
+  const accountIds = parseAccountIds(accountId);
+  const apiKeyId = url.searchParams.get("apiKeyId");
   const poolType = url.searchParams.get("poolType");
-  const cacheKey = `${user.id}|${hours}|${gran}|${model ?? ""}|${accountId ?? ""}|${apiKeyId ?? ""}|${poolType ?? ""}`;
+  // 缓存 key 必须并入 from/to 与多账号列表，否则不同范围会串数据
+  const cacheKey = `${user.id}|${hours}|${gran}|${model ?? ""}|${accountId ?? ""}|${apiKeyId ?? ""}|${poolType ?? ""}|${fromIso ?? ""}|${toIso ?? ""}`;
   const db = getDatabase();
   const poolTypes = listPoolTypeOptions(user.id, db);
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return Response.json({ ...cached.data, poolTypes });
 
   const now = Date.now();
-  const fromIso = new Date(now - hours * 3600 * 1000).toISOString();
-  const toIso = new Date(now).toISOString();
+  const fromIso2 = fromIso ?? new Date(now - hours * 3600 * 1000).toISOString();
+  const toIso2 = toIso ?? new Date(now).toISOString();
   const conditions = ["owner_user_id = ?", "started_at >= ?", "started_at <= ?"];
-  const params: (string | number)[] = [user.id, fromIso, toIso];
+  const params: (string | number)[] = [user.id, fromIso2, toIso2];
   if (model) { conditions.push("model = ?"); params.push(model) }
-  if (accountId) { conditions.push("account_id = ?"); params.push(accountId) }
- if (apiKeyId) { conditions.push("api_key_id = ?"); params.push(apiKeyId) }
+  if (accountIds.length) {
+    const placeholders = accountIds.map(() => "?").join(",");
+    conditions.push(`account_id IN (${placeholders})`);
+    params.push(...accountIds);
+  }
+  if (apiKeyId) { conditions.push("api_key_id = ?"); params.push(apiKeyId) }
   if (poolType) { conditions.push("account_id IN (SELECT id FROM accounts WHERE owner_user_id = ? AND pool_type = ?)"); params.push(user.id, poolType) }
   const rows = db.prepare(`SELECT started_at,status,ok,latency_ms,local_prep_ms,first_token_ms,model,account_id,account_name,api_key_id,api_key_prefix,prompt_tokens,completion_tokens,total_tokens,cached_tokens,reasoning_tokens,stream FROM gateway_requests WHERE ${conditions.join(" AND ")}`).all(...params) as UsageBucketRow[];
   const apiKeyNames = new Map(
@@ -112,7 +162,7 @@ export function GET(request: Request): Response {
     addRow(modelBucket, row);
     if (row.account_id) {
       let accBucket = byAccount.get(row.account_id);
-     if (!accBucket) { accBucket = createBucket(row.account_id, row.account_name ?? row.account_id); byAccount.set(row.account_id, accBucket) }
+      if (!accBucket) { accBucket = createBucket(row.account_id, row.account_name ?? row.account_id); byAccount.set(row.account_id, accBucket) }
       accBucket.poolType = accountPoolTypes.get(row.account_id);
       addRow(accBucket, row);
     }
@@ -123,8 +173,11 @@ export function GET(request: Request): Response {
     }
   }
 
-  const firstBucketStart = Math.floor((now - hours * 3600 * 1000) / bucketMs) * bucketMs;
-  const lastBucketStart = Math.floor(now / bucketMs) * bucketMs;
+  // 补空桶的窗口：自定义范围时用 from/to 边界，否则维持 now-hours ~ now
+  const windowStartMs = fromIso ? Date.parse(fromIso2) : now - hours * 3600 * 1000;
+  const windowEndMs = toIso ? Date.parse(toIso2) : now;
+  const firstBucketStart = Math.floor(windowStartMs / bucketMs) * bucketMs;
+  const lastBucketStart = Math.floor(windowEndMs / bucketMs) * bucketMs;
   for (let t = firstBucketStart; t <= lastBucketStart; t += bucketMs) {
     if (!byTimeMap.has(t)) byTimeMap.set(t, createBucket(String(t), bucketLabel(t, gran)));
   }
