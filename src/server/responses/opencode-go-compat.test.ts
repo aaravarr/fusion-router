@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { normalizeOpenCodeGoResponsesSse } from "./opencode-go-compat"
+import { normalizeOpenCodeGoResponsesSse, stripIncludeUsageFromResponsesBody } from "./opencode-go-compat"
 
 async function run(blocks: string[]): Promise<string> {
   const stream = new ReadableStream<Uint8Array>({
@@ -49,5 +49,33 @@ describe("opencode-go responses lifecycle normalization", () => {
     expect(output).toContain('"type":"response.reasoning_text.delta"')
     expect(output).toContain('"type":"response.output_item.done"')
     expect(output).toContain('"type":"response.completed"')
+  })
+})
+
+describe("stripIncludeUsageFromResponsesBody", () => {
+  it("带 include_usage 的响应体剥离后不含该字段，其余字段保留", () => {
+    const body = JSON.stringify({ model: "muse-spark-1.2-contributor", input: "hi", include_usage: true, stream: true, tools: [{ type: "web_search" }] })
+    const out = stripIncludeUsageFromResponsesBody(body)
+    expect(out).not.toContain("include_usage")
+    expect(JSON.parse(out)).toEqual({ model: "muse-spark-1.2-contributor", input: "hi", stream: true, tools: [{ type: "web_search" }] })
+  })
+
+  it("无 include_usage 字段时原样返回（不做重新序列化）", () => {
+    const body = JSON.stringify({ model: "muse-spark-1.2-contributor", input: "hi" })
+    expect(stripIncludeUsageFromResponsesBody(body)).toBe(body)
+  })
+
+  it("非法 JSON 原样返回", () => {
+    const body = "{not-json"
+    expect(stripIncludeUsageFromResponsesBody(body)).toBe(body)
+  })
+
+  it("空 body 原样返回", () => {
+    expect(stripIncludeUsageFromResponsesBody("")).toBe("")
+  })
+
+  it("非对象 JSON（如数组/标量）原样返回", () => {
+    expect(stripIncludeUsageFromResponsesBody("[1,2,3]")).toBe("[1,2,3]")
+    expect(stripIncludeUsageFromResponsesBody("42")).toBe("42")
   })
 })

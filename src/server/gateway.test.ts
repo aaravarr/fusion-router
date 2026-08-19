@@ -749,8 +749,54 @@ describe("gateway logging", () => {
     expect(response.status).toBe(200)
     expect(sentUrl).toContain("/responses")
     expect(response.headers.get("x-responses-route")).toBe("responses")
-    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
-    expect(String(row.transform_summary || "")).not.toContain("opencode_go_responses_to_chat")
+  })
+
+  it("opencode-go responses strips include_usage from the forwarded body", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    // 同 muse 用例：确保路由认可 muse-spark-1.2-contributor 支持原生 responses。
+    const cacheRow = getDatabase().prepare("SELECT models_json FROM provider_model_cache WHERE pool_type='opencode-go'").get() as { models_json: string } | undefined
+    const cached = cacheRow ? (JSON.parse(cacheRow.models_json) as string[]) : []
+    if (!cached.includes("muse-spark-1.2-contributor")) {
+      getDatabase().prepare("REPLACE INTO provider_model_cache(pool_type,models_json,source,updated_at) VALUES ('opencode-go',?,'DEFAULT',?)")
+        .run(JSON.stringify([...cached, "muse-spark-1.2-contributor"]), new Date().toISOString())
+    }
+    let sentUrl = ""
+    let sent: Record<string, unknown> = {}
+    const fetcher = vi.fn().mockImplementation(async (url, init) => {
+      sentUrl = String(url)
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({ id: "resp_1", object: "response", status: "completed", output: [] })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "muse-spark-1.2-contributor", input: "hello", include_usage: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect(sentUrl).toContain("/responses")
+    expect(sent.model).toBe("muse-spark-1.2-contributor")
+    expect(sent.input).toBe("hello")
+    expect(sent.include_usage).toBeUndefined()
+    const rowX = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(rowX.transform_summary || "")).toContain("strip:include_usage")
+  })
+
+  it("non-opencode responses keeps include_usage in the forwarded body", async () => {
+    const { db, apiKey, credentials, hasher } = setup("xai-grok")
+    let sent: Record<string, unknown> = {}
+    const fetcher = vi.fn().mockImplementation(async (_url, init) => {
+      sent = JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({ id: "resp_1", object: "response", status: "completed", output: [] })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "grok-4.5", input: "hello", include_usage: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect(sent.include_usage).toBe(true)
   })
   it("xai-grok keeps client-declared server search tools", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok")

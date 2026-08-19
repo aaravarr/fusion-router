@@ -255,3 +255,21 @@ export function normalizeOpenCodeGoResponsesSse(stream: ReadableStream<Uint8Arra
     },
   })
 }
+
+/**
+ * Console Go 的 /v1/responses 不支持 include_usage 请求参数：客户端带该字段时上游
+ * 返回 400 "unknown parameter include_usage"。include_usage 只是请求附带 usage 块的
+ * 开关，剥离后响应不带 usage 块，客户端可接受。网关对 opencode-go 上游转发前调用本函数
+ * 剥离该字段。JSON 解析失败或非对象时原样返回；无该字段时原样返回（避免无谓重新序列化）。
+ */
+export function stripIncludeUsageFromResponsesBody(body: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return body
+  }
+  if (!isObj(parsed) || !("include_usage" in parsed)) return body
+  delete parsed.include_usage
+  return JSON.stringify(parsed)
+}
