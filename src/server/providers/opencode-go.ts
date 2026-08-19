@@ -10,7 +10,9 @@ import { apiFetchWithMirrorContext } from "../api-fetch"
 // still honor the cached remote list once available — never "any model".
 // GPT 系模型在 OpenCode Go 上游原生走 /v1/responses（官方文档 API 端点表）。
 // responses 入口遇到这些模型保持原生直通，避免转 chat 后兼容性下降。
-const OPENCODE_GO_RESPONSES_MODELS = new Set(["gpt-5.6-luna"])
+// 上游原生支持 /v1/responses 的模型白名单（实测确认，含 muse 家族）。
+// 不在白名单的模型只走 chat/messages；responses 请求则经网关转 chat 兼容链路。
+const OPENCODE_GO_RESPONSES_MODELS = new Set(["gpt-5.6-luna", "muse-spark-1.2-contributor"])
 
 const OPENCODE_GO_MODELS = [
   "deepseek-v4-flash",
@@ -30,6 +32,8 @@ const OPENCODE_GO_MODELS = [
   "mimo-v2-pro",
   "mimo-v2.5",
   "mimo-v2.5-pro",
+  "muse-spark-1.2-contributor",
+  "muse-spark-1.2",
   "minimax-m2.5",
   "minimax-m2.7",
   "minimax-m3",

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createDatabase } from "./db"
+import { createDatabase, getDatabase } from "./db"
 import { ApiKeyHasher, SecretVault } from "./crypto"
 import { AccountRepository, ApiKeyRepository, ProviderCredentialRepository } from "./repository"
 import { classifyGoUsageLimit, computeBackoffMs, GatewayService, type CredentialProvider } from "./gateway"
@@ -446,6 +446,33 @@ describe("gateway", () => {
     expect(sent.messages.map((m) => m.role)).toEqual(["system", "user"])
   })
 
+  it("opencode-go chat 流缺 finish_reason（muse 型上游）时网关补发 stop chunk 与 [DONE]", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const encoder = new TextEncoder()
+    // 实测抓取的 muse-spark-1.2 上游流：choices 为空、无 finish_reason、以 EOF 结束（无 [DONE]）
+    const museSse = [
+      'data: {"id":"resp_abc","object":"chat.completion.chunk","created":1787142000,"model":"muse-spark-1.2","choices":[]}\n\n',
+      'data: {"id":"resp_abc","object":"chat.completion.chunk","created":1787142000,"model":"muse-spark-1.2","choices":[]}\n\n',
+      'data: {"id":"","object":"chat.completion.chunk","created":1787142000,"model":"","choices":[]}\n\n',
+      'data: {"id":"resp_abc","object":"chat.completion.chunk","created":1787142005,"model":"muse-spark-1.2","choices":[]}\n\n',
+    ].join("")
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode(museSse)); controller.close() } })
+    const fetcher = vi.fn().mockResolvedValue(new Response(stream, { headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "deepseek-v4-flash", messages: [{ role: "user", content: "hi" }], stream: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(200)
+    const text = await response.text()
+    const events = text.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).filter(Boolean)
+    expect(events[events.length - 1]).toBe("[DONE]")
+    const finishChunk = JSON.parse(events[events.length - 2])
+    expect(finishChunk.choices[0]).toEqual({ index: 0, delta: {}, finish_reason: "stop" })
+    expect(finishChunk.model).toBe("muse-spark-1.2")
+  })
+
   it("用户停用后其统一 API key 立即失效", async () => {
     const { db, apiKey, credentials, hasher } = setup(); db.prepare("UPDATE users SET status='DISABLED' WHERE id=?").run(ownerUserId)
     const fetcher = vi.fn(); const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
@@ -693,6 +720,34 @@ describe("gateway logging", () => {
     expect(response.status).toBe(200)
     expect(sentUrl).toContain("/responses")
     expect(sent.input).toBe("hello")
+    expect(response.headers.get("x-responses-route")).toBe("responses")
+    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(row.transform_summary || "")).not.toContain("opencode_go_responses_to_chat")
+  })
+
+  it("opencode-go muse-spark-1.2-contributor responses stays native (no chat fallback)", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    // 模拟生产：routing 依全局 provider_model_cache 判断模型能力。全局库缓存可能
+    // 过期缺失 muse（实测刚加入白名单），这里增量补上，等价于生产 /models 同步后。
+    const cacheRow = getDatabase().prepare("SELECT models_json FROM provider_model_cache WHERE pool_type='opencode-go'").get() as { models_json: string } | undefined
+    const cached = cacheRow ? (JSON.parse(cacheRow.models_json) as string[]) : []
+    if (!cached.includes("muse-spark-1.2-contributor")) {
+      getDatabase().prepare("REPLACE INTO provider_model_cache(pool_type,models_json,source,updated_at) VALUES ('opencode-go',?,'DEFAULT',?)")
+        .run(JSON.stringify([...cached, "muse-spark-1.2-contributor"]), new Date().toISOString())
+    }
+    let sentUrl = ""
+    const fetcher = vi.fn().mockImplementation(async (url) => {
+      sentUrl = String(url)
+      return Response.json({ id: "resp_1", object: "response", status: "completed", output: [] })
+    })
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "muse-spark-1.2-contributor", input: "hello" }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect(sentUrl).toContain("/responses")
     expect(response.headers.get("x-responses-route")).toBe("responses")
     const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
     expect(String(row.transform_summary || "")).not.toContain("opencode_go_responses_to_chat")

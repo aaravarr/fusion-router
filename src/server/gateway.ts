@@ -19,6 +19,7 @@ import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
 import { normalizeOpenCodeGoResponsesSse } from "./responses/opencode-go-compat"
+import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
 import { chatJsonToMessages, chatSseToMessagesStream, messagesRequestToChat } from "./messages/convert"
 import { decideUpstreamRoute, formatForEndpoint } from "./messages/route-decision"
 import { hasImageInBody, modelSupportsImage, rewriteImagesToText } from "./mcp/openrouter-models"
@@ -826,6 +827,7 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
           } else if (attemptChatFallbackUsed) outStream = convertChatStreamToResponses(outStream, responsesModelHint, attemptToolContext)
           else if (attemptResponsesToChat) outStream = responsesSseToChatStream(outStream)
           else if (processResponses && attemptToolContext) outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
+          else if (selection.account.poolType === "opencode-go" && processChat) outStream = outStream.pipeThrough(fixOpenCodeGoChatStreamEnding())
           const headers = responseHeaders(upstream.headers)
           if (processMessages) headers.set("x-messages-route", attemptMessagesFallback ?? "native")
           if (processResponses) {
