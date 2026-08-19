@@ -257,19 +257,51 @@ export function normalizeOpenCodeGoResponsesSse(stream: ReadableStream<Uint8Arra
 }
 
 /**
- * Console Go 的 /v1/responses 不支持 include_usage 请求参数：客户端带该字段时上游
- * 返回 400 "unknown parameter include_usage"。include_usage 只是请求附带 usage 块的
- * 开关，剥离后响应不带 usage 块，客户端可接受。网关对 opencode-go 上游转发前调用本函数
- * 剥离该字段。JSON 解析失败或非对象时原样返回；无该字段时原样返回（避免无谓重新序列化）。
+ * Console Go 的 /v1/responses 不支持 include_usage 与 stream_options.include_usage 两个
+ * 请求参数：客户端带其中任一字段时上游返回 400 "unknown parameter ..."。两者都只是请求附带
+ * usage 块的开关，剥离后响应不带 usage 块，客户端可接受。剥离规则：
+ *   - 顶层 include_usage 字段直接删除；
+ *   - stream_options.include_usage 删除；若剥离后 stream_options 变成空对象，则一并删除
+ *     stream_options 键（避免上游再报 unknown parameter stream_options）；stream_options
+ *     中其它字段（若有）保留。
+ * 网关对 opencode-go 上游转发前调用本函数。JSON 解析失败或非对象时原样返回；无任何需剥离
+ * 字段时原样返回（避免无谓重新序列化）。
  */
-export function stripIncludeUsageFromResponsesBody(body: string): string {
+export interface StripOpenCodeGoResponsesParamsResult {
+  /** 剥离后的请求体；无任何需剥离字段时为原字符串（不重新序列化） */
+  body: string
+  /** 顶层 include_usage 字段是否被剥离 */
+  includeUsageStripped: boolean
+  /** stream_options.include_usage 是否被剥离 */
+  streamOptionsIncludeUsageStripped: boolean
+}
+
+export function stripUnsupportedOpenCodeGoResponsesParams(body: string): StripOpenCodeGoResponsesParamsResult {
   let parsed: unknown
   try {
     parsed = JSON.parse(body)
   } catch {
-    return body
+    return { body, includeUsageStripped: false, streamOptionsIncludeUsageStripped: false }
   }
-  if (!isObj(parsed) || !("include_usage" in parsed)) return body
-  delete parsed.include_usage
-  return JSON.stringify(parsed)
+  if (!isObj(parsed)) return { body, includeUsageStripped: false, streamOptionsIncludeUsageStripped: false }
+
+  let includeUsageStripped = false
+  let streamOptionsIncludeUsageStripped = false
+
+  if ("include_usage" in parsed) {
+    delete parsed.include_usage
+    includeUsageStripped = true
+  }
+  const streamOptions = parsed.stream_options
+  if (isObj(streamOptions) && "include_usage" in streamOptions) {
+    delete streamOptions.include_usage
+    streamOptionsIncludeUsageStripped = true
+    // stream_options 剥离后变成空对象时，整个键一并删除，避免上游再报 unknown parameter stream_options。
+    if (Object.keys(streamOptions).length === 0) delete parsed.stream_options
+  }
+
+  if (!includeUsageStripped && !streamOptionsIncludeUsageStripped) {
+    return { body, includeUsageStripped: false, streamOptionsIncludeUsageStripped: false }
+  }
+  return { body: JSON.stringify(parsed), includeUsageStripped, streamOptionsIncludeUsageStripped }
 }

@@ -18,7 +18,7 @@ import { resolveMirrorUrlForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
-import { normalizeOpenCodeGoResponsesSse, stripIncludeUsageFromResponsesBody } from "./responses/opencode-go-compat"
+import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
 import { chatJsonToMessages, chatSseToMessagesStream, messagesRequestToChat } from "./messages/convert"
 import { decideUpstreamRoute, formatForEndpoint } from "./messages/route-decision"
@@ -612,19 +612,20 @@ export class GatewayService {
             } catch { /* keep original body */ }
           }
           // OpenCode Go rejects Responses server search tools (web_search/x_search), and
-          // Console Go's /v1/responses does not support the include_usage request param
-          // (returns 400 "unknown parameter include_usage"). Strip both before forwarding.
+          // Console Go's /v1/responses does not support the include_usage nor
+          // stream_options.include_usage request params (returns 400 "unknown parameter ...").
+          // Strip both before forwarding.
           if (
             processResponses
             && selection.account.poolType === "opencode-go"
             && attemptUpstreamBytes
           ) {
             try {
-              // 先剥离 include_usage（仅 opencode-go 上游；其它 provider 不受影响）。
+              // 先剥离 include_usage 与 stream_options.include_usage（仅 opencode-go 上游；其它 provider 不受影响）。
               const rawBody = new TextDecoder().decode(attemptUpstreamBytes)
-              const usageStripped = stripIncludeUsageFromResponsesBody(rawBody)
-              const usageChanged = usageStripped !== rawBody
-              const strippedBody = usageChanged ? usageStripped : rawBody
+              const stripped = stripUnsupportedOpenCodeGoResponsesParams(rawBody)
+              const usageChanged = stripped.body !== rawBody
+              const strippedBody = usageChanged ? stripped.body : rawBody
               const current = JSON.parse(strippedBody) as { tools?: unknown; tool_choice?: unknown }
               let toolsChanged = false
               if (Array.isArray(current.tools)) {
@@ -648,7 +649,8 @@ export class GatewayService {
                 attemptUpstreamBytes = new TextEncoder().encode(JSON.stringify(current))
                 requestBodyJson = current
                 const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
-                if (usageChanged && !parts.some((p) => p.startsWith("strip:include_usage"))) parts.splice(1, 0, "strip:include_usage")
+                if (stripped.includeUsageStripped && !parts.some((p) => p.startsWith("strip:include_usage"))) parts.splice(1, 0, "strip:include_usage")
+                if (stripped.streamOptionsIncludeUsageStripped && !parts.some((p) => p.startsWith("strip:stream_options_include_usage"))) parts.splice(1, 0, "strip:stream_options_include_usage")
                 if (toolsChanged && !parts.some((p) => p.startsWith("strip:web_search"))) parts.splice(1, 0, "strip:web_search+x_search")
                 routeMeta.transformSummary = parts.join(" | ")
                 this.db.prepare("UPDATE gateway_requests SET transform_summary=?, process_mode=process_mode WHERE id=?")

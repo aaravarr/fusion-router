@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { normalizeOpenCodeGoResponsesSse, stripIncludeUsageFromResponsesBody } from "./opencode-go-compat"
+import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./opencode-go-compat"
 
 async function run(blocks: string[]): Promise<string> {
   const stream = new ReadableStream<Uint8Array>({
@@ -52,30 +52,65 @@ describe("opencode-go responses lifecycle normalization", () => {
   })
 })
 
-describe("stripIncludeUsageFromResponsesBody", () => {
-  it("带 include_usage 的响应体剥离后不含该字段，其余字段保留", () => {
+describe("stripUnsupportedOpenCodeGoResponsesParams", () => {
+  it("带顶层 include_usage 的响应体剥离后不含该字段，其余字段保留", () => {
     const body = JSON.stringify({ model: "muse-spark-1.2-contributor", input: "hi", include_usage: true, stream: true, tools: [{ type: "web_search" }] })
-    const out = stripIncludeUsageFromResponsesBody(body)
-    expect(out).not.toContain("include_usage")
-    expect(JSON.parse(out)).toEqual({ model: "muse-spark-1.2-contributor", input: "hi", stream: true, tools: [{ type: "web_search" }] })
+    const out = stripUnsupportedOpenCodeGoResponsesParams(body)
+    expect(out.body).not.toContain("include_usage")
+    expect(JSON.parse(out.body)).toEqual({ model: "muse-spark-1.2-contributor", input: "hi", stream: true, tools: [{ type: "web_search" }] })
+    expect(out.includeUsageStripped).toBe(true)
+    expect(out.streamOptionsIncludeUsageStripped).toBe(false)
   })
 
-  it("无 include_usage 字段时原样返回（不做重新序列化）", () => {
+  it("只带 stream_options.include_usage 时剥离该字段，并删除已变空的 stream_options 键", () => {
+    const body = JSON.stringify({ model: "gpt-5.6-luna", input: "hi", stream_options: { include_usage: true } })
+    const out = stripUnsupportedOpenCodeGoResponsesParams(body)
+    const parsed = JSON.parse(out.body) as Record<string, unknown>
+    expect(parsed).not.toHaveProperty("stream_options")
+    expect(parsed).toEqual({ model: "gpt-5.6-luna", input: "hi" })
+    expect(out.includeUsageStripped).toBe(false)
+    expect(out.streamOptionsIncludeUsageStripped).toBe(true)
+  })
+
+  it("stream_options 带 include_usage 与其它字段时只删 include_usage，保留其它字段", () => {
+    const body = JSON.stringify({ model: "gpt-5.6-luna", input: "hi", stream_options: { include_usage: true, parallel_tool_calls: true } })
+    const out = stripUnsupportedOpenCodeGoResponsesParams(body)
+    const parsed = JSON.parse(out.body) as Record<string, unknown>
+    expect(parsed.stream_options).toEqual({ parallel_tool_calls: true })
+    expect((parsed.stream_options as Record<string, unknown>).include_usage).toBeUndefined()
+    expect(out.streamOptionsIncludeUsageStripped).toBe(true)
+  })
+
+  it("顶层 include_usage 与 stream_options.include_usage 同时存在时两个都剥离", () => {
+    const body = JSON.stringify({ model: "gpt-5.6-luna", input: "hi", include_usage: true, stream_options: { include_usage: true } })
+    const out = stripUnsupportedOpenCodeGoResponsesParams(body)
+    const parsed = JSON.parse(out.body) as Record<string, unknown>
+    expect(parsed.include_usage).toBeUndefined()
+    expect(parsed).not.toHaveProperty("stream_options")
+    expect(out.includeUsageStripped).toBe(true)
+    expect(out.streamOptionsIncludeUsageStripped).toBe(true)
+  })
+
+  it("无任何需剥离字段时原样返回（字符串相同，不做重新序列化）", () => {
     const body = JSON.stringify({ model: "muse-spark-1.2-contributor", input: "hi" })
-    expect(stripIncludeUsageFromResponsesBody(body)).toBe(body)
+    const out = stripUnsupportedOpenCodeGoResponsesParams(body)
+    expect(out.body).toBe(body)
+    expect(out.includeUsageStripped).toBe(false)
+    expect(out.streamOptionsIncludeUsageStripped).toBe(false)
   })
 
   it("非法 JSON 原样返回", () => {
     const body = "{not-json"
-    expect(stripIncludeUsageFromResponsesBody(body)).toBe(body)
+    expect(stripUnsupportedOpenCodeGoResponsesParams(body).body).toBe(body)
   })
 
   it("空 body 原样返回", () => {
-    expect(stripIncludeUsageFromResponsesBody("")).toBe("")
+    expect(stripUnsupportedOpenCodeGoResponsesParams("").body).toBe("")
   })
 
   it("非对象 JSON（如数组/标量）原样返回", () => {
-    expect(stripIncludeUsageFromResponsesBody("[1,2,3]")).toBe("[1,2,3]")
-    expect(stripIncludeUsageFromResponsesBody("42")).toBe("42")
+    expect(stripUnsupportedOpenCodeGoResponsesParams("[1,2,3]").body).toBe("[1,2,3]")
+    expect(stripUnsupportedOpenCodeGoResponsesParams("42").body).toBe("42")
   })
 })
+
