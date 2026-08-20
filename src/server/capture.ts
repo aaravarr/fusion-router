@@ -164,6 +164,41 @@ export function extractUsageFromSse(text: string): TokenUsage | undefined {
   return last;
 }
 
+// 从 SSE 文本中提取最终 responses 形态的响应体：
+// - 优先取 response.completed 事件中的 response 字段（为 Codex/前端展示所需的完整形态，含 output/reasoning）
+// - 兜底取最后一个形如 {object:"response", output:[...]} 的 data 对象
+export function extractResponseFromSse(text: string): unknown | undefined {
+  let completed: unknown | undefined;
+  let lastResponseLike: unknown | undefined;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trimStart();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(data) as unknown;
+      if (!parsed || typeof parsed !== "object") continue;
+      const obj = parsed as Record<string, unknown>;
+      // 标准 Responses SSE 完成事件
+      if (typeof obj.type === "string" && obj.type === "response.completed" && obj.response && typeof obj.response === "object") {
+        completed = obj.response;
+        continue;
+      }
+      // 兼容：部分上游直接以 data: {id, object:"response", output:...} 形式收尾
+      if (obj.object === "response" && Array.isArray((obj as Record<string, unknown>).output)) {
+        lastResponseLike = obj;
+      }
+      // 兜底：response 嵌套形态（response.response）
+      const nested = (obj as Record<string, unknown>).response;
+      if (nested && typeof nested === "object" && (nested as Record<string, unknown>).object === "response") {
+        lastResponseLike = nested;
+      }
+    } catch {
+      // ignore malformed sse data lines
+    }
+  }
+  return completed ?? lastResponseLike;
+}
+
 export function extractBodyError(payload: unknown): string | undefined {
   const stack: unknown[] = [payload];
   while (stack.length) {
@@ -289,13 +324,17 @@ export function teeAndCapture(
     }
     const text = new TextDecoder().decode(chunks.length ? concatBytes(chunks) : new Uint8Array(), { stream: false });
     if (!usage) usage = extractUsageFromSse(text);
-    let response: unknown;
-    if (!usage) {
-      try { response = JSON.parse(text); usage = extractUsage(response) } catch { /* keep text */ }
-    } else {
-      try { response = JSON.parse(text) } catch { /* keep text */ }
+    // 尝试构造落盘用的响应体：优先直接 JSON，其次从 SSE 事件中提取最终 responses 形态，便于前端展示与 reasoning 校验
+    let response: unknown | undefined;
+    if (!truncated) {
+      if (!usage) {
+        try { response = JSON.parse(text); const u = extractUsage(response); if (u) usage = mergeUsage(usage, u) } catch { /* 非 JSON，尝试 SSE 提取 */ }
+      } else {
+        try { response = JSON.parse(text) } catch { /* 非 JSON，尝试 SSE 提取 */ }
+      }
+      if (response === undefined) response = extractResponseFromSse(text);
     }
-    const error = extractBodyError(usage ? undefined : tryParseText(text));
+    const error = extractBodyError(usage ? undefined : tryParseText(text) ?? response);
     onComplete({ response: truncated ? undefined : response, responseTruncated: truncated, responseBytes: total, usage, firstByteAt, error });
   })();
   return client;

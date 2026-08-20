@@ -832,7 +832,8 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
               })
             }
           }
-          let outStream: ReadableStream<Uint8Array> = teeAndCapture(rebuilt, onComplete)
+          // 构建最终面向客户端的流（可能包含 responses<->chat 转换）；先构建出最终 responses 形态的 outStream，再对最终流做捕获
+          let outStream: ReadableStream<Uint8Array> = rebuilt
           if (attemptMessagesFallback === "responses") outStream = chatSseToMessagesStream(responsesSseToChatStream(outStream))
           else if (attemptMessagesFallback === "chat") outStream = chatSseToMessagesStream(outStream)
           else if (selection.account.poolType === "opencode-go" && processResponses && !attemptChatFallbackUsed && !attemptResponsesToChat) {
@@ -842,6 +843,8 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
           else if (attemptResponsesToChat) outStream = responsesSseToChatStream(outStream)
           else if (processResponses && attemptToolContext) outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
           else if (selection.account.poolType === "opencode-go" && processChat) outStream = outStream.pipeThrough(fixOpenCodeGoChatStreamEnding())
+          // 对最终形态的流做捕获：确保 responses->chat->responses 转换后的最终流（outStream）被正确解析并落盘，hasResponse=true 且响应体为最终 responses 形态（便于前端展示和 reasoning 校验）
+          outStream = teeAndCapture(outStream, onComplete)
           const headers = responseHeaders(upstream.headers)
           if (processMessages) headers.set("x-messages-route", attemptMessagesFallback ?? "native")
           if (processResponses) {
