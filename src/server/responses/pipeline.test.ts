@@ -235,6 +235,71 @@ describe("responses pipeline", () => {
     expect(third.routeReason).toBe("session_lineage_chat")
     db.close()
   })
+
+  it("白名单模型携带 encrypted reasoning 回显时保持原生 responses (foreign_opaque:reasoning 豁免)", async () => {
+    const db = createDatabase(":memory:")
+    // 模拟上游 responses 产出的 encrypted reasoning 被客户端按协议回显进 input（请求 38687ae2 复现）
+    const prepared = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2-contributor",
+      input: [{ type: "reasoning", encrypted_content: "blob-xyz-opaque-reasoning", summary: [] }],
+    }, { db, injectServerTools: false })
+    expect(prepared.route).toBe("responses")
+    expect(prepared.routeReason).toBe("responses_native")
+    // 原生 responses 路径会对 opaque 项保留：sanitizeResponsesInputItems 不剥离带 encrypted_content 的 reasoning
+    const bodyInput = (prepared.body as unknown as { input: Array<Record<string, unknown>> }).input
+    expect(Array.isArray(bodyInput)).toBe(true)
+    const reasoning = bodyInput.find((it) => String(it.type).toLowerCase() === "reasoning")
+    expect(reasoning).toBeTruthy()
+    expect(reasoning?.encrypted_content).toBe("blob-xyz-opaque-reasoning")
+    db.close()
+  })
+
+  it("非白名单模型同 encrypted reasoning 回显仍转 chat (foreign_opaque:reasoning)", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "gpt-4o-mini",
+      input: [{ type: "reasoning", encrypted_content: "blob-xyz-opaque-reasoning", summary: [] }],
+    }, { db, injectServerTools: false })
+    expect(prepared.route).toBe("chat")
+    expect(prepared.routeReason).toMatch(/foreign_opaque:reasoning/)
+    db.close()
+  })
+
+  it("白名单模型命中 foreign_history:* 时也保持原生 responses", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "gpt-5.6-luna",
+      previous_response_id: "resp_foreign_123",
+      input: [{ type: "reasoning", encrypted_content: "blob-history-opaque", summary: [] }],
+    }, { db, injectServerTools: false })
+    expect(prepared.route).toBe("responses")
+    expect(prepared.routeReason).toBe("responses_native")
+    db.close()
+  })
+
+  it("非白名单模型命中 foreign_history:* 仍转 chat", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "gpt-4o-mini",
+      previous_response_id: "resp_foreign_123",
+      input: [{ type: "reasoning", encrypted_content: "blob-history-opaque", summary: [] }],
+    }, { db, injectServerTools: false })
+    expect(prepared.route).toBe("chat")
+    expect(prepared.routeReason).toMatch(/foreign_history:/)
+    db.close()
+  })
+
+  it("白名单模型命中 foreign_previous_response_id 不豁免，仍转 chat", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2",
+      previous_response_id: "resp_missing_not_in_store",
+      input: "continue without opaque",
+    }, { db, injectServerTools: false })
+    expect(prepared.route).toBe("chat")
+    expect(prepared.routeReason).toBe("foreign_previous_response_id")
+    db.close()
+  })
 })
 
 describe("shouldEagerFallbackResponses", () => {

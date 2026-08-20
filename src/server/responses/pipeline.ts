@@ -150,15 +150,21 @@ export async function prepareResponsesRequestBody(
       storeHit: lineage.hit,
       preferResponsesForServerTools,
     })
-    // 白名单模型即使命中 session_lineage_chat 也保持原生 responses，避免新会话第二条就转 chat
+    // 白名单模型豁免：session_lineage_chat / foreign_opaque:* / foreign_history:* 均保持原生 responses
+    // 原因：foreign_opaque/history 的 encrypted reasoning 等 opaque 项本就是上游 responses 产出后由客户端按协议回显的，
+    // 原生 responses 转发可保留完整推理上下文；sanitizeResponsesInputItems 对带 encrypted_content 的 reasoning/compaction
+    // 项会保留原样或用服务端存储的 opaque 恢复，不会剥离（见 conversation-store.ts sanitizeResponsesInputItems）；
+    // 而 foreign_previous_response_id 指向非本网关产出的 response，未命中存储时仍需 chat 兜底，故不豁免。
     const isWhitelisted = typeof model === "string" && NATIVE_RESPONSES_MODELS.has(model);
-    const shouldFallback = eager.eager && !(isWhitelisted && eager.reason === "session_lineage_chat");
+    const isWhitelistedExemptReason = (reason?: string) =>
+      reason === "session_lineage_chat" ||
+      (typeof reason === "string" &&
+        (reason.startsWith("foreign_opaque:") || reason.startsWith("foreign_history:")));
+    const shouldFallback = eager.eager && !(isWhitelisted && isWhitelistedExemptReason(eager.reason));
     if (shouldFallback) {
       route = "chat"
       routeReason = eager.reason || "session_lineage_chat"
-    } else if (eager.reason && !isWhitelisted) {
-      routeReason = eager.reason
-    } else if (eager.reason === "session_lineage_chat" && isWhitelisted) {
+    } else if (isWhitelisted && isWhitelistedExemptReason(eager.reason)) {
       routeReason = "responses_native"
     } else if (eager.reason) {
       routeReason = eager.reason
