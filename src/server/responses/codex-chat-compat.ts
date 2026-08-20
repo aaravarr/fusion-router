@@ -1844,7 +1844,7 @@ export function transformXaiResponsesSseForCodex(
   const reasoningPartsAdded = new Set<string>();
   // 缓冲 function_call 的流式生命周期，用于纯结构拆分畸形聚合（多个同 id delta 拼接）
   // key 为 item_id/call_id，value 记录 added、deltas、最终 done 的信息，待 output_item.done 时统一判定是否需要拆分
-  const pendingFunctionCalls = new Map<string, { added: Obj; deltas: string[]; doneArgs: string; outputIndex: unknown; itemId: string; callId: string; name: string; status: string; namespace?: string }>()
+  const pendingFunctionCalls = new Map<string, { added: Obj; deltas: string[]; doneArgs: string; hasDone: boolean; outputIndex: unknown; itemId: string; callId: string; name: string; status: string; namespace?: string }>()
 
   const enqueueEvent = (controller: ReadableStreamDefaultController<Uint8Array>, eventName: string, data: Obj) => {
     const ev = eventName || (typeof data.type === 'string' ? data.type : 'message');
@@ -1975,6 +1975,7 @@ export function transformXaiResponsesSseForCodex(
                     added: remapped as Obj,
                     deltas: [],
                     doneArgs: typeof afterItem.arguments === 'string' ? afterItem.arguments : '',
+                    hasDone: false,
                     outputIndex: remapped.output_index,
                     itemId: String(afterItem.id || ''),
                     callId: String(afterItem.call_id || afterItem.id || ''),
@@ -2003,6 +2004,7 @@ export function transformXaiResponsesSseForCodex(
                       added: { type: 'function_call', id: itemId, call_id: itemId, name: '', arguments: '', status: 'in_progress' } as Obj,
                       deltas: [typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : ''],
                       doneArgs: typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : '',
+                      hasDone: false,
                       outputIndex: (remapped as Obj).output_index,
                       itemId,
                       callId: itemId,
@@ -2020,6 +2022,7 @@ export function transformXaiResponsesSseForCodex(
                       const args = typeof (remapped as Obj).arguments === 'string' ? (remapped as Obj).arguments as string : '';
                       if (args) entry.doneArgs = args;
                       else if (entry.deltas.length) entry.doneArgs = entry.deltas.join('');
+                      entry.hasDone = true;
                       break;
                     }
                   }
@@ -2029,7 +2032,7 @@ export function transformXaiResponsesSseForCodex(
                   const itemArgsRaw = typeof afterItem.arguments === 'string' ? afterItem.arguments : typeof (afterItem as Obj).input === 'string' ? (afterItem as Obj).input as string : '';
                   let finalArgs = itemArgsRaw;
                   let pendingKey: string | undefined;
-                  let pendingEntry: { added: Obj; deltas: string[]; doneArgs: string; outputIndex: unknown; itemId: string; callId: string; name: string; status: string; namespace?: string } | undefined;
+                  let pendingEntry: { added: Obj; deltas: string[]; doneArgs: string; hasDone: boolean; outputIndex: unknown; itemId: string; callId: string; name: string; status: string; namespace?: string } | undefined;
                   for (const [k, v] of pendingFunctionCalls.entries()) {
                     if (v.itemId === String(afterItem.id || '') || v.callId === String(afterItem.call_id || '') || String(v.outputIndex) === String(remapped.output_index)) {
                       pendingKey = k;
@@ -2104,12 +2107,13 @@ export function transformXaiResponsesSseForCodex(
                           delta: d,
                         });
                       }
-                      if (pendingEntry.deltas.length) {
+                      if (pendingEntry.hasDone || pendingEntry.doneArgs) {
+                        const finalDoneArgs = pendingEntry.doneArgs || finalArgs;
                         enqueueEvent(controller, 'response.function_call_arguments.done', {
                           type: 'response.function_call_arguments.done',
                           item_id: pendingEntry.itemId,
                           output_index: pendingEntry.outputIndex,
-                          arguments: pendingEntry.doneArgs,
+                          arguments: finalDoneArgs,
                         });
                       }
                       pendingFunctionCalls.delete(pendingKey);
@@ -2141,6 +2145,7 @@ export function transformXaiResponsesSseForCodex(
                     added: { type: 'function_call', id: itemId, call_id: itemId, name: '', arguments: '', status: 'in_progress' } as Obj,
                     deltas: [typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : ''],
                     doneArgs: typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : '',
+                    hasDone: false,
                     outputIndex: (remapped as Obj).output_index,
                     itemId,
                     callId: itemId,
@@ -2158,6 +2163,7 @@ export function transformXaiResponsesSseForCodex(
                     const args = typeof (remapped as Obj).arguments === 'string' ? (remapped as Obj).arguments as string : '';
                     if (args) entry.doneArgs = args;
                     else if (entry.deltas.length) entry.doneArgs = entry.deltas.join('');
+                    entry.hasDone = true;
                     break;
                   }
                 }
@@ -2228,6 +2234,43 @@ export function transformXaiResponsesSseForCodex(
             }
           }
         }
+        // 截断兜底：流提前结束未收到 output_item.done 时，补回放已缓冲的完整 function_call（单包无 delta 场景）
+        for (const v of pendingFunctionCalls.values()) {
+          if ((v.hasDone || v.doneArgs) && String(v.added.type || '').startsWith('response.')) {
+            enqueueEvent(controller, v.added.type as string, v.added);
+            for (const d of v.deltas) {
+              enqueueEvent(controller, 'response.function_call_arguments.delta', {
+                type: 'response.function_call_arguments.delta',
+                item_id: v.itemId,
+                output_index: v.outputIndex,
+                delta: d,
+              });
+            }
+            const finalDoneArgs = v.doneArgs || '';
+            if (v.hasDone || finalDoneArgs) {
+              enqueueEvent(controller, 'response.function_call_arguments.done', {
+                type: 'response.function_call_arguments.done',
+                item_id: v.itemId,
+                output_index: v.outputIndex,
+                arguments: finalDoneArgs,
+              });
+            }
+            enqueueEvent(controller, 'response.output_item.done', {
+              type: 'response.output_item.done',
+              output_index: v.outputIndex,
+              item: {
+                id: v.itemId,
+                type: 'function_call',
+                status: v.status || 'completed',
+                call_id: v.callId,
+                name: v.name,
+                arguments: finalDoneArgs,
+                ...(v.namespace ? { namespace: v.namespace } : {}),
+              },
+            });
+          }
+        }
+        pendingFunctionCalls.clear();
         if (pending.trim()) controller.enqueue(encoder.encode(pending));
         controller.close();
       } catch (e) {

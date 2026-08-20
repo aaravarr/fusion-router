@@ -403,3 +403,73 @@ describe("usage 计量真实化（D 项）", () => {
     expect(usage.output_tokens_details).toBeUndefined()
   })
 })
+
+describe("A 项回放回归（单包无 delta 与多 delta 完整性）", () => {
+  it("单包 function_call（added 带空 arguments、仅 done 带完整 arguments、无 delta）应完整回放 added→done→output_item.done", async () => {
+    const sse = [
+      'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_single","call_id":"call_single","name":"run_code","status":"in_progress","arguments":""}}\n\n',
+      'event: response.function_call_arguments.done\ndata: {"type":"response.function_call_arguments.done","item_id":"fc_single","output_index":0,"arguments":"{\"code\":\"await tools.web_search({query:\\\"test\\\"})\"}"}\n\n',
+      'event: response.output_item.done\ndata: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_single","call_id":"call_single","name":"run_code","status":"completed","arguments":"{\"code\":\"await tools.web_search({query:\\\"test\\\"})\"}"}}\n\n',
+      "data: [DONE]\n\n",
+    ]
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const v of sse) controller.enqueue(new TextEncoder().encode(v))
+        controller.close()
+      },
+    })
+    const output = await new Response(transformXaiResponsesSseForCodex(stream)).text()
+    expect(output).toContain('"type":"response.output_item.added"')
+    expect(output).toContain('"type":"response.function_call_arguments.done"')
+    expect(output).toContain('"type":"response.output_item.done"')
+    expect(output).toContain('call_single')
+    expect(output).toContain('await tools.web_search')
+    // 不应丢失 done，且不应产生非法 _1 后缀拆分
+    expect(output).not.toContain('call_single_1')
+  })
+
+  it("单包 function_call（added 已带完整 arguments、无 delta、done 同参）应完整回放", async () => {
+    const args = "{\"code\":\"console.log(123)\"}"
+    const sse = [
+      `event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"run_code","status":"in_progress","arguments":"${args}"}}\n\n`,
+      `event: response.function_call_arguments.done\ndata: {"type":"response.function_call_arguments.done","item_id":"fc_a","output_index":1,"arguments":"${args}"}\n\n`,
+      `event: response.output_item.done\ndata: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"run_code","status":"completed","arguments":"${args}"}}\n\n`,
+      "data: [DONE]\n\n",
+    ]
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const v of sse) controller.enqueue(new TextEncoder().encode(v))
+        controller.close()
+      },
+    })
+    const output = await new Response(transformXaiResponsesSseForCodex(stream)).text()
+    expect(output).toContain('"type":"response.output_item.added"')
+    expect(output).toContain('"type":"response.function_call_arguments.done"')
+    expect(output).toContain('"type":"response.output_item.done"')
+    expect(output).toContain('call_a')
+  })
+
+  it("正常多 delta 不拆分的回放应完整（added→delta*2→done→output_item.done）", async () => {
+    const fixedSse = [
+      'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_m","call_id":"call_m","name":"run_code","status":"in_progress","arguments":""}}\n\n',
+      'event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","item_id":"fc_m","output_index":2,"delta":"{\\\"code\\\":\\\"part1"}\n\n',
+      'event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","item_id":"fc_m","output_index":2,"delta":"part2\\\"}"}\n\n',
+      'event: response.function_call_arguments.done\ndata: {"type":"response.function_call_arguments.done","item_id":"fc_m","output_index":2,"arguments":"{\\\"code\\\":\\\"part1part2\\\"}"}\n\n',
+      'event: response.output_item.done\ndata: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_m","call_id":"call_m","name":"run_code","status":"completed","arguments":"{\\\"code\\\":\\\"part1part2\\\"}"}}\n\n',
+      "data: [DONE]\n\n",
+    ]
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const v of fixedSse) controller.enqueue(new TextEncoder().encode(v))
+        controller.close()
+      },
+    })
+    const output = await new Response(transformXaiResponsesSseForCodex(stream)).text()
+    expect(output).toContain('"type":"response.output_item.added"')
+    expect((output.match(/response\.function_call_arguments\.delta/g) || []).length).toBeGreaterThanOrEqual(2)
+    expect(output).toContain('"type":"response.function_call_arguments.done"')
+    expect(output).toContain('"type":"response.output_item.done"')
+    expect(output).toContain('call_m')
+    expect(output).not.toContain('call_m_1')
+  })
+})
