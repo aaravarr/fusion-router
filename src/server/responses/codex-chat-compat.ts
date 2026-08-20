@@ -1677,7 +1677,7 @@ export function isXaiServerSearchToolName(name: unknown): boolean {
  * - type=custom_tool_call name=x_keyword_search|x_semantic_search|...
  * Normalize to web_search_call so Codex shows "已搜索网页" process UI and does not try local execution.
  */
-export function remapServerToolItemForCodex(item: unknown): unknown {
+export function remapServerToolItemForCodex(item: unknown, ctx?: CodexToolContext): unknown {
   if (!isObj(item)) return item;
   const type = String(item.type || '').toLowerCase();
   if (!type) return item;
@@ -1780,6 +1780,14 @@ export function remapServerToolItemForCodex(item: unknown): unknown {
   // Safety: server search leaked as function_call.
   if (type === 'function_call' || type === 'function') {
     const name = String(item.name || (isObj(item.function) ? item.function.name : '') || '').trim();
+    // 客户端显式声明的同名 function（如 DSH 的 web_search）是客户端工具调用，不应被当作
+    // 服务端搜索劫持成 web_search_call —— 仅当客户端未声明为 function（或显式声明为服务端工具）时才转换。
+    // 实测：opencode-go/muse 上游会原样返回 function_call name=web_search，若在此转换，
+    // 客户端永远收不到要自己执行的工具调用（"web_search 完全没效果"的根因）。
+    const lowerName = name.toLowerCase();
+    if (ctx && ctx.clientFunctionNames.has(lowerName) && !ctx.serverToolTypes.has(lowerName)) {
+      return item;
+    }
     if (isXaiServerSearchToolName(name)) {
       const query = extractServerSearchQuery(item);
       const callId = String(item.call_id || item.id || 'ws_' + Math.random().toString(16).slice(2));
@@ -1815,7 +1823,7 @@ export function remapXaiOutputItemForCodex(item: unknown, ctx?: CodexToolContext
     // 查询词缺失则不转换，保原样落到下方的 serverRemap 透传
   }
   // First: xAI server tools (x_search_call etc.) -> Codex-safe shapes
-  const serverRemapped = remapServerToolItemForCodex(item);
+  const serverRemapped = remapServerToolItemForCodex(item, ctx);
   if (!isObj(serverRemapped)) return serverRemapped;
   // If remapped away from function_call (e.g. to web_search_call), return immediately.
   if (serverRemapped !== item) {

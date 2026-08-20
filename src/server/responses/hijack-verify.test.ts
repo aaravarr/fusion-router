@@ -21,6 +21,27 @@ function ctxWithServerTool(type: string, pool: string | null = "opencode-go", mo
   return ctx
 }
 describe("hijack verify", () => {
+  it("客户端 function 声明时 function_call 不被转成 web_search_call（生产根因回归）", () => {
+    const ctx = ctxWithClientFunction("web_search")
+    const payload = {
+      id: "resp_1",
+      output: [
+        {
+          type: "function_call",
+          id: "fc_9",
+          call_id: "call_9",
+          status: "completed",
+          name: "web_search",
+          arguments: "{\"query\":\"DeepSeek V4 发布时间 release date\"}",
+        },
+      ],
+    }
+    const remapped = remapXaiResponsesJsonForCodex(payload, ctx) as any
+    const item = remapped.output[0]
+    expect(item.type).toBe("function_call")
+    expect(item.name).toBe("web_search")
+    expect(JSON.parse(item.arguments)).toEqual({ query: "DeepSeek V4 发布时间 release date" })
+  })
   it("non-stream web_search_call -> function_call with xai_query", () => {
     const ctx = ctxWithClientFunction("web_search")
     const payload = {
