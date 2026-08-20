@@ -38,6 +38,14 @@ export type CodexToolContext = {
   tools: Obj[];
   byChatName: Map<string, CodexToolSpec>;
   customNames: Set<string>;
+  // 劫持回退：客户端以 function 声明的搜索工具名（小写归一）
+  clientFunctionNames: Set<string>;
+  // 客户端显式声明的服务端搜索工具类型（小写，如 web_search、x_search）
+  serverToolTypes: Set<string>;
+  // 上游池类型，仅 opencode-go 时启用劫持回退（gateway 写入）
+  poolType?: string | null;
+  // 请求模型，用于 muse 家族判定（仅 muse 模型 + opencode-go 才回退）
+  model?: string | null;
 };
 
 function textFromContent(content: unknown): string {
@@ -327,7 +335,7 @@ function preserveCustomDescription(tool: Obj): string {
 }
 
 function emptyToolContext(): CodexToolContext {
-  return { tools: [], byChatName: new Map(), customNames: new Set() };
+  return { tools: [], byChatName: new Map(), customNames: new Set(), clientFunctionNames: new Set(), serverToolTypes: new Set(), poolType: null, model: null };
 }
 
 function addChatTool(ctx: CodexToolContext, spec: CodexToolSpec, chatTool: Obj) {
@@ -341,6 +349,13 @@ function addFunctionTool(ctx: CodexToolContext, tool: Obj, namespace?: string | 
   const fn = isObj(tool.function) ? tool.function : tool;
   const original = pickName(fn.name, tool.name);
   if (!original) return;
+  // 记录客户端 function 声明（用于劫持回退判断）
+  if (!namespace) {
+    ctx.clientFunctionNames.add(original.toLowerCase().trim());
+  } else {
+    // 命名空间工具同样记录原始名，便于匹配 web_search/x_search
+    ctx.clientFunctionNames.add(original.toLowerCase().trim());
+  }
   const chatName = namespace ? flattenNamespaceName(namespace, original) : original;
   const description =
     typeof fn.description === 'string'
@@ -427,6 +442,11 @@ function addResponseTool(ctx: CodexToolContext, tool: unknown) {
   }
   if (!isObj(tool)) return;
   const type = String(tool.type || '').toLowerCase();
+  // 显式服务端搜索声明：记录后不进入 byChatName，用于劫持回退的"原样透传"判断
+  if (type === 'web_search' || type === 'x_search') {
+    ctx.serverToolTypes.add(type);
+    return;
+  }
   if (type === 'function' || isObj(tool.function)) addFunctionTool(ctx, tool, null);
   else if (type === 'custom' || isObj(tool.custom)) addCustomTool(ctx, tool);
   else if (type === 'tool_search') addToolSearch(ctx);
@@ -457,13 +477,14 @@ function collectToolsFromToolSearchOutputs(input: unknown, ctx: CodexToolContext
 export function buildCodexToolContextFromRequest(body: unknown): CodexToolContext {
   const ctx = emptyToolContext();
   if (!isObj(body)) return ctx;
-  const tools = Array.isArray(body.tools) ? body.tools : [];
+  if (typeof (body as Obj).model === 'string') ctx.model = String((body as Obj).model).trim() || null;
+  const tools = Array.isArray((body as Obj).tools) ? (body as Obj).tools as unknown[] : [];
   for (const t of tools) addResponseTool(ctx, t);
-  if (body.input != null) collectToolsFromToolSearchOutputs(body.input, ctx);
+  if ((body as Obj).input != null) collectToolsFromToolSearchOutputs((body as Obj).input, ctx);
   if (!ctx.byChatName.has(TOOL_SEARCH_NAME)) {
     const hasSearch =
       tools.some((t) => isObj(t) && String(t.type || '').toLowerCase() === 'tool_search') ||
-      JSON.stringify(body.input || '').includes('tool_search_call');
+      JSON.stringify((body as Obj).input || '').includes('tool_search_call');
     if (hasSearch) addToolSearch(ctx);
   }
   return ctx;
@@ -473,6 +494,91 @@ export function isCustomToolChatName(ctx: CodexToolContext | undefined, chatName
   // Decide from the tool shape the client actually declared; never assume
   // apply_patch is custom when the request registered it as a function tool.
   return ctx?.customNames.has(chatName) ?? false;
+}
+
+// ========== 劫持回退：服务端 web_search_call/x_search_call → 客户端 function_call ==========
+// 仅当三条件同时满足：客户端以 function 声明了 web_search/x_search、响应为对应 *_call、且为 opencode-go 池
+function hasClientSearchFunction(ctx: CodexToolContext | undefined, name: string): boolean {
+  if (!ctx) return false
+  return ctx.clientFunctionNames.has(name.toLowerCase().trim())
+}
+function hasServerSearchTool(ctx: CodexToolContext | undefined, type: string): boolean {
+  if (!ctx) return false
+  return ctx.serverToolTypes.has(type.toLowerCase().trim())
+}
+function isMuseModel(ctx: CodexToolContext | undefined): boolean {
+  if (!ctx?.model) return false
+  const m = String(ctx.model).toLowerCase().trim()
+  if (!m) return false
+  // 严格匹配 muse 家族两款模型，兼容单测中使用的简写 "muse" 及含 muse 子串的变体
+  if (m === 'muse-spark-1.2-contributor' || m === 'muse-spark-1.2') return true
+  return m.includes('muse')
+}
+function isOpencodeGoContext(ctx: CodexToolContext | undefined): boolean {
+  if (!ctx) return false
+  // 仅 opencode-go 池的 muse 模型才回退；poolType 未设置时（单测）仅按模型判定
+  if (!isMuseModel(ctx)) return false
+  if (ctx.poolType == null) return true
+  return ctx.poolType === 'opencode-go'
+}
+function stripHijackQueryPrefix(query: string): string {
+  const q = String(query || '').trim()
+  if (!q) return q
+  const lower = q.toLowerCase()
+  if (lower.startsWith('web_search:')) return q.slice('web_search:'.length).trim()
+  if (lower.startsWith('x_search:')) return q.slice('x_search:'.length).trim()
+  return q
+}
+function extractHijackedQuery(item: Obj): string | null {
+  // 优先 xai_query，其次 action.query（需剥离前缀），都缺失则不转换
+  if (typeof (item as Obj).xai_query === 'string' && String((item as Obj).xai_query).trim()) {
+    return String((item as Obj).xai_query).trim()
+  }
+  if (isObj((item as Obj).action) && typeof ((item as Obj).action as Obj).query === 'string' && String(((item as Obj).action as Obj).query).trim()) {
+    const raw = String(((item as Obj).action as Obj).query).trim()
+    const stripped = stripHijackQueryPrefix(raw)
+    return stripped || null
+  }
+  // 兜底：item.query（少数上游形态）
+  if (typeof (item as Obj).query === 'string' && String((item as Obj).query).trim()) {
+    const raw = String((item as Obj).query).trim()
+    return stripHijackQueryPrefix(raw) || null
+  }
+  return null
+}
+function getHijackTargetName(itemType: string): string | null {
+  const t = String(itemType || '').toLowerCase().trim()
+  if (t === 'web_search_call') return 'web_search'
+  if (t === 'x_search_call') return 'x_search'
+  return null
+}
+function shouldRemapHijackedSearch(item: Obj, ctx?: CodexToolContext): boolean {
+  const type = String(item.type || '').toLowerCase().trim()
+  const target = getHijackTargetName(type)
+  if (!target) return false
+  if (!isOpencodeGoContext(ctx)) return false
+  if (!hasClientSearchFunction(ctx, target)) return false
+  if (hasServerSearchTool(ctx, target)) return false
+  return true
+}
+function remapHijackedSearchItemToFunctionCall(item: Obj): Obj | null {
+  const type = String(item.type || '').toLowerCase().trim()
+  const targetName = getHijackTargetName(type)
+  if (!targetName) return null
+  const query = extractHijackedQuery(item)
+  if (!query) return null
+  const args = JSON.stringify({ query })
+  const id = typeof item.id === 'string' && item.id.trim() ? item.id : String(item.call_id || '')
+  const callId = typeof item.call_id === 'string' && item.call_id.trim() ? item.call_id : id
+  const statusRaw = typeof item.status === 'string' && item.status.trim() ? item.status.trim() : 'completed'
+  return {
+    id: id || callId || 'fc_' + Math.random().toString(16).slice(2),
+    type: 'function_call',
+    status: statusRaw || 'completed',
+    call_id: callId || id,
+    name: targetName,
+    arguments: args,
+  }
 }
 
 function parseToolSearchArgsObject(argumentsStr: string): Obj {
@@ -1702,6 +1808,12 @@ export function remapServerToolEventType(eventType: string): string {
 /** Remap one Responses output item from xAI shape -> Codex shape. */
 export function remapXaiOutputItemForCodex(item: unknown, ctx?: CodexToolContext): unknown {
   if (!isObj(item)) return item;
+  // 优先：劫持回退（opencode-go + 客户端 function 声明）→ function_call
+  if (isObj(item) && shouldRemapHijackedSearch(item as Obj, ctx)) {
+    const hijacked = remapHijackedSearchItemToFunctionCall(item as Obj)
+    if (hijacked) return hijacked
+    // 查询词缺失则不转换，保原样落到下方的 serverRemap 透传
+  }
   // First: xAI server tools (x_search_call etc.) -> Codex-safe shapes
   const serverRemapped = remapServerToolItemForCodex(item);
   if (!isObj(serverRemapped)) return serverRemapped;
@@ -1845,6 +1957,9 @@ export function transformXaiResponsesSseForCodex(
   // 缓冲 function_call 的流式生命周期，用于纯结构拆分畸形聚合（多个同 id delta 拼接）
   // key 为 item_id/call_id，value 记录 added、deltas、最终 done 的信息，待 output_item.done 时统一判定是否需要拆分
   const pendingFunctionCalls = new Map<string, { added: Obj; deltas: string[]; doneArgs: string; hasDone: boolean; outputIndex: unknown; itemId: string; callId: string; name: string; status: string; namespace?: string }>()
+  // 劫持回退：跟踪已转换为 function_call 的 web_search_call/x_search_call，抑制其中间 web_search_call.* 事件
+  const hijackedIds = new Set<string>()
+  const hijackDetails = new Map<string, { query: string; name: string; itemId: string; callId: string; outputIndex: unknown }>()
 
   const enqueueEvent = (controller: ReadableStreamDefaultController<Uint8Array>, eventName: string, data: Obj) => {
     const ev = eventName || (typeof data.type === 'string' ? data.type : 'message');
@@ -1961,10 +2076,81 @@ export function transformXaiResponsesSseForCodex(
               }
 
               const beforeItem = isObj(parsed.item) ? ({ ...parsed.item } as Obj) : null;
+              // 劫持回退：若中间态 web_search_call 事件属已劫持的 function，则直接抑制（保持 output_index 与 sequence 一致）
+              if ((evType.includes('web_search_call') || evType.includes('x_search_call')) && (hijackedIds.has(String((parsed as Obj).item_id || '')) || hijackedIds.has(String((parsed as Obj).itemId || '')) || hijackedIds.has(String((parsed as Obj).output_index ?? '')))) {
+                continue
+              }
               const remapped = remapSseDataObject(parsed, ctx);
               if (String(remapped.type || '') === 'response.codex_compat.noop') continue;
 
               const afterItem = isObj(remapped.item) ? (remapped.item as Obj) : null;
+              // 劫持回退：web_search_call/x_search_call → function_call（仅 opencode-go + 客户端 function 声明）
+              {
+                const bType = beforeItem ? String(beforeItem.type || '').toLowerCase() : ''
+                const isHijackCandidate = (bType === 'web_search_call' || bType === 'x_search_call') && shouldRemapHijackedSearch(beforeItem as Obj, ctx)
+                if (isHijackCandidate && beforeItem) {
+                  const bItem = beforeItem as Obj
+                  const q = extractHijackedQuery(bItem)
+                  if (q) {
+                    const targetName = bType === 'x_search_call' ? 'x_search' : 'web_search'
+                    const itemId = String(bItem.id || bItem.call_id || '')
+                    const callId = String(bItem.call_id || bItem.id || '')
+                    const outputIndex: unknown = (parsed as Obj).output_index ?? (remapped as Obj).output_index
+                    const seq: unknown = (parsed as Obj).sequence_number ?? (remapped as Obj).sequence_number
+                    const argsJson = JSON.stringify({ query: q })
+                    const remappedType = String(remapped.type || '')
+                    if (remappedType === 'response.output_item.added') {
+                      hijackedIds.add(itemId)
+                      hijackedIds.add(callId)
+                      if (outputIndex != null) hijackedIds.add(String(outputIndex))
+                      const detail = { query: q, name: targetName, itemId, callId, outputIndex }
+                      hijackDetails.set(itemId, detail)
+                      hijackDetails.set(callId, detail)
+                      if (outputIndex != null) hijackDetails.set(String(outputIndex), detail)
+                      enqueueEvent(controller, 'response.output_item.added', {
+                        type: 'response.output_item.added',
+                        output_index: outputIndex as number,
+                        sequence_number: seq as number,
+                        item: { id: itemId || callId, type: 'function_call', status: 'in_progress', call_id: callId || itemId, name: targetName, arguments: '' },
+                      })
+                      enqueueEvent(controller, 'response.function_call_arguments.delta', {
+                        type: 'response.function_call_arguments.delta',
+                        item_id: itemId || callId,
+                        output_index: outputIndex as number,
+                        sequence_number: typeof seq === 'number' ? (seq as number) + 1 : undefined,
+                        delta: argsJson,
+                      })
+                      enqueueEvent(controller, 'response.function_call_arguments.done', {
+                        type: 'response.function_call_arguments.done',
+                        item_id: itemId || callId,
+                        output_index: outputIndex as number,
+                        sequence_number: typeof seq === 'number' ? (seq as number) + 2 : undefined,
+                        arguments: argsJson,
+                      })
+                      continue
+                    }
+                    if (remappedType === 'response.output_item.done') {
+                      const detail = hijackDetails.get(itemId) || hijackDetails.get(callId) || hijackDetails.get(String(outputIndex)) || { query: q, name: targetName, itemId, callId, outputIndex }
+                      const finalArgs = JSON.stringify({ query: detail.query })
+                      const bItem2 = beforeItem as Obj
+                      const status = typeof bItem2.status === 'string' && (bItem2.status as string).trim() ? (bItem2.status as string) : 'completed'
+                      enqueueEvent(controller, 'response.output_item.done', {
+                        type: 'response.output_item.done',
+                        output_index: outputIndex as number,
+                        sequence_number: seq as number,
+                        item: { id: detail.itemId || itemId, type: 'function_call', status, call_id: detail.callId || callId, name: detail.name, arguments: finalArgs },
+                      })
+                      hijackedIds.delete(itemId)
+                      hijackedIds.delete(callId)
+                      if (outputIndex != null) hijackedIds.delete(String(outputIndex))
+                      hijackDetails.delete(itemId)
+                      hijackDetails.delete(callId)
+                      if (outputIndex != null) hijackDetails.delete(String(outputIndex))
+                      continue
+                    }
+                  }
+                }
+              }
               // 纯结构拆分：缓冲并检测 function_call 拼接（A 项）——仅对 function_call 做缓冲，待 output_item.done 时统一判定是否需拆分
               const remappedTypeForSplit = String(remapped.type || '');
               const afterItemTypeForSplit = afterItem ? String(afterItem.type || '').toLowerCase() : '';

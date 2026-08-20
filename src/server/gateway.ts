@@ -833,6 +833,8 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
             }
           }
           // 构建最终面向客户端的流（可能包含 responses<->chat 转换）；先构建出最终 responses 形态的 outStream，再对最终流做捕获
+          // 劫持回退：为 opencode-go 池注入 poolType，便于仅该池将 web_search_call/x_search_call 转为 function_call
+          if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
           let outStream: ReadableStream<Uint8Array> = rebuilt
           if (attemptMessagesFallback === "responses") outStream = chatSseToMessagesStream(responsesSseToChatStream(outStream))
           else if (attemptMessagesFallback === "chat") outStream = chatSseToMessagesStream(outStream)
@@ -883,6 +885,7 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
           let remappedJson: unknown = undefined
           try {
             const json = JSON.parse(new TextDecoder().decode(buf))
+            if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
             if (attemptChatFallbackUsed) remappedJson = convertChatJsonToResponses(json, responsesModelHint, attemptToolContext)
             else if (attemptToolContext) remappedJson = remapResponsesSuccessBody(json, attemptToolContext)
             else remappedJson = json
