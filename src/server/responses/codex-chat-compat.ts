@@ -2093,7 +2093,8 @@ export function transformXaiResponsesSseForCodex(
                     if (pendingKey) pendingFunctionCalls.delete(pendingKey);
                     continue;
                   } else {
-                    if (pendingEntry && pendingKey) {
+                    // 仅当 added 是真实事件（response.* 开头）时才回放；兜底合成的占位条目（type=function_call）直接跳过，避免发出非法事件
+                    if (pendingEntry && pendingKey && String(pendingEntry.added.type || '').startsWith('response.')) {
                       enqueueEvent(controller, pendingEntry.added.type as string, pendingEntry.added);
                       for (const d of pendingEntry.deltas) {
                         enqueueEvent(controller, 'response.function_call_arguments.delta', {
