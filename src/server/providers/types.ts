@@ -3,7 +3,7 @@ import type { InterfaceFormat } from "../messages/route-decision"
 
 // Pool Type
 
-export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code"] as const
+export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go"] as const
 export type BuiltinPoolType = (typeof POOL_TYPES)[number]
 export type PoolType = BuiltinPoolType | `custom:${string}`
 
@@ -12,6 +12,7 @@ export const POOL_TYPE_LABELS: Record<BuiltinPoolType, string> = {
   "openai": "OpenAI",
   "xai-grok": "xAI Grok",
   "kimi-code": "Kimi Code",
+  "open-design-go": "Open Design GO",
 }
 
 // Quota

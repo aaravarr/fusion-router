@@ -3,6 +3,7 @@ import { OpenCodeGoProvider } from "./opencode-go"
 import { OpenAICPAProvider } from "./openai-cpa"
 import { XAIGrokProvider } from "./xai-grok"
 import { KimiCodeProvider } from "./kimi-code"
+import { OpenDesignGoProvider } from "./open-design-go"
 import { CustomProvider } from "./custom"
 import { getCustomProviderByPoolType } from "../custom-providers"
 
@@ -19,6 +20,7 @@ export function ensureProvidersRegistered(): void {
   registry.register(new OpenAICPAProvider())
   registry.register(new XAIGrokProvider())
   registry.register(new KimiCodeProvider())
+  registry.register(new OpenDesignGoProvider())
 }
 
 // Trigger registration on module load

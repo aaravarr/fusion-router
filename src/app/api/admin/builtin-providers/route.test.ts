@@ -42,7 +42,7 @@ describe("/api/admin/builtin-providers", () => {
     const response = await GET(new Request("http://x/api/admin/builtin-providers"))
     expect(response.status).toBe(200)
     const payload = (await response.json()) as { providers: ProviderPayload[] }
-    expect(payload.providers.map((provider) => provider.poolType)).toEqual(["opencode-go", "openai", "xai-grok", "kimi-code"])
+    expect(payload.providers.map((provider) => provider.poolType)).toEqual(["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go"])
     for (const provider of payload.providers) {
       expect(provider.enabled).toBe(true)
       expect(provider.accountCount).toBe(0)

@@ -6,7 +6,7 @@ export const BILLING_GUARDS = ["VERIFIED_GO_ONLY", "PAYG_FALLBACK_ENABLED", "UNV
 const _ROLLING_24H = "ROLLING_24H"
 export const QUOTA_KINDS = ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD", "UNKNOWN_GO_LIMIT", _ROLLING_24H, "PROVIDER_RATE_LIMIT"] as const
 
-export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code"] as const
+export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go"] as const
 export type BuiltinPoolType = (typeof POOL_TYPES)[number]
 export type PoolType = BuiltinPoolType | `custom:${string}`
 
