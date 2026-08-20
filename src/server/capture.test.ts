@@ -165,3 +165,61 @@ describe("capture.extractUsage responses nested", () => {
     })
   })
 })
+describe("capture Responses usage: reasoning & cached (实测样本)", () => {
+  // 上游 opencode-go /v1/responses response.completed 事件的 usage 结构为 Responses 协议：
+  //   usage.output_tokens_details.reasoning_tokens / usage.input_tokens_details.cached_tokens
+  // 与 chat 链路的 usage.completion_tokens_details.reasoning_tokens / prompt_tokens_details.cached_tokens 不同。
+  const compact = () => ({
+    input_tokens: 9,
+    output_tokens: 194,
+    total_tokens: 203,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens_details: { reasoning_tokens: 173 },
+  })
+
+  it("流式 response.completed 事件形态 -> reasoning_tokens 与 cached_tokens 均被解析", () => {
+    const sse =
+      'data: {"type":"response.completed","response":{"usage":' +
+      JSON.stringify(compact()) +
+      '}}\n\ndata: [DONE]\n\n'
+    expect(extractUsageFromSse(sse)).toMatchObject({
+      promptTokens: 9,
+      completionTokens: 194,
+      totalTokens: 203,
+      reasoningTokens: 173,
+      cachedTokens: 0,
+    })
+  })
+
+  it("流式 response.completed 事件顶层 usage 形态", () => {
+    expect(extractUsage({ type: "response.completed", usage: compact() })).toMatchObject({
+      promptTokens: 9,
+      completionTokens: 194,
+      reasoningTokens: 173,
+      cachedTokens: 0,
+    })
+  })
+
+  it("非流式 JSON 形态（usage 在根对象）", () => {
+    expect(extractUsage({ id: "resp_x", object: "response", status: "completed", usage: compact() })).toMatchObject({
+      promptTokens: 9,
+      completionTokens: 194,
+      totalTokens: 203,
+      reasoningTokens: 173,
+      cachedTokens: 0,
+    })
+  })
+
+  it("缺省 output_tokens_details 时不崩，reasoning_tokens 保持 undefined", () => {
+    const out = extractUsage({
+      usage: {
+        input_tokens: 9,
+        output_tokens: 194,
+        total_tokens: 203,
+        input_tokens_details: { cached_tokens: 0 },
+      },
+    })
+    expect(out).toMatchObject({ promptTokens: 9, completionTokens: 194, cachedTokens: 0 })
+    expect(out?.reasoningTokens).toBeUndefined()
+  })
+})

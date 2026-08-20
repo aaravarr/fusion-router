@@ -36,7 +36,7 @@ function readUsageObject(usage: Record<string, unknown>): TokenUsage | undefined
   //   OpenAI Responses API: 嵌套 input_tokens_details.cached_tokens
   // 只取根对象会漏掉 OpenAI 的两种，导致缓存数恒为 0。
   const cacheRead = num(usage.cache_read_input_tokens);
-  const cacheCreation = num(usage.cache_creation_input_tokens);
+  // cache_creation_input_tokens 属于 input_tokens 的子集，不参与缓存命中统计（见下方口径注释）。
   const cachedTokens =
     num(usage.cached_tokens)
     ?? cacheRead
@@ -54,6 +54,11 @@ function readUsageObject(usage: Record<string, unknown>): TokenUsage | undefined
     promptTokensRaw !== undefined && anthropicCache > 0
       ? promptTokensRaw + anthropicCache
       : promptTokensRaw;
+  // reasoning 在不同上游协议里的位置不同：
+  //   OpenAI Chat Completions: 嵌套 completion_tokens_details.reasoning_tokens
+  //   OpenAI Responses API: 嵌套 output_tokens_details.reasoning_tokens
+  //   （少数上游直接在根对象给 reasoning_tokens）
+  // 三处都取，任一命中即算 reasoning_tokens，与 chat 链路口径一致。
   const reasoningTokens =
     num(usage.reasoning_tokens)
     ?? num((usage.completion_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens)
