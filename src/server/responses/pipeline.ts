@@ -72,6 +72,9 @@ function isObj(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v)
 }
 
+// 白名单模型集合：已验证原生支持 responses 的模型，不应被会话血缘强制转 chat
+const NATIVE_RESPONSES_MODELS = new Set(["gpt-5.6-luna", "muse-spark-1.2-contributor", "muse-spark-1.2"])
+
 function ensureResponsesStreamUsage(body: unknown): unknown {
   if (!isObj(body)) return body
   const b = { ...body }
@@ -85,6 +88,41 @@ function ensureResponsesStreamUsage(body: unknown): unknown {
       b.stream_options = { include_usage: true }
     }
   }
+  return b
+}
+
+/**
+ * 为白名单模型自动补充 include 参数，合并用户已有 include 并去重。
+ * 目的：确保 reasoning.encrypted_content 随 responses 返回，便于客户端按协议回显血缘。
+ * 非白名单模型不动；/raw 直通路径不经过此函数。
+ */
+function ensureResponsesInclude(body: unknown): unknown {
+  if (!isObj(body)) return body
+  const model = typeof body.model === "string" ? body.model : ""
+  if (!NATIVE_RESPONSES_MODELS.has(model)) return body
+  const b = { ...body }
+  const needed = "reasoning.encrypted_content"
+  let arr: string[] = []
+  const raw = (b as Record<string, unknown>).include
+  if (Array.isArray(raw)) {
+    arr = raw.map((v) => String(v).trim()).filter(Boolean)
+  } else if (typeof raw === "string" && raw.trim()) {
+    arr = [raw.trim()]
+  } else if (raw != null) {
+    // 未知形态的 include（如对象），保持原样不处理
+    return b
+  }
+  if (!arr.includes(needed)) arr.push(needed)
+  // 去重保持顺序
+  const deduped: string[] = []
+  const seen = new Set<string>()
+  for (const v of arr) {
+    if (!seen.has(v)) {
+      seen.add(v)
+      deduped.push(v)
+    }
+  }
+  ;(b as Record<string, unknown>).include = deduped
   return b
 }
 
@@ -137,8 +175,6 @@ export async function prepareResponsesRequestBody(
   const preferResponsesForServerTools =
     injectEnabled || bodyHasServerSearchTool(body) || bodyHasServerSearchTool(bodyForRoute)
 
-  // muse 家族等已验证原生支持 responses 的模型，不应被会话血缘强制转 chat
-  const NATIVE_RESPONSES_MODELS = new Set(["gpt-5.6-luna", "muse-spark-1.2-contributor", "muse-spark-1.2"]);
   let route: ResponsesRouteMode = "responses"
   let routeReason = "responses_native"
   if (isCompact) {
@@ -153,13 +189,31 @@ export async function prepareResponsesRequestBody(
     // 白名单模型豁免：session_lineage_chat / foreign_opaque:* / foreign_history:* 均保持原生 responses
     // 原因：foreign_opaque/history 的 encrypted reasoning 等 opaque 项本就是上游 responses 产出后由客户端按协议回显的，
     // 原生 responses 转发可保留完整推理上下文；sanitizeResponsesInputItems 对带 encrypted_content 的 reasoning/compaction
-    // 项会保留原样或用服务端存储的 opaque 恢复，不会剥离（见 conversation-store.ts sanitizeResponsesInputItems）；
-    // 而 foreign_previous_response_id 指向非本网关产出的 response，未命中存储时仍需 chat 兜底，故不豁免。
+    // 项会保留原样或用服务端存储的 opaque 恢复，不会剥离（见 conversation-store.ts sanitizeResponsesInputItems）。
     const isWhitelisted = typeof model === "string" && NATIVE_RESPONSES_MODELS.has(model);
-    const isWhitelistedExemptReason = (reason?: string) =>
-      reason === "session_lineage_chat" ||
-      (typeof reason === "string" &&
-        (reason.startsWith("foreign_opaque:") || reason.startsWith("foreign_history:")));
+    // 检测请求 input 是否携带 encrypted_content（客户端回显本网关产出的 response id 时的协议内连续性标识）
+    const hasEncryptedContentInInput = (() => {
+      if (!isObj(bodyForRoute)) return false
+      const input = (bodyForRoute as Record<string, unknown>).input
+      const items = Array.isArray(input) ? input : input != null ? [input] : []
+      for (const it of items) {
+        if (!isObj(it)) continue
+        const enc = (it as Record<string, unknown>).encrypted_content
+        if (typeof enc === "string" && enc.trim().length > 0) return true
+        if (enc != null && String(enc).trim().length > 0) return true
+      }
+      return false
+    })()
+    // isWhitelistedExemptReason：白名单模型的血缘豁免判定
+    // - session_lineage_chat / foreign_opaque:* / foreign_history:* 始终豁免
+    // - foreign_previous_response_id 仅当请求携带 encrypted_content 或 lineage.storeHit 为 true 时豁免
+    //   中文说明：客户端回显本网关产出的 response id 属于协议内连续性，不应降级为 chat；其余 foreign_previous_response_id 场景（指向非本网关产出且未命中存储）保持转 chat 兜底。
+    const isWhitelistedExemptReason = (reason?: string) => {
+      if (reason === "session_lineage_chat") return true
+      if (typeof reason === "string" && (reason.startsWith("foreign_opaque:") || reason.startsWith("foreign_history:"))) return true
+      if (reason === "foreign_previous_response_id" && (hasEncryptedContentInInput || lineage.hit)) return true
+      return false
+    }
     const shouldFallback = eager.eager && !(isWhitelisted && isWhitelistedExemptReason(eager.reason));
     if (shouldFallback) {
       route = "chat"
@@ -219,6 +273,7 @@ export async function prepareResponsesRequestBody(
   work = sanitized.body
   work = normalizeToolsInBody(work, { mode: "responses" })
   work = ensureResponsesStreamUsage(work)
+  work = ensureResponsesInclude(work)
 
   const toolContext = buildCodexToolContextFromRequest(body)
   return {

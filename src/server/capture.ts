@@ -113,11 +113,38 @@ export function extractUsage(payload: unknown): TokenUsage | undefined {
   }
   // 事件根本身是裸 usage 对象（无 usage 包装键的独立 usage 事件）时，把根当作候选。
   if (isUsageLikeObject(root)) candidates.push(root);
+  // 辅助：判断 output 是否全为 reasoning 项（用于计量真实化推断）
+  const isAllReasoningOutput = (out: unknown): boolean => {
+    if (!Array.isArray(out) || out.length === 0) return false;
+    return out.every((item) => {
+      if (!item || typeof item !== "object") return false;
+      const t = String((item as Record<string, unknown>).type || "").toLowerCase();
+      return t.includes("reasoning");
+    });
+  };
+  const outputCandidates: unknown[] = [];
+  if (Array.isArray(root.output)) outputCandidates.push(root.output);
+  if (response && Array.isArray(response.output)) outputCandidates.push(response.output);
+  if (nestedResponse && Array.isArray(nestedResponse.output)) outputCandidates.push(nestedResponse.output);
+  // 兼容：SSE 事件 response 嵌套形态
+  const sseResponse = root.response && typeof root.response === "object" ? (root.response as Record<string, unknown>).response : undefined;
+  if (sseResponse && typeof sseResponse === "object" && Array.isArray((sseResponse as Record<string, unknown>).output)) outputCandidates.push((sseResponse as Record<string, unknown>).output);
+  let allReasoningOutput = false;
+  for (const out of outputCandidates) {
+    if (isAllReasoningOutput(out)) { allReasoningOutput = true; break; }
+  }
   for (const usageRaw of candidates) {
     if (usageRaw && typeof usageRaw === "object") {
       // fallback 传事件根部：usage 对象内缺失的 reasoning/cached/text 字段从事件根补。
       const parsed = readUsageObject(usageRaw as Record<string, unknown>, root);
-      if (parsed) return parsed;
+      if (parsed) {
+        // 计量真实化：output 全为 reasoning 且 output_tokens>0 但 reasoning_tokens 缺失时，推断 reasoning_tokens = output_tokens
+        // 该推断仅用于落库计量真实化，不在 usage 对象里塞非标准字段；如需标注来源应在 gateway 的 transformSummary 打 "usage:reasoning_inferred" 标签
+        if (parsed.reasoningTokens === undefined && allReasoningOutput && typeof parsed.completionTokens === "number" && parsed.completionTokens > 0) {
+          return { ...parsed, reasoningTokens: parsed.completionTokens };
+        }
+        return parsed;
+      }
     }
   }
   return undefined;

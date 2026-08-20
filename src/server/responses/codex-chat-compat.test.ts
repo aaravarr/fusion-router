@@ -297,3 +297,109 @@ describe("toResponsesUsage event-root fallback（事件根字段兜底）", () =
     expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 8 })
   })
 })
+
+describe("畸形 tool-call 聚合的纯结构拆分（A 项）", () => {
+  it("6 拼接畸形样本拆成 6 个独立 function_call，内容逐字符保留、call_id 唯一", async () => {
+    const { splitConcatenatedJsonObjects, splitToolArgumentsIfConcatenated } = await import("./codex-chat-compat")
+    // 构造 6 个完整 JSON 对象首尾拼接的畸形 arguments（无分隔）
+    const segments = ["A", "B", "C", "D", "E", "F"].map((q) => JSON.stringify({ query: q }))
+    const concatenated = segments.join("")
+    // 直接 split 检测
+    expect(splitConcatenatedJsonObjects(concatenated)).toEqual(segments)
+    expect(splitToolArgumentsIfConcatenated(concatenated)).toEqual(segments)
+    // 经 remapXaiResponsesJsonForCodex 的纯结构拆分：共享原 name，各自生成唯一 call_id，arguments 分别取各段原文
+    const payload = {
+      id: "resp_test",
+      output: [
+        { type: "function_call", id: "fc_123", call_id: "call_123", name: "my_search", arguments: concatenated, status: "completed" },
+      ],
+    }
+    const remapped = remapXaiResponsesJsonForCodex(payload) as unknown as { output: Array<Record<string, unknown>> }
+    expect(Array.isArray(remapped.output)).toBe(true)
+    expect(remapped.output).toHaveLength(6)
+    const callIds = new Set<string>()
+    remapped.output.forEach((item: Record<string, unknown>, idx: number) => {
+      expect(item.type).toBe("function_call")
+      expect(item.name).toBe("my_search")
+      expect(item.arguments).toBe(segments[idx])
+      // 内容逐字符保留：JSON.parse 后 query 一致
+      expect(JSON.parse(item.arguments)).toEqual({ query: String.fromCharCode(65 + idx) })
+      expect(typeof item.call_id).toBe("string")
+      callIds.add(item.call_id)
+      expect(typeof item.id).toBe("string")
+    })
+    expect(callIds.size).toBe(6) // call_id 唯一
+  })
+
+  it("正常 arguments 不受影响（能正常 parse 的不动）", () => {
+    const payload = {
+      id: "resp_test2",
+      output: [
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "my_search", arguments: JSON.stringify({ query: "A" }), status: "completed" },
+        { type: "function_call", id: "fc_2", call_id: "call_2", name: "get_weather", arguments: JSON.stringify({ city: "HZ" }), status: "completed" },
+      ],
+    }
+    const remapped = remapXaiResponsesJsonForCodex(payload) as unknown as { output: Array<Record<string, unknown>> }
+    expect(remapped.output).toHaveLength(2)
+    expect((remapped.output[0] as Record<string, unknown>).arguments).toBe(JSON.stringify({ query: "A" }))
+    expect((remapped.output[1] as Record<string, unknown>).arguments).toBe(JSON.stringify({ city: "HZ" }))
+  })
+
+  it("流式 transformXaiResponsesSseForCodex 对拼接的 function_call 在 done 阶段重组为 N 项", async () => {
+    const segments = ["A", "B", "C"].map((q) => JSON.stringify({ query: q }))
+    const concatenated = segments.join("")
+    const sse = [
+      `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "my_search", status: "in_progress", arguments: "" } })}\n\n`,
+      `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 0, delta: concatenated })}\n\n`,
+      `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "my_search", status: "completed", arguments: concatenated } })}\n\n`,
+      `data: [DONE]\n\n`,
+    ]
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const v of sse) controller.enqueue(new TextEncoder().encode(v))
+        controller.close()
+      },
+    })
+    const output = await new Response(transformXaiResponsesSseForCodex(stream)).text()
+    // 应拆成 3 个独立调用：检查 function_call 出现次数及内容逐字符保留
+    const funcCallMatches = output.match(/"type":"function_call"/g) || []
+    expect(funcCallMatches.length).toBeGreaterThanOrEqual(3)
+    for (const q of ["A", "B", "C"]) {
+      // SSE 输出中 arguments 为 JSON 字符串，查询值应以原文逐字符保留（转义后仍含查询值）
+      expect(output).toContain(q)
+    }
+    // call_id 唯一性：至少 3 个不同的 call_id（含后缀）
+    const callIds = new Set((output.match(/call_1_\d+/g) || []))
+    expect(callIds.size).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe("usage 计量真实化（D 项）", () => {
+  it("output 全为 reasoning 且 output_tokens>0 时，reasoning_tokens 推断为 output_tokens", () => {
+    const usage = toResponsesUsage(
+      { input_tokens: 288, output_tokens: 162, total_tokens: 450 },
+      undefined,
+      { output: [{ type: "reasoning", id: "rs_1" }, { type: "reasoning", id: "rs_2" }] },
+    )
+    expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 162 })
+  })
+
+  it("正常混合输出（reasoning + message）不推断，保持缺失语义", () => {
+    const usage = toResponsesUsage(
+      { input_tokens: 100, output_tokens: 50, total_tokens: 150, output_tokens_details: { text_tokens: 10 } },
+      undefined,
+      { output: [{ type: "reasoning", id: "rs_1" }, { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }] },
+    )
+    // 混合输出不应推断 reasoning_tokens，保持原有 text_tokens 且不补 reasoning_tokens
+    expect(usage.output_tokens_details).toEqual({ text_tokens: 10 })
+  })
+
+  it("output 为空或非全 reasoning 时不推断（保持缺失）", () => {
+    const usage = toResponsesUsage(
+      { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+      undefined,
+      { output: [{ type: "message", role: "assistant" }] },
+    )
+    expect(usage.output_tokens_details).toBeUndefined()
+  })
+})

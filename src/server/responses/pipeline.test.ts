@@ -391,6 +391,110 @@ describe("reasoning persistence", () => {
     expect(await loadConversationReasoning(["thread:t3"], db)).toEqual(["tool reasoning"])
   })
 })
+describe("include 注入（C 项）", () => {
+  it("白名单模型自动补 reasoning.encrypted_content 并去重", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2-contributor",
+      input: "hi",
+      include: ["reasoning.encrypted_content", "other"],
+    }, { db })
+    const body = prepared.body as unknown as Record<string, unknown>
+    expect(Array.isArray(body.include)).toBe(true)
+    expect(body.include).toContain("reasoning.encrypted_content")
+    // 去重：不应重复
+    expect(body.include.filter((v: string) => v === "reasoning.encrypted_content").length).toBe(1)
+    expect(body.include).toContain("other")
+    db.close()
+  })
+
+  it("白名单模型无 include 时自动补", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2",
+      input: "hi",
+    }, { db })
+    expect((prepared.body as unknown as Record<string, unknown>).include).toEqual(["reasoning.encrypted_content"])
+    db.close()
+  })
+
+  it("白名单模型合并用户已有 include 并去重", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "gpt-5.6-luna",
+      input: "hi",
+      include: ["code", "reasoning.encrypted_content", "code"],
+    }, { db })
+    const inc = (prepared.body as unknown as Record<string, unknown>).include as unknown as string[]
+    expect(inc).toEqual(["code", "reasoning.encrypted_content"])
+    db.close()
+  })
+
+  it("非白名单模型不动", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "gpt-4o-mini",
+      input: "hi",
+      include: ["other"],
+    }, { db })
+    expect((prepared.body as unknown as Record<string, unknown>).include).toEqual(["other"])
+    const prepared2 = await prepareResponsesRequestBody({
+      model: "gpt-4o-mini",
+      input: "hi",
+    }, { db })
+    expect((prepared2.body as unknown as Record<string, unknown>).include).toBeUndefined()
+    db.close()
+  })
+})
+
+describe("血缘豁免统一（G 项）", () => {
+  it("白名单 + foreign_previous_response_id 且 input 含 encrypted_content 时豁免（responses_native）", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2-contributor",
+      previous_response_id: "resp_missing_123",
+      input: [{ type: "reasoning", encrypted_content: "blob-xyz", summary: [] }],
+    }, { db })
+    expect(prepared.route).toBe("responses")
+    expect(prepared.routeReason).toBe("responses_native")
+    db.close()
+  })
+
+  it("白名单 + foreign_previous_response_id 且 lineage.storeHit 为 true 时豁免", async () => {
+    const db = createDatabase(":memory:")
+    // 先写入一条 lineage，使 storeHit 为 true（通过 thread 命中，非 previous_response_id 本身）
+    await rememberConversationTurn({
+      responseId: "resp_thread_known",
+      previousKeys: ["thread:g-test"],
+      preferredMode: "responses",
+      db,
+    })
+    const prepared = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2",
+      previous_response_id: "resp_foreign_not_in_store",
+      input: "continue",
+      client_metadata: { thread_id: "g-test" },
+    }, { db })
+    // 由于 lineage.hit 为 true（thread 命中），即使 previous_response_id 指向外部，也应视为协议内连续性而豁免，不降级
+    expect(prepared.route).toBe("responses")
+    // routeReason 可能为 session_lineage_responses（因 hit 导致不 eager）或 responses_native（豁免），均视为未降级
+    expect(["responses_native", "session_lineage_responses"]).toContain(prepared.routeReason)
+    db.close()
+  })
+
+  it("白名单 + foreign_previous_response_id 且两者皆无时不豁免（转 chat）", async () => {
+    const db = createDatabase(":memory:")
+    const prepared = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2-contributor",
+      previous_response_id: "resp_missing_not_in_store",
+      input: "continue without opaque",
+    }, { db })
+    expect(prepared.route).toBe("chat")
+    expect(prepared.routeReason).toBe("foreign_previous_response_id")
+    db.close()
+  })
+})
+
 describe("namespace tools survive chat fallback", () => {
   it("keeps namespace declarations and restores short names for function_call", async () => {
     const db = createDatabase(":memory:")

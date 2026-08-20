@@ -912,6 +912,17 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
           }
 
           const usage = extractUsage(remappedJson)
+          // D：计量真实化推断标注——output 全为 reasoning 且 reasoningTokens>0 时，在 transformSummary 中打标签（不污染 usage 对象）
+          try {
+            const out = (remappedJson as unknown as Record<string, unknown>)?.output as unknown;
+            const isAllReasoning = Array.isArray(out) && out.length > 0 && (out as unknown[]).every((it: unknown) => String((it as Record<string, unknown>)?.type || '').toLowerCase().includes('reasoning'));
+            if (isAllReasoning && usage && typeof usage.reasoningTokens === 'number' && usage.reasoningTokens > 0 && usage.reasoningTokens === usage.completionTokens) {
+              if (!String(routeMeta.transformSummary || '').includes('usage:reasoning_inferred')) {
+                routeMeta.transformSummary = (routeMeta.transformSummary ? routeMeta.transformSummary + ' | ' : '') + 'usage:reasoning_inferred';
+                try { this.db.prepare("UPDATE gateway_requests SET transform_summary=? WHERE id=?").run(routeMeta.transformSummary, requestId); } catch {}
+              }
+            }
+          } catch {}
           this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
           this.finalizeRequest(requestId, {
             status,
@@ -938,6 +949,19 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
           const onComplete = (r: CaptureResult) => {
             const latencyMs = Date.now() - t0
             this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, r.error ?? null, selection.account.name)
+            // D：流式路径的计量真实化推断标注（与非流一致）
+            try {
+              const respOut = (r.response as unknown as Record<string, unknown>)?.output as unknown;
+              const nestedOut = ((r.response as unknown as Record<string, unknown>)?.response as Record<string, unknown> | undefined)?.output as unknown;
+              const out = (Array.isArray(respOut) ? respOut : Array.isArray(nestedOut) ? nestedOut : undefined) as unknown;
+              const isAllReasoning = Array.isArray(out) && (out as unknown[]).length > 0 && (out as unknown[]).every((it: unknown) => String((it as Record<string, unknown>)?.type || '').toLowerCase().includes('reasoning'));
+              if (isAllReasoning && r.usage && typeof r.usage.reasoningTokens === 'number' && r.usage.reasoningTokens > 0 && r.usage.reasoningTokens === r.usage.completionTokens) {
+                if (!String(routeMeta.transformSummary || '').includes('usage:reasoning_inferred')) {
+                  routeMeta.transformSummary = (routeMeta.transformSummary ? routeMeta.transformSummary + ' | ' : '') + 'usage:reasoning_inferred';
+                  try { this.db.prepare("UPDATE gateway_requests SET transform_summary=? WHERE id=?").run(routeMeta.transformSummary, requestId); } catch {}
+                }
+              }
+            } catch {}
             this.finalizeRequest(requestId, {
               status,
               outcome: "SUCCESS",

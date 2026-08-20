@@ -83,6 +83,89 @@ export function canonicalizeToolArguments(v: unknown): string {
   return JSON.stringify({ input: v });
 }
 
+/**
+ * 纯结构拆分：检测首尾拼接的 N 个完整 JSON 对象（如 "{\\"query\\":\\"A\\"}{\\"query\\":\\"B\\"}"），拆成各自原文。
+ * 铁律：只做结构转换，绝不改动文本内容（逐字符保留）。能正常 JSON.parse 的不动。
+ */
+function findJsonObjectEnd(s: string, start: number): number {
+  let depth = 0
+  let inString = false
+  let escape = false
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i]
+    if (inString) {
+      if (escape) escape = false
+      else if (ch === '\\') escape = true
+      else if (ch === '"') inString = false
+    } else {
+      if (ch === '"') inString = true
+      else if (ch === '{' || ch === '[') depth++
+      else if (ch === '}' || ch === ']') {
+        depth--
+        if (depth === 0) return i
+      }
+    }
+  }
+  return -1
+}
+
+/**
+ * 尝试将拼接的 JSON 字符串拆分为 N 个独立 JSON 对象字符串。
+ * - 能整体 parse 的返回 null（不动）
+ * - 否则按 JSON 对象边界扫描，若能拆成 >=2 个合法对象则返回数组，否则 null
+ */
+export function splitConcatenatedJsonObjects(s: string): string[] | null {
+  const trimmed = s.trim()
+  if (!trimmed) return null
+  try {
+    JSON.parse(trimmed)
+    return null
+  } catch {}
+  const segments: string[] = []
+  let pos = 0
+  while (pos < trimmed.length) {
+    while (pos < trimmed.length && /\s/.test(trimmed[pos])) pos++
+    if (pos >= trimmed.length) break
+    const ch = trimmed[pos]
+    if (ch !== '{' && ch !== '[') return null
+    const end = findJsonObjectEnd(trimmed, pos)
+    if (end === -1) return null
+    const seg = trimmed.slice(pos, end + 1)
+    try {
+      JSON.parse(seg)
+    } catch {
+      return null
+    }
+    segments.push(seg)
+    pos = end + 1
+  }
+  if (segments.length >= 2) return segments
+  return null
+}
+
+/**
+ * 对可能为拼接 JSON 的 tool arguments 字符串做纯结构拆分。
+ * 同时处理已被 canonicalize 包成 {input: "拼接"} 的形态（展开 input 内拼接）。
+ * 返回 null 表示无需拆分，否则返回拆分后的每段原文。
+ */
+export function splitToolArgumentsIfConcatenated(argsStr: string): string[] | null {
+  if (typeof argsStr !== 'string') return null
+  const direct = splitConcatenatedJsonObjects(argsStr)
+  if (direct) return direct
+  // 处理已被包成 {"input":"拼接"} 的情况：尝试解析后检查 input 字段是否为拼接
+  const trimmed = argsStr.trim()
+  if (!trimmed) return null
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (isObj(parsed) && typeof parsed[CUSTOM_TOOL_INPUT_FIELD] === 'string' && Object.keys(parsed).length === 1) {
+      const inner = String(parsed[CUSTOM_TOOL_INPUT_FIELD])
+      const innerSplit = splitConcatenatedJsonObjects(inner)
+      if (innerSplit) return innerSplit
+    }
+  } catch {}
+  return null
+}
+
 export function customToolInputFromChatArguments(argumentsStr: string): string {
   const s = String(argumentsStr || '');
   if (!s.trim()) return '';
@@ -97,7 +180,7 @@ export function customToolInputFromChatArguments(argumentsStr: string): string {
   return s;
 }
 
-export function toResponsesUsage(usage: unknown, fallbackEvent?: unknown): Obj {
+export function toResponsesUsage(usage: unknown, fallbackEvent?: unknown, context?: { output?: unknown }): Obj {
   const u = isObj(usage) ? usage : {};
   // 事件根兜底：opencode 等上游可能把 reasoning_tokens / cached_tokens 放在 usage 对象
   // 之外的事件根部（见 capture.readUsageObject 的同款兜底），仅当 usage 内缺失时补。
@@ -131,11 +214,17 @@ export function toResponsesUsage(usage: unknown, fallbackEvent?: unknown): Obj {
     output_tokens: Number.isFinite(output) ? output : 0,
     total_tokens: Number.isFinite(total) ? total : 0,
   };
-  // Codex 客户端（codex-rs codex-api/src/sse/responses.rs）解析 response.completed 时，
-  // input_tokens_details.cached_tokens 与 output_tokens_details.reasoning_tokens 都是必需字段
-  // （serde 无 default，缺字段即解析失败）。上游可能返回空 details 对象或缺少 reasoning_tokens
-  // （例如 Kimi 纯工具调用轮返回 completion_tokens_details: {}），直接透传会让 Codex 报
-  // "failed to parse ResponseCompleted: missing field `reasoning_tokens`"。这里补齐必需字段。
+  // 判断是否需要推断 reasoning_tokens：当 output 全为 reasoning 项且 output_tokens>0 时，
+  // 如实反映“全是推理”的计量（例如空回复仅 reasoning，无 message）。该推断仅用于计量真实化，
+  // 不在 usage 对象里塞非标准字段；如需标注来源应在 gateway 的 transformSummary 打 "usage:reasoning_inferred" 标签。
+  const ctxOutput = context?.output
+  const outputTokensNum = Number.isFinite(output) ? output : 0
+  let shouldInferReasoning = false
+  if (Array.isArray(ctxOutput) && ctxOutput.length > 0 && outputTokensNum > 0) {
+    const allReasoning = ctxOutput.every((item) => isObj(item) && String((item as Obj).type || "").toLowerCase().includes("reasoning"))
+    if (allReasoning) shouldInferReasoning = true
+  }
+  // input_tokens_details：Codex 要求 cached_tokens 必填，仍按原有逻辑补 0（保持兼容）
   if (ptdRaw) {
     const ptd = { ...ptdRaw };
     if (typeof ptd.cached_tokens !== 'number') {
@@ -143,16 +232,52 @@ export function toResponsesUsage(usage: unknown, fallbackEvent?: unknown): Obj {
     }
     out.input_tokens_details = ptd;
   }
-  if (otdRaw) {
-    const otd = { ...otdRaw };
-    if (typeof otd.reasoning_tokens !== 'number') {
-      otd.reasoning_tokens = typeof ev?.reasoning_tokens === 'number' ? ev.reasoning_tokens : 0;
+  // output_tokens_details：改为计量真实化口径（提供 output 上下文时启用新口径，否则保持旧补 0 兼容旧单测）
+  // - 若上游已提供 reasoning_tokens（或事件根有），直接使用
+  // - 否则若判定为全 reasoning 且 output_tokens>0，推断 reasoning_tokens = output_tokens
+  // - 否则保持缺失语义，不硬补 0（避免掩盖“全量推理”事实；调用方如需兼容 Codex 可自行决定是否补齐）
+  const evReasoning = typeof ev?.reasoning_tokens === 'number' ? ev.reasoning_tokens : undefined
+  if (context === undefined) {
+    // 兼容旧调用：未提供 output 上下文时保持原有补 0 逻辑，确保旧单测通过
+    if (otdRaw) {
+      const otd = { ...otdRaw };
+      if (typeof otd.reasoning_tokens !== 'number') {
+        otd.reasoning_tokens = evReasoning !== undefined ? evReasoning : 0;
+      }
+      out.output_tokens_details = otd;
+    } else {
+      out.output_tokens_details = {
+        reasoning_tokens: evReasoning !== undefined ? evReasoning : 0,
+      };
     }
-    out.output_tokens_details = otd;
   } else {
-    out.output_tokens_details = {
-      reasoning_tokens: typeof ev?.reasoning_tokens === 'number' ? ev.reasoning_tokens : 0,
-    };
+    // 新口径：提供 output 上下文时按计量真实化处理
+    if (otdRaw) {
+      const otd = { ...otdRaw };
+      if (typeof otd.reasoning_tokens !== 'number') {
+        if (evReasoning !== undefined) {
+          otd.reasoning_tokens = evReasoning
+          out.output_tokens_details = otd;
+        } else if (shouldInferReasoning) {
+          otd.reasoning_tokens = outputTokensNum
+          out.output_tokens_details = otd;
+        } else {
+          // 保持缺失语义：不补 0；若 otd 含其他字段（如 text_tokens）则保留不含 reasoning_tokens 的对象，否则保持缺失
+          if (Object.keys(otd).length > 0) out.output_tokens_details = otd
+          // 若没有任何字段则不设置 output_tokens_details，保持缺失
+        }
+      } else {
+        out.output_tokens_details = otd;
+      }
+    } else {
+      if (evReasoning !== undefined) {
+        out.output_tokens_details = { reasoning_tokens: evReasoning };
+      } else if (shouldInferReasoning) {
+        out.output_tokens_details = { reasoning_tokens: outputTokensNum };
+      } else {
+        // 保持缺失语义，不硬补 0
+      }
+    }
   }
   if (typeof u.num_sources_used === 'number') out.num_sources_used = u.num_sources_used;
   if (typeof u.cost_in_usd_ticks === 'number') out.cost_in_usd_ticks = u.cost_in_usd_ticks;
@@ -881,7 +1006,7 @@ export function chatCompletionToResponse(
     status: 'completed',
     model,
     output,
-    usage: toResponsesUsage(c.usage, c),
+    usage: toResponsesUsage(c.usage, c, { output }),
   };
 }
 
@@ -1177,8 +1302,8 @@ export function transformChatSseToResponsesSse(
     finalizeReasoning(controller);
     finalizeMessage(controller);
     finalizeTools(controller);
-    const usage = toResponsesUsage(usageRaw, usageEvent);
     const output = completedItems.sort((a, b) => a.index - b.index).map((x) => x.item);
+    const usage = toResponsesUsage(usageRaw, usageEvent, { output });
     const response = {
       id: responseId,
       object: 'response',
@@ -1634,7 +1759,40 @@ export function remapXaiResponsesJsonForCodex(payload: unknown, ctx?: CodexToolC
   if (!isObj(payload)) return payload;
   const out = { ...payload };
   if (Array.isArray(out.output)) {
-    out.output = out.output.map((it) => ensureReasoningSummaryForCodex(remapXaiOutputItemForCodex(it, ctx)));
+    const expanded: unknown[] = []
+    for (const it of out.output) {
+      const remapped = remapXaiOutputItemForCodex(it, ctx)
+      // 纯结构拆分：若 function_call 的 arguments 为拼接 JSON（ }{ 边界），拆成 N 个独立项
+      if (isObj(remapped) && String(remapped.type || '').toLowerCase() === 'function_call') {
+        const argsRaw = (remapped as Obj).arguments ?? (remapped as Obj).input ?? ''
+        const argsStr = typeof argsRaw === 'string' ? argsRaw : JSON.stringify(argsRaw ?? '')
+        const segments = splitToolArgumentsIfConcatenated(argsStr)
+        if (segments && segments.length >= 2) {
+          const baseCallIdRaw = String((remapped as Obj).call_id || (remapped as Obj).id || (isObj(it) ? (it as Obj).call_id || (it as Obj).id : '') || '')
+          const baseIdRaw = String((remapped as Obj).id || '')
+          const baseName = String((remapped as Obj).name || '') || String(isObj(it) ? (it as Obj).name || '' : '') || 'tool'
+          const status = typeof (remapped as Obj).status === 'string' ? (remapped as Obj).status as string : 'completed'
+          const namespace = typeof (remapped as Obj).namespace === 'string' ? (remapped as Obj).namespace as string : null
+          segments.forEach((seg, idx) => {
+            const newCallId = baseCallIdRaw ? `${baseCallIdRaw}_${idx + 1}` : `call_${Math.random().toString(16).slice(2)}_${idx + 1}`
+            const newId = baseIdRaw ? `${baseIdRaw}_${idx + 1}` : responseToolCallItemIdFromChatName(newCallId, baseName, ctx)
+            const item: Obj = {
+              id: newId,
+              type: 'function_call',
+              status,
+              call_id: newCallId,
+              name: baseName,
+              arguments: seg,
+            }
+            if (namespace) item.namespace = namespace
+            expanded.push(ensureReasoningSummaryForCodex(item))
+          })
+          continue
+        }
+      }
+      expanded.push(ensureReasoningSummaryForCodex(remapped))
+    }
+    out.output = expanded
   }
   return out;
 }
@@ -1684,6 +1842,9 @@ export function transformXaiResponsesSseForCodex(
   // the reasoning_summary_text.* lifecycle plus a populated summary on completion.
   const reasoningTexts = new Map<string, string>();
   const reasoningPartsAdded = new Set<string>();
+  // 缓冲 function_call 的流式生命周期，用于纯结构拆分畸形聚合（多个同 id delta 拼接）
+  // key 为 item_id/call_id，value 记录 added、deltas、最终 done 的信息，待 output_item.done 时统一判定是否需要拆分
+  const pendingFunctionCalls = new Map<string, { added: Obj; deltas: string[]; doneArgs: string; outputIndex: unknown; itemId: string; callId: string; name: string; status: string; namespace?: string }>()
 
   const enqueueEvent = (controller: ReadableStreamDefaultController<Uint8Array>, eventName: string, data: Obj) => {
     const ev = eventName || (typeof data.type === 'string' ? data.type : 'message');
@@ -1804,6 +1965,203 @@ export function transformXaiResponsesSseForCodex(
               if (String(remapped.type || '') === 'response.codex_compat.noop') continue;
 
               const afterItem = isObj(remapped.item) ? (remapped.item as Obj) : null;
+              // 纯结构拆分：缓冲并检测 function_call 拼接（A 项）——仅对 function_call 做缓冲，待 output_item.done 时统一判定是否需拆分
+              const remappedTypeForSplit = String(remapped.type || '');
+              const afterItemTypeForSplit = afterItem ? String(afterItem.type || '').toLowerCase() : '';
+              if (afterItem && afterItemTypeForSplit === 'function_call') {
+                if (remappedTypeForSplit === 'response.output_item.added') {
+                  const key = String(afterItem.id || afterItem.call_id || remapped.output_index || `fc_${Date.now()}_${Math.random().toString(16).slice(2)}`);
+                  pendingFunctionCalls.set(key, {
+                    added: remapped as Obj,
+                    deltas: [],
+                    doneArgs: typeof afterItem.arguments === 'string' ? afterItem.arguments : '',
+                    outputIndex: remapped.output_index,
+                    itemId: String(afterItem.id || ''),
+                    callId: String(afterItem.call_id || afterItem.id || ''),
+                    name: String(afterItem.name || ''),
+                    status: String(afterItem.status || 'in_progress'),
+                    namespace: typeof afterItem.namespace === 'string' ? afterItem.namespace : undefined,
+                  });
+                  continue;
+                }
+                if (remappedTypeForSplit === 'response.function_call_arguments.delta') {
+                  const itemId = String((remapped as Obj).item_id || afterItem?.id || '');
+                  const outputIdx = (remapped as Obj).output_index;
+                  let found = false;
+                  for (const entry of pendingFunctionCalls.values()) {
+                    if (entry.itemId === itemId || entry.callId === itemId || String(entry.outputIndex) === String(outputIdx)) {
+                      const delta = typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : '';
+                      entry.deltas.push(delta);
+                      entry.doneArgs += delta;
+                      found = true;
+                      break;
+                    }
+                  }
+                  if (!found) {
+                    const key = itemId || `delta_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+                    pendingFunctionCalls.set(key, {
+                      added: { type: 'function_call', id: itemId, call_id: itemId, name: '', arguments: '', status: 'in_progress' } as Obj,
+                      deltas: [typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : ''],
+                      doneArgs: typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : '',
+                      outputIndex: (remapped as Obj).output_index,
+                      itemId,
+                      callId: itemId,
+                      name: '',
+                      status: 'in_progress',
+                    });
+                  }
+                  continue;
+                }
+                if (remappedTypeForSplit === 'response.function_call_arguments.done') {
+                  const itemId = String((remapped as Obj).item_id || '');
+                  const outputIdx = (remapped as Obj).output_index;
+                  for (const entry of pendingFunctionCalls.values()) {
+                    if (entry.itemId === itemId || entry.callId === itemId || String(entry.outputIndex) === String(outputIdx)) {
+                      const args = typeof (remapped as Obj).arguments === 'string' ? (remapped as Obj).arguments as string : '';
+                      if (args) entry.doneArgs = args;
+                      else if (entry.deltas.length) entry.doneArgs = entry.deltas.join('');
+                      break;
+                    }
+                  }
+                  continue;
+                }
+                if (remappedTypeForSplit === 'response.output_item.done') {
+                  const itemArgsRaw = typeof afterItem.arguments === 'string' ? afterItem.arguments : typeof (afterItem as Obj).input === 'string' ? (afterItem as Obj).input as string : '';
+                  let finalArgs = itemArgsRaw;
+                  let pendingKey: string | undefined;
+                  let pendingEntry: { added: Obj; deltas: string[]; doneArgs: string; outputIndex: unknown; itemId: string; callId: string; name: string; status: string; namespace?: string } | undefined;
+                  for (const [k, v] of pendingFunctionCalls.entries()) {
+                    if (v.itemId === String(afterItem.id || '') || v.callId === String(afterItem.call_id || '') || String(v.outputIndex) === String(remapped.output_index)) {
+                      pendingKey = k;
+                      pendingEntry = v;
+                      if (v.doneArgs) finalArgs = v.doneArgs;
+                      break;
+                    }
+                  }
+                  const segments = splitToolArgumentsIfConcatenated(finalArgs);
+                  if (segments && segments.length >= 2) {
+                    const baseName = String(afterItem.name || pendingEntry?.name || 'tool');
+                    const baseCallId = String(afterItem.call_id || pendingEntry?.callId || '');
+                    const baseId = String(afterItem.id || pendingEntry?.itemId || '');
+                    const baseOutputIndex = remapped.output_index;
+                    const status = String(afterItem.status || 'completed');
+                    const namespace = typeof afterItem.namespace === 'string' ? afterItem.namespace : pendingEntry?.namespace;
+                    for (let idx = 0; idx < segments.length; idx++) {
+                      const seg = segments[idx];
+                      const newCallId = baseCallId ? `${baseCallId}_${idx + 1}` : `call_${Math.random().toString(16).slice(2)}_${idx + 1}`;
+                      const newId = baseId ? `${baseId}_${idx + 1}` : responseToolCallItemIdFromChatName(newCallId, baseName, ctx);
+                      const newOutputIndex = typeof baseOutputIndex === 'number' ? (baseOutputIndex as number) + idx : baseOutputIndex;
+                      enqueueEvent(controller, 'response.output_item.added', {
+                        type: 'response.output_item.added',
+                        output_index: newOutputIndex,
+                        item: {
+                          id: newId,
+                          type: 'function_call',
+                          status: 'in_progress',
+                          call_id: newCallId,
+                          name: baseName,
+                          arguments: '',
+                          ...(namespace ? { namespace } : {}),
+                        },
+                      });
+                      enqueueEvent(controller, 'response.function_call_arguments.delta', {
+                        type: 'response.function_call_arguments.delta',
+                        item_id: newId,
+                        output_index: newOutputIndex,
+                        delta: seg,
+                      });
+                      enqueueEvent(controller, 'response.function_call_arguments.done', {
+                        type: 'response.function_call_arguments.done',
+                        item_id: newId,
+                        output_index: newOutputIndex,
+                        arguments: seg,
+                      });
+                      enqueueEvent(controller, 'response.output_item.done', {
+                        type: 'response.output_item.done',
+                        output_index: newOutputIndex,
+                        item: {
+                          id: newId,
+                          type: 'function_call',
+                          status,
+                          call_id: newCallId,
+                          name: baseName,
+                          arguments: seg,
+                          ...(namespace ? { namespace } : {}),
+                        },
+                      });
+                    }
+                    if (pendingKey) pendingFunctionCalls.delete(pendingKey);
+                    continue;
+                  } else {
+                    if (pendingEntry && pendingKey) {
+                      enqueueEvent(controller, pendingEntry.added.type as string, pendingEntry.added);
+                      for (const d of pendingEntry.deltas) {
+                        enqueueEvent(controller, 'response.function_call_arguments.delta', {
+                          type: 'response.function_call_arguments.delta',
+                          item_id: pendingEntry.itemId,
+                          output_index: pendingEntry.outputIndex,
+                          delta: d,
+                        });
+                      }
+                      if (pendingEntry.deltas.length) {
+                        enqueueEvent(controller, 'response.function_call_arguments.done', {
+                          type: 'response.function_call_arguments.done',
+                          item_id: pendingEntry.itemId,
+                          output_index: pendingEntry.outputIndex,
+                          arguments: pendingEntry.doneArgs,
+                        });
+                      }
+                      pendingFunctionCalls.delete(pendingKey);
+                    }
+                    const rawEvent = eventName || (typeof remapped.type === 'string' ? remapped.type : 'message');
+                    const outEvent = remapServerToolEventType(rawEvent);
+                    enqueueEvent(controller, outEvent, remapped);
+                    continue;
+                  }
+                }
+              }
+              // 兜底：delta/done 可能没有 afterItem（如仅含 item_id），也需按 output_index 缓冲，避免直接透传导致拼接未被拦截
+              if (remappedTypeForSplit === 'response.function_call_arguments.delta') {
+                const itemId = String((remapped as Obj).item_id || '');
+                const outputIdx = (remapped as Obj).output_index;
+                let found = false;
+                for (const entry of pendingFunctionCalls.values()) {
+                  if (entry.itemId === itemId || entry.callId === itemId || String(entry.outputIndex) === String(outputIdx)) {
+                    const delta = typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : '';
+                    entry.deltas.push(delta);
+                    entry.doneArgs += delta;
+                    found = true;
+                    break;
+                  }
+                }
+                if (!found) {
+                  const key = itemId || `delta_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+                  pendingFunctionCalls.set(key, {
+                    added: { type: 'function_call', id: itemId, call_id: itemId, name: '', arguments: '', status: 'in_progress' } as Obj,
+                    deltas: [typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : ''],
+                    doneArgs: typeof (remapped as Obj).delta === 'string' ? (remapped as Obj).delta as string : '',
+                    outputIndex: (remapped as Obj).output_index,
+                    itemId,
+                    callId: itemId,
+                    name: '',
+                    status: 'in_progress',
+                  });
+                }
+                continue;
+              }
+              if (remappedTypeForSplit === 'response.function_call_arguments.done') {
+                const itemId = String((remapped as Obj).item_id || '');
+                const outputIdx = (remapped as Obj).output_index;
+                for (const entry of pendingFunctionCalls.values()) {
+                  if (entry.itemId === itemId || entry.callId === itemId || String(entry.outputIndex) === String(outputIdx)) {
+                    const args = typeof (remapped as Obj).arguments === 'string' ? (remapped as Obj).arguments as string : '';
+                    if (args) entry.doneArgs = args;
+                    else if (entry.deltas.length) entry.doneArgs = entry.deltas.join('');
+                    break;
+                  }
+                }
+                continue;
+              }
               const serverSearch = isServerSearchRemap(beforeItem, afterItem);
               if (afterItem && String(remapped.type || '') === 'response.output_item.done' && String(afterItem.type || '').toLowerCase() === 'reasoning') {
                 const itemId = String(afterItem.id || parsed.item_id || '');
