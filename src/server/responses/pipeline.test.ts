@@ -197,6 +197,44 @@ describe("responses pipeline", () => {
     expect(prepared.route).toBe("responses")
     expect(prepared.routeReason).toBe("prefer_responses_server_tools")
   })
+
+  it("whitelisted muse-spark-1.2-contributor stays on native responses on second consecutive turn despite chat lineage (session_lineage_chat -> responses_native)", async () => {
+    const db = createDatabase(":memory:")
+    const threadId = "t-whitelist-2turn"
+    // 第一条：新会话，无 lineage，muse-spark-1.2-contributor 走原生 responses
+    const first = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2-contributor",
+      client_metadata: { thread_id: threadId },
+      input: "hello first",
+    }, { db, injectServerTools: false })
+    expect(first.route).toBe("responses")
+    expect(first.routeReason).toBe("responses_native")
+    // 模拟服务端已记住该会话且 preferredMode 为 chat（例如首条走 chat 后的血缘）
+    await rememberConversationTurn({
+      responseId: "resp_first",
+      previousKeys: [`thread:${threadId}`],
+      preferredMode: "chat",
+      messages: [{ role: "user", content: "hello first" }],
+      db,
+    })
+    // 第二条：同线程、同模型，命中 session_lineage_chat 但白名单应豁免，仍走原生 responses
+    const second = await prepareResponsesRequestBody({
+      model: "muse-spark-1.2-contributor",
+      client_metadata: { thread_id: threadId },
+      input: "hello second",
+    }, { db, injectServerTools: false })
+    expect(second.route).toBe("responses")
+    expect(second.routeReason).toBe("responses_native")
+    // 对照：非白名单模型在同样 chat lineage 下应被强制转 chat
+    const third = await prepareResponsesRequestBody({
+      model: "gpt-4o-mini",
+      client_metadata: { thread_id: threadId },
+      input: "hello second non-whitelisted",
+    }, { db, injectServerTools: false })
+    expect(third.route).toBe("chat")
+    expect(third.routeReason).toBe("session_lineage_chat")
+    db.close()
+  })
 })
 
 describe("shouldEagerFallbackResponses", () => {

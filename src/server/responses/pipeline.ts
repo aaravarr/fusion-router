@@ -137,6 +137,8 @@ export async function prepareResponsesRequestBody(
   const preferResponsesForServerTools =
     injectEnabled || bodyHasServerSearchTool(body) || bodyHasServerSearchTool(bodyForRoute)
 
+  // muse 家族等已验证原生支持 responses 的模型，不应被会话血缘强制转 chat
+  const NATIVE_RESPONSES_MODELS = new Set(["gpt-5.6-luna", "muse-spark-1.2-contributor", "muse-spark-1.2"]);
   let route: ResponsesRouteMode = "responses"
   let routeReason = "responses_native"
   if (isCompact) {
@@ -148,9 +150,16 @@ export async function prepareResponsesRequestBody(
       storeHit: lineage.hit,
       preferResponsesForServerTools,
     })
-    if (eager.eager) {
+    // 白名单模型即使命中 session_lineage_chat 也保持原生 responses，避免新会话第二条就转 chat
+    const isWhitelisted = typeof model === "string" && NATIVE_RESPONSES_MODELS.has(model);
+    const shouldFallback = eager.eager && !(isWhitelisted && eager.reason === "session_lineage_chat");
+    if (shouldFallback) {
       route = "chat"
       routeReason = eager.reason || "session_lineage_chat"
+    } else if (eager.reason && !isWhitelisted) {
+      routeReason = eager.reason
+    } else if (eager.reason === "session_lineage_chat" && isWhitelisted) {
+      routeReason = "responses_native"
     } else if (eager.reason) {
       routeReason = eager.reason
     }
