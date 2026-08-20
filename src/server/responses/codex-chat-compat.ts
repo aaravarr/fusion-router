@@ -87,9 +87,9 @@ export function customToolInputFromChatArguments(argumentsStr: string): string {
   const s = String(argumentsStr || '');
   if (!s.trim()) return '';
   try {
-    const parsed = JSON.parse(s);
-    if (parsed && typeof parsed === 'object' && typeof (parsed as any)[CUSTOM_TOOL_INPUT_FIELD] === 'string') {
-      return String((parsed as any)[CUSTOM_TOOL_INPUT_FIELD]);
+    const parsed = JSON.parse(s) as unknown;
+    if (parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>)[CUSTOM_TOOL_INPUT_FIELD] === 'string') {
+      return String((parsed as Record<string, unknown>)[CUSTOM_TOOL_INPUT_FIELD]);
     }
   } catch {
     /* freeform */
@@ -97,8 +97,11 @@ export function customToolInputFromChatArguments(argumentsStr: string): string {
   return s;
 }
 
-export function toResponsesUsage(usage: unknown): Obj {
+export function toResponsesUsage(usage: unknown, fallbackEvent?: unknown): Obj {
   const u = isObj(usage) ? usage : {};
+  // 事件根兜底：opencode 等上游可能把 reasoning_tokens / cached_tokens 放在 usage 对象
+  // 之外的事件根部（见 capture.readUsageObject 的同款兜底），仅当 usage 内缺失时补。
+  const ev = isObj(fallbackEvent) ? fallbackEvent : undefined;
   const input =
     typeof u.input_tokens === 'number'
       ? u.input_tokens
@@ -135,15 +138,21 @@ export function toResponsesUsage(usage: unknown): Obj {
   // "failed to parse ResponseCompleted: missing field `reasoning_tokens`"。这里补齐必需字段。
   if (ptdRaw) {
     const ptd = { ...ptdRaw };
-    if (typeof ptd.cached_tokens !== 'number') ptd.cached_tokens = 0;
+    if (typeof ptd.cached_tokens !== 'number') {
+      ptd.cached_tokens = typeof ev?.cached_tokens === 'number' ? ev.cached_tokens : 0;
+    }
     out.input_tokens_details = ptd;
   }
   if (otdRaw) {
     const otd = { ...otdRaw };
-    if (typeof otd.reasoning_tokens !== 'number') otd.reasoning_tokens = 0;
+    if (typeof otd.reasoning_tokens !== 'number') {
+      otd.reasoning_tokens = typeof ev?.reasoning_tokens === 'number' ? ev.reasoning_tokens : 0;
+    }
     out.output_tokens_details = otd;
   } else {
-    out.output_tokens_details = { reasoning_tokens: 0 };
+    out.output_tokens_details = {
+      reasoning_tokens: typeof ev?.reasoning_tokens === 'number' ? ev.reasoning_tokens : 0,
+    };
   }
   if (typeof u.num_sources_used === 'number') out.num_sources_used = u.num_sources_used;
   if (typeof u.cost_in_usd_ticks === 'number') out.cost_in_usd_ticks = u.cost_in_usd_ticks;
@@ -872,7 +881,7 @@ export function chatCompletionToResponse(
     status: 'completed',
     model,
     output,
-    usage: toResponsesUsage(c.usage),
+    usage: toResponsesUsage(c.usage, c),
   };
 }
 
@@ -911,6 +920,7 @@ export function transformChatSseToResponsesSse(
   let reasoningId = 'reasoning_' + responseId;
   let reasoningText = '';
   let usageRaw: unknown;
+  let usageEvent: unknown;
   const tools = new Map<number, ToolAccum>();
   let nextToolIndexToAdd = 0;
   const completedItems: Array<{ index: number; item: Obj }> = [];
@@ -1016,10 +1026,13 @@ export function transformChatSseToResponsesSse(
     }
   };
 
-  const pushToolCallDelta = (controller: ReadableStreamDefaultController<Uint8Array>, toolCall: any) => {
+  const pushToolCallDelta = (controller: ReadableStreamDefaultController<Uint8Array>, toolCall: Record<string, unknown> | undefined) => {
     const chatIndex = typeof toolCall?.index === 'number' ? toolCall.index : 0;
     const idDelta = typeof toolCall?.id === 'string' ? toolCall.id : '';
-    const fn = toolCall?.function && typeof toolCall.function === 'object' ? toolCall.function : {};
+    const fn =
+      toolCall?.function && typeof toolCall.function === 'object' && !Array.isArray(toolCall.function)
+        ? (toolCall.function as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
     const nameDelta = typeof fn.name === 'string' ? fn.name : '';
     const argsDelta = typeof fn.arguments === 'string' ? fn.arguments : '';
 
@@ -1164,7 +1177,7 @@ export function transformChatSseToResponsesSse(
     finalizeReasoning(controller);
     finalizeMessage(controller);
     finalizeTools(controller);
-    const usage = toResponsesUsage(usageRaw);
+    const usage = toResponsesUsage(usageRaw, usageEvent);
     const output = completedItems.sort((a, b) => a.index - b.index).map((x) => x.item);
     const response = {
       id: responseId,
@@ -1207,7 +1220,11 @@ export function transformChatSseToResponsesSse(
                 messageId = 'msg_' + responseId;
                 reasoningId = 'reasoning_' + responseId;
               }
-              if (obj?.usage && typeof obj.usage === 'object') usageRaw = obj.usage;
+              if (obj?.usage && typeof obj.usage === 'object') {
+                usageRaw = obj.usage;
+                // 事件根一并记住，供 usage 内缺失的 reasoning/cached 字段兜底。
+                usageEvent = obj;
+              }
               const choice = Array.isArray(obj?.choices) ? obj.choices[0] : undefined;
               const delta = choice?.delta;
               ensureStarted(controller);

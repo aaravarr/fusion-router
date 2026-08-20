@@ -223,3 +223,68 @@ describe("capture Responses usage: reasoning & cached (实测样本)", () => {
     expect(out?.reasoningTokens).toBeUndefined()
   })
 })
+
+describe("capture muse chat-fallback usage 形态（生产断点回归）", () => {
+  // 生产实测：muse 走 responses->chat 兜底路径时，原始 chat 流 usage 里 cached 能提取
+  // 而 reasoning 恒为空。断点定位为 usage 事件形态不在提取候选内。以下用例覆盖所有
+  // 可疑形态：事件根部 reasoning、reasoning_output_tokens 别名、choices[].usage 内嵌、
+  // 裸 usage 事件根、后发不完整 usage 覆盖。修复后这些形态都应能提取 reasoning。
+
+  it("reasoning_tokens 在事件根部（usage 对象之外）也能提取（生产 muse 收尾 chunk 形态）", () => {
+    // 上游收尾 chunk：usage 内只有基础计数 + 缓存，reasoning_tokens 放在事件根。
+    // 数字取自生产看板 07:13:58 行（prompt 93006 / completion 4704 / total 97710 / cached 90225）。
+    expect(extractUsage({
+      id: "chatcmpl-x",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "muse-spark-1.2-contributor",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 93006, completion_tokens: 4704, total_tokens: 97710, prompt_tokens_details: { cached_tokens: 90225 } },
+      reasoning_tokens: 173,
+    })).toMatchObject({ promptTokens: 93006, completionTokens: 4704, totalTokens: 97710, cachedTokens: 90225, reasoningTokens: 173 })
+  })
+
+  it("SSE 流式：事件根 reasoning_tokens 形态经 extractUsageFromSse 提取", () => {
+    const sse =
+      'data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1,"model":"muse-spark-1.2-contributor","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":93006,"completion_tokens":4704,"total_tokens":97710,"prompt_tokens_details":{"cached_tokens":90225}},"reasoning_tokens":173}\n\n' +
+      "data: [DONE]\n\n"
+    expect(extractUsageFromSse(sse)).toMatchObject({
+      promptTokens: 93006,
+      completionTokens: 4704,
+      totalTokens: 97710,
+      cachedTokens: 90225,
+      reasoningTokens: 173,
+    })
+  })
+
+  it("completion_tokens_details.reasoning_output_tokens 别名也能提取", () => {
+    expect(extractUsage({ usage: { prompt_tokens: 1, completion_tokens: 2, completion_tokens_details: { reasoning_output_tokens: 9 } } })).toMatchObject({ reasoningTokens: 9 })
+  })
+
+  it("output_tokens_details.reasoning_output_tokens 别名也能提取", () => {
+    expect(extractUsage({ usage: { input_tokens: 1, output_tokens: 2, output_tokens_details: { reasoning_output_tokens: 9 } } })).toMatchObject({ reasoningTokens: 9 })
+  })
+
+  it("usage 嵌在 choices[0].usage 也能提取", () => {
+    expect(extractUsage({ choices: [{ index: 0, delta: {}, usage: { prompt_tokens: 3, completion_tokens: 4, completion_tokens_details: { reasoning_tokens: 2 } } }] })).toMatchObject({ promptTokens: 3, completionTokens: 4, reasoningTokens: 2 })
+  })
+
+  it("事件根本身是裸 usage 对象也能提取", () => {
+    expect(extractUsage({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, prompt_tokens_details: { cached_tokens: 4 }, completion_tokens_details: { reasoning_tokens: 3 } })).toMatchObject({ promptTokens: 10, completionTokens: 5, totalTokens: 15, cachedTokens: 4, reasoningTokens: 3 })
+  })
+
+  it("SSE 后发的不完整 usage 不冲掉先发事件的 reasoning（字段级合并）", () => {
+    const sse = [
+      'data: {"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":80},"completion_tokens_details":{"reasoning_tokens":30}}}',
+      'data: {"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}',
+      "data: [DONE]",
+    ].join("\n\n") + "\n\n"
+    expect(extractUsageFromSse(sse)).toMatchObject({ promptTokens: 100, completionTokens: 50, totalTokens: 150, cachedTokens: 80, reasoningTokens: 30 })
+  })
+
+  it("mergeUsage：后发 usage 完全定义时以新值胜出", () => {
+    const sse = 'data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: {"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}\n\ndata: [DONE]\n\n'
+    expect(extractUsageFromSse(sse)).toMatchObject({ promptTokens: 5, completionTokens: 5, totalTokens: 10 })
+  })
+})
+

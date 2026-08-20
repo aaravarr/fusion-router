@@ -277,3 +277,23 @@ describe("toResponsesUsage Codex required fields", () => {
     expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 0 })
   })
 })
+
+describe("toResponsesUsage event-root fallback（事件根字段兜底）", () => {
+  it("reasoning_tokens 在事件根（usage 之外）时兜底进 output_tokens_details", () => {
+    // opencode 等上游可能在收尾 chunk 把 reasoning_tokens 放在 usage 对象之外的事件根。
+    const usage = toResponsesUsage(
+      { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, prompt_tokens_details: { cached_tokens: 8 } },
+      { reasoning_tokens: 3 },
+    )
+    expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 3 })
+    expect(usage.input_tokens_details).toEqual({ cached_tokens: 8 })
+  })
+
+  it("usage 内已有 reasoning_tokens 时事件根不覆盖", () => {
+    const usage = toResponsesUsage(
+      { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, completion_tokens_details: { reasoning_tokens: 8 } },
+      { reasoning_tokens: 999 },
+    )
+    expect(usage.output_tokens_details).toEqual({ reasoning_tokens: 8 })
+  })
+})

@@ -26,7 +26,7 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function readUsageObject(usage: Record<string, unknown>): TokenUsage | undefined {
+function readUsageObject(usage: Record<string, unknown>, fallback?: Record<string, unknown>): TokenUsage | undefined {
   const promptTokensRaw = num(usage.prompt_tokens) ?? num(usage.input_tokens);
   const completionTokens = num(usage.completion_tokens) ?? num(usage.output_tokens);
   const totalTokens = num(usage.total_tokens);
@@ -43,7 +43,9 @@ function readUsageObject(usage: Record<string, unknown>): TokenUsage | undefined
     ?? num((usage.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens)
     ?? num((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens)
     // DeepSeek 等上游只返回 prompt_cache_hit_tokens / prompt_cache_miss_tokens 时兜底。
-    ?? num(usage.prompt_cache_hit_tokens);
+    ?? num(usage.prompt_cache_hit_tokens)
+    // 事件根部兜底：opencode 等上游可能把 cached_tokens 放在 usage 对象之外的事件根部。
+    ?? (fallback ? num(fallback.cached_tokens) : undefined);
   // 口径统一：Prompt 统一为"总输入（含缓存）"。
   // Anthropic Messages 的 input_tokens 不含缓存读取（cache_read_input_tokens 单独计），
   // OpenAI（chat/responses）的 prompt_tokens / input_tokens 已含缓存。这里把 Anthropic
@@ -58,15 +60,21 @@ function readUsageObject(usage: Record<string, unknown>): TokenUsage | undefined
   //   OpenAI Chat Completions: 嵌套 completion_tokens_details.reasoning_tokens
   //   OpenAI Responses API: 嵌套 output_tokens_details.reasoning_tokens
   //   （少数上游直接在根对象给 reasoning_tokens）
-  // 三处都取，任一命中即算 reasoning_tokens，与 chat 链路口径一致。
+  // 另有一些 OpenAI 兼容代理 / Responses 流式早期实现用 reasoning_output_tokens 命名，
+  // 以及个别上游把 reasoning_tokens 放在 usage 对象之外的事件根部 —— 一并兜底。
   const reasoningTokens =
     num(usage.reasoning_tokens)
     ?? num((usage.completion_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens)
-    ?? num((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens);
+    ?? num((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens)
+    ?? num((usage.completion_tokens_details as Record<string, unknown> | undefined)?.reasoning_output_tokens)
+    ?? num((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_output_tokens)
+    ?? num(usage.reasoning_output_tokens)
+    ?? (fallback ? num(fallback.reasoning_tokens) ?? num(fallback.reasoning_output_tokens) : undefined);
   const textTokens =
     num(usage.text_tokens)
     ?? num((usage.completion_tokens_details as Record<string, unknown> | undefined)?.text_tokens)
-    ?? num((usage.output_tokens_details as Record<string, unknown> | undefined)?.text_tokens);
+    ?? num((usage.output_tokens_details as Record<string, unknown> | undefined)?.text_tokens)
+    ?? (fallback ? num(fallback.text_tokens) : undefined);
   const imageTokens = num(usage.image_tokens);
   const audioTokens = num(usage.audio_tokens);
   const computed = totalTokens ?? (promptTokens !== undefined && completionTokens !== undefined ? promptTokens + completionTokens : undefined);
@@ -96,13 +104,47 @@ export function extractUsage(payload: unknown): TokenUsage | undefined {
     response?.usage,
     nestedResponse?.usage,
   ];
+  // chat 流里部分上游把 usage 嵌在 choices[0].usage（OpenAI 兼容代理形态），补进候选。
+  if (Array.isArray(root.choices)) {
+    for (const choice of root.choices) {
+      const usageRaw = (choice as Record<string, unknown> | undefined)?.usage;
+      if (usageRaw && typeof usageRaw === "object") candidates.push(usageRaw);
+    }
+  }
+  // 事件根本身是裸 usage 对象（无 usage 包装键的独立 usage 事件）时，把根当作候选。
+  if (isUsageLikeObject(root)) candidates.push(root);
   for (const usageRaw of candidates) {
     if (usageRaw && typeof usageRaw === "object") {
-      const parsed = readUsageObject(usageRaw as Record<string, unknown>);
+      // fallback 传事件根部：usage 对象内缺失的 reasoning/cached/text 字段从事件根补。
+      const parsed = readUsageObject(usageRaw as Record<string, unknown>, root);
       if (parsed) return parsed;
     }
   }
   return undefined;
+}
+
+// 事件根是否本身就是一个 usage 对象（裸 usage 事件：无 usage 包装键，直接给 token 计数）。
+function isUsageLikeObject(v: Record<string, unknown>): boolean {
+  const hasIn = typeof v.prompt_tokens === "number" || typeof v.input_tokens === "number";
+  const hasOut = typeof v.completion_tokens === "number" || typeof v.output_tokens === "number";
+  return hasIn && hasOut;
+}
+
+// 流式捕获里出现多个 usage 事件时按“字段级最新值胜出”合并，而不是整体后发覆盖：
+// 部分上游会先发一个带 reasoning 的 usage，再发一个只有基础计数的收尾 usage；
+// 整体覆盖会把先发事件的 reasoning / cached 冲成 undefined。逐字段取最新定义值即可。
+export function mergeUsage(prev: TokenUsage | undefined, next: TokenUsage): TokenUsage {
+  if (!prev) return next;
+  return {
+    promptTokens: next.promptTokens ?? prev.promptTokens,
+    completionTokens: next.completionTokens ?? prev.completionTokens,
+    totalTokens: next.totalTokens ?? prev.totalTokens,
+    cachedTokens: next.cachedTokens ?? prev.cachedTokens,
+    textTokens: next.textTokens ?? prev.textTokens,
+    imageTokens: next.imageTokens ?? prev.imageTokens,
+    audioTokens: next.audioTokens ?? prev.audioTokens,
+    reasoningTokens: next.reasoningTokens ?? prev.reasoningTokens,
+  };
 }
 
 export function extractUsageFromSse(text: string): TokenUsage | undefined {
@@ -114,7 +156,7 @@ export function extractUsageFromSse(text: string): TokenUsage | undefined {
     try {
       const parsed = JSON.parse(data) as unknown;
       const usage = extractUsage(parsed);
-      if (usage) last = usage;
+      if (usage) last = mergeUsage(last, usage);
     } catch {
       // ignore malformed lines
     }
@@ -214,7 +256,7 @@ export function teeAndCapture(
           try {
             const parsed = JSON.parse(data) as unknown;
             const nextUsage = extractUsage(parsed);
-            if (nextUsage) usage = nextUsage;
+            if (nextUsage) usage = mergeUsage(usage, nextUsage);
           } catch {
             // ignore malformed sse data lines
           }
@@ -236,7 +278,7 @@ export function teeAndCapture(
           try {
             const parsed = JSON.parse(data) as unknown;
             const nextUsage = extractUsage(parsed);
-            if (nextUsage) usage = nextUsage;
+            if (nextUsage) usage = mergeUsage(usage, nextUsage);
           } catch { /* ignore */ }
         }
       }
