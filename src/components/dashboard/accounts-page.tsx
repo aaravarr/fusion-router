@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Check,
+  ChevronDown,
   ChevronRight,
   CircleOff,
   Copy,
@@ -25,6 +26,8 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useRef } from "react";
 import {
   DropdownMenu,
@@ -76,6 +79,7 @@ const POOL_FILTERS = [
   { key: "openai", label: "OpenAI" },
   { key: "xai-grok", label: "xAI Grok" },
   { key: "kimi-code", label: "Kimi Code" },
+  { key: "open-design-go", label: "Open Design GO" },
 ] as const;
 
 const STATUS_FILTERS = [
@@ -129,6 +133,7 @@ export function AccountsPage() {
   const [kimiOauthOpen, setKimiOauthOpen] = useState(false);
   const [kimiRefreshOpen, setKimiRefreshOpen] = useState(false);
   const [kimiApiKeyOpen, setKimiApiKeyOpen] = useState(false);
+  const [openDesignGoOpen, setOpenDesignGoOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState<"enable" | "disable" | "delete" | null>(null);
@@ -496,6 +501,8 @@ export function AccountsPage() {
                   <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setKimiRefreshOpen(true)}><FileUp />Refresh Token</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+            ) : poolFilter === "open-design-go" ? (
+              <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload data-icon="inline-start" />导入 Open Design GO</Button>
             ) : null}
           </div>
         }
@@ -591,6 +598,8 @@ export function AccountsPage() {
               <Button size="sm" onClick={() => setKimiApiKeyOpen(true)}><KeyRound />Kimi API Key</Button>
             ) : poolFilter === "openai" ? (
               <Button size="sm" onClick={() => setOpenaiOauthOpen(true)}><KeyRound />OpenAI OAuth 登录</Button>
+            ) : poolFilter === "open-design-go" ? (
+              <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload />导入 Open Design GO</Button>
             ) : <span className="text-xs text-muted-foreground">请先在上方选择一个号池。</span>}
           />
         ) : null}
@@ -708,6 +717,7 @@ export function AccountsPage() {
       <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiApiKeyDialog open={kimiApiKeyOpen} onOpenChange={setKimiApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <TokenLineImportDialog spec={tokenImport} open={Boolean(tokenImport)} onOpenChange={(open) => { if (!open) setTokenImport(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
+      <OpenDesignGoImportDialog open={openDesignGoOpen} onOpenChange={setOpenDesignGoOpen} onCreated={() => { setJobVersion((value) => value + 1); void resource.refresh(); setActionNotice("Open Design GO 账号已导入"); }} />
      <AccountDetailSheet
         account={selected}
         onOpenChange={(open) => { if (!open) setSelected(null); }}
@@ -1509,6 +1519,145 @@ function KimiApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; on
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
           <Button onClick={() => void onSubmit()} disabled={busy || !apiKey.trim()}>{busy ? "验证中…" : "验证并录入"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function OpenDesignGoImportDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const { adminFetch } = useAdmin();
+  const [configJson, setConfigJson] = useState("");
+  const [runtimeKey, setRuntimeKey] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+  const [controlKey, setControlKey] = useState("");
+  const [apiUrl, setApiUrl] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [showManual, setShowManual] = useState(false);
+
+  function reset() {
+    setConfigJson("");
+    setRuntimeKey("");
+    setLinkUrl("");
+    setControlKey("");
+    setApiUrl("");
+    setName("");
+    setError(null);
+    setSuccess(false);
+    setShowManual(false);
+  }
+
+  async function onSubmit() {
+    const trimmedConfig = configJson.trim();
+    let body: Record<string, string>;
+    if (trimmedConfig) {
+      try {
+        JSON.parse(trimmedConfig);
+      } catch {
+        setError("config.json 不是合法 JSON");
+        return;
+      }
+      body = { configJson: trimmedConfig };
+      if (name.trim()) body.name = name.trim();
+      if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
+    } else {
+      if (!runtimeKey.trim() || !linkUrl.trim() || !controlKey.trim()) {
+        setError("请粘贴 config.json 或填写 runtimeKey、linkUrl、controlKey");
+        return;
+      }
+      body = {
+        runtimeKey: runtimeKey.trim(),
+        linkUrl: linkUrl.trim(),
+        controlKey: controlKey.trim(),
+      };
+      if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
+      if (name.trim()) body.name = name.trim();
+    }
+    setBusy(true);
+    setError(null);
+    setSuccess(false);
+    try {
+      const response = await adminFetch("/api/admin/accounts/open-design-go/import", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => null) as { error?: { message?: string }; message?: string } | null;
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "导入失败");
+      if ((payload as Record<string, unknown>)?.error) throw new Error((payload as { error: { message?: string } }).error.message || "导入失败");
+      setSuccess(true);
+      onCreated();
+      window.setTimeout(() => {
+        reset();
+        onOpenChange(false);
+      }, 800);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "导入失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); if (!next) reset(); }}>
+      <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <DialogHeader className="border-b px-5 py-4">
+          <DialogTitle>导入 Open Design GO</DialogTitle>
+          <DialogDescription>通过 config.json 一键导入，或手动填写凭据。导入后自动验证并写入 Open Design GO 号池。</DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">
+          <div className="space-y-2">
+            <Label htmlFor="odg-config-json" className="text-xs font-medium">config.json 全文（推荐）</Label>
+            <Textarea
+              id="odg-config-json"
+              value={configJson}
+              onChange={(e) => setConfigJson(e.target.value)}
+              placeholder={'{\n  "profiles": {\n    "prod": {\n      "runtimeKey": "...",\n      "linkUrl": "https://...",\n      "controlKey": "...",\n      "apiUrl": "https://amr-api.open-design.ai"\n    }\n  }\n}'}
+              className="min-h-[180px] resize-y rounded-md font-mono text-xs leading-5"
+              spellCheck={false}
+            />
+            <p className="text-[11px] leading-4 text-muted-foreground">在已登录 open-design GO 的机器上执行 cat ~/.amr/config.json 复制全部内容</p>
+          </div>
+          <Collapsible open={showManual} onOpenChange={setShowManual} className="rounded-md border bg-[#fafafa]">
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="w-full justify-between text-xs" type="button">
+                <span>手动输入凭据</span>
+                {showManual ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-3 px-3 pb-3">
+              <div className="grid gap-3 pt-1">
+                <div className="space-y-1.5">
+                  <Label htmlFor="odg-runtimeKey" className="text-xs">runtimeKey *</Label>
+                  <Input id="odg-runtimeKey" value={runtimeKey} onChange={(e) => setRuntimeKey(e.target.value)} placeholder="runtimeKey" className="h-8 font-mono text-xs" spellCheck={false} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="odg-linkUrl" className="text-xs">linkUrl *</Label>
+                  <Input id="odg-linkUrl" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} placeholder="https://..." className="h-8 font-mono text-xs" spellCheck={false} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="odg-controlKey" className="text-xs">controlKey *</Label>
+                  <Input id="odg-controlKey" value={controlKey} onChange={(e) => setControlKey(e.target.value)} placeholder="controlKey" className="h-8 font-mono text-xs" spellCheck={false} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="odg-apiUrl" className="text-xs">apiUrl（可选）</Label>
+                  <Input id="odg-apiUrl" value={apiUrl} onChange={(e) => setApiUrl(e.target.value)} placeholder="https://amr-api.open-design.ai" className="h-8 font-mono text-xs" spellCheck={false} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="odg-name" className="text-xs">账号名（可选）</Label>
+                  <Input id="odg-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Open Design GO" className="h-8 text-xs" spellCheck={false} />
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+          {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
+          {success ? <div className="rounded-md border border-success/20 bg-success-soft px-3.5 py-2.5 text-xs text-success">导入成功，账号已写入 Open Design GO 号池。</div> : null}
+        </div>
+        <DialogFooter className="mb-0 border-t bg-[#fafafa] px-5 py-4">
+          <Button variant="outline" onClick={() => { reset(); onOpenChange(false); }} disabled={busy}>取消</Button>
+          <Button onClick={() => void onSubmit()} disabled={busy}>{busy ? "导入中…" : "验证并导入"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

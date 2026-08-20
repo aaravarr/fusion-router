@@ -19,4 +19,8 @@ describe("poolDisplayLabel", () => {
     expect(getPoolLabel("opencode-go")).toBe("OpenCode Go")
     expect(getPoolLabel("openai", "OpenAI")).toBe("OpenAI")
   })
+
+  it("shows Open Design GO label", () => {
+    expect(getPoolLabel("open-design-go")).toBe("Open Design GO")
+  })
 })
