@@ -50,8 +50,8 @@ export const POOL_TYPE_METADATA: Partial<Record<PoolType, PoolTypeMeta>> = {
   },
   "open-design-go": {
     type: "open-design-go",
-    label: "Open Design GO",
-    description: "Open Design GO 订阅（OpenAI 兼容）。Upstream: {linkUrl}/chat/completions via runtimeKey；控制面 {apiUrl}/api/v1。原生格式: Chat",
+    label: "OpenDesign Go",
+    description: "OpenDesign Go 订阅（OpenAI 兼容）。Upstream: {linkUrl}/chat/completions via runtimeKey；控制面 {apiUrl}/api/v1。原生格式: Chat",
     quotaKinds: ["MONTHLY"] as readonly QuotaKind[],
     credentialFields: [],
   },

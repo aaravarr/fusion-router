@@ -1,5 +1,5 @@
 /**
- * Open Design GO Device Code Flow
+ * OpenDesign Go Device Code Flow
  * 仿 kimi-oauth 会话管理，适配实测协议：
  * Step1 POST {apiUrl}/api/v1/cli/device-authorizations {cliVersion,host,profile}
  * Step2 POST {apiUrl}/api/v1/cli/device-authorizations/{deviceId}/token {deviceSecret}
@@ -216,7 +216,7 @@ export async function pollOpenDesignGoDeviceSession(ownerUserId: string, session
     const accountRepo = new AccountRepository(ownerUserId, db)
     const credRepo = new ProviderCredentialRepository(ownerUserId, db)
     const externalId = createHash("sha256").update(`open-design-go:${controlKey ?? runtimeKey}:${runtimeKey}:${workspaceId ?? ""}`).digest("hex").slice(0, 24)
-    const accountName = email || name || "Open Design GO"
+    const accountName = email || name || "OpenDesign Go"
     const account = accountRepo.createProviderAccount({
       name: accountName,
       poolType: "open-design-go",

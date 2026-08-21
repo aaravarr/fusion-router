@@ -12,7 +12,7 @@ export const POOL_TYPE_LABELS: Record<BuiltinPoolType, string> = {
   "openai": "OpenAI",
   "xai-grok": "xAI Grok",
   "kimi-code": "Kimi Code",
-  "open-design-go": "Open Design GO",
+  "open-design-go": "OpenDesign Go",
 }
 
 // Quota

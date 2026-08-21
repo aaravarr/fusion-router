@@ -165,7 +165,7 @@ describe("open-design-go device flow", () => {
     started = await startOpenDesignGoDeviceSession("owner")
     result = await pollOpenDesignGoDeviceSession("owner", started.sessionId)
     expect(result.status).toBe("approved")
-    if (result.status === "approved") expect(result.account.name).toBe("Open Design GO")
+    if (result.status === "approved") expect(result.account.name).toBe("OpenDesign Go")
 
     expect(repo.list().length).toBe(3)
   })

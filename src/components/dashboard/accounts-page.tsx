@@ -79,7 +79,7 @@ const POOL_FILTERS = [
   { key: "openai", label: "OpenAI" },
   { key: "xai-grok", label: "xAI Grok" },
   { key: "kimi-code", label: "Kimi Code" },
-  { key: "open-design-go", label: "Open Design GO" },
+  { key: "open-design-go", label: "OpenDesign Go" },
 ] as const;
 
 const STATUS_FILTERS = [
@@ -502,7 +502,7 @@ export function AccountsPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : poolFilter === "open-design-go" ? (
-              <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload data-icon="inline-start" />导入 Open Design GO</Button>
+              <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload data-icon="inline-start" />导入 OpenDesign Go</Button>
             ) : null}
           </div>
         }
@@ -599,7 +599,7 @@ export function AccountsPage() {
             ) : poolFilter === "openai" ? (
               <Button size="sm" onClick={() => setOpenaiOauthOpen(true)}><KeyRound />OpenAI OAuth 登录</Button>
             ) : poolFilter === "open-design-go" ? (
-              <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload />导入 Open Design GO</Button>
+              <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload />导入 OpenDesign Go</Button>
             ) : <span className="text-xs text-muted-foreground">请先在上方选择一个号池。</span>}
           />
         ) : null}
@@ -721,7 +721,7 @@ export function AccountsPage() {
       <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiApiKeyDialog open={kimiApiKeyOpen} onOpenChange={setKimiApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <TokenLineImportDialog spec={tokenImport} open={Boolean(tokenImport)} onOpenChange={(open) => { if (!open) setTokenImport(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
-      <OpenDesignGoImportDialog open={openDesignGoOpen} onOpenChange={setOpenDesignGoOpen} onCreated={() => { setJobVersion((value) => value + 1); void resource.refresh(); setActionNotice("Open Design GO 账号已导入"); }} />
+      <OpenDesignGoImportDialog open={openDesignGoOpen} onOpenChange={setOpenDesignGoOpen} onCreated={() => { setJobVersion((value) => value + 1); void resource.refresh(); setActionNotice("OpenDesign Go 账号已导入"); }} />
      <AccountDetailSheet
         account={selected}
         onOpenChange={(open) => { if (!open) setSelected(null); }}
@@ -1714,8 +1714,8 @@ function OpenDesignGoImportDialog({ open, onOpenChange, onCreated }: { open: boo
     <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); if (!next) reset(); }}>
       <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-lg">
         <DialogHeader className="border-b px-5 py-4">
-          <DialogTitle>导入 Open Design GO</DialogTitle>
-          <DialogDescription>通过 config.json 一键导入、手动填写或设备码登录。导入后自动验证并写入 Open Design GO 号池。</DialogDescription>
+          <DialogTitle>导入 OpenDesign Go</DialogTitle>
+          <DialogDescription>通过 config.json 一键导入、手动填写或设备码登录。导入后自动验证并写入 OpenDesign Go 号池。</DialogDescription>
         </DialogHeader>
         <div className="flex gap-2 border-b px-5 py-2">
           <Button variant={activeTab === "config" ? "secondary" : "ghost"} size="sm" className="h-7 text-xs" onClick={() => setActiveTab("config")}>粘贴 config.json</Button>
@@ -1762,13 +1762,13 @@ function OpenDesignGoImportDialog({ open, onOpenChange, onCreated }: { open: boo
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="odg-name" className="text-xs">账号名（可选）</Label>
-                  <Input id="odg-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Open Design GO" className="h-8 text-xs" spellCheck={false} />
+                  <Input id="odg-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="OpenDesign Go" className="h-8 text-xs" spellCheck={false} />
                 </div>
               </div>
             </CollapsibleContent>
           </Collapsible>
             {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
-            {success ? <div className="rounded-md border border-success/20 bg-success-soft px-3.5 py-2.5 text-xs text-success">导入成功，账号已写入 Open Design GO 号池。</div> : null}
+            {success ? <div className="rounded-md border border-success/20 bg-success-soft px-3.5 py-2.5 text-xs text-success">导入成功，账号已写入 OpenDesign Go 号池。</div> : null}
           </div>
         ) : (
           <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">

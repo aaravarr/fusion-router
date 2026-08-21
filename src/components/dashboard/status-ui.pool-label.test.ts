@@ -20,7 +20,7 @@ describe("poolDisplayLabel", () => {
     expect(getPoolLabel("openai", "OpenAI")).toBe("OpenAI")
   })
 
-  it("shows Open Design GO label", () => {
-    expect(getPoolLabel("open-design-go")).toBe("Open Design GO")
+  it("shows OpenDesign Go label", () => {
+    expect(getPoolLabel("open-design-go")).toBe("OpenDesign Go")
   })
 })

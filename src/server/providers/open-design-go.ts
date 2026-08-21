@@ -1,5 +1,5 @@
 /**
- * Open Design GO Provider
+ * OpenDesign Go Provider
  * 凭据读写照抄 kimi-code 模式：provider_credentials 加密 JSON {runtimeKey,linkUrl,controlKey,apiUrl,email,plan,userId,workspaceId}
  */
 
@@ -197,7 +197,7 @@ export function parseOpenDesignModels(body: string): string[] {
 
 export class OpenDesignGoProvider implements Provider {
   readonly poolType: PoolType = "open-design-go"
-  readonly displayName = "Open Design GO"
+  readonly displayName = "OpenDesign Go"
   private readonly vault = new SecretVault()
 
   private readCredentialData(account: AccountRecord): OpenDesignGoCredentialData | null {
@@ -236,7 +236,7 @@ export class OpenDesignGoProvider implements Provider {
 
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
     const data = this.readCredentialData(account)
-    if (!data) throw new Error("Open Design GO 凭据不存在")
+    if (!data) throw new Error("OpenDesign Go 凭据不存在")
     // 优先 runtimeKey -> 推理面干净 id
     if (data.runtimeKey) {
       const linkBase = normalizeOpenDesignGoBaseUrl(data.linkUrl)
@@ -253,7 +253,7 @@ export class OpenDesignGoProvider implements Provider {
         }
         // 非 ok 且有 controlKey 兜底，则继续尝试控制面
         if (!data.controlKey) {
-          throw new Error(`Open Design GO /models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
+          throw new Error(`OpenDesign Go /models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
         }
       } catch (e) {
         if (!data.controlKey) throw e
@@ -269,10 +269,10 @@ export class OpenDesignGoProvider implements Provider {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       const body = await resp.text()
-      if (!resp.ok) throw new Error(`Open Design GO /api/v1/models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
+      if (!resp.ok) throw new Error(`OpenDesign Go /api/v1/models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
       return parseOpenDesignControlModels(body)
     }
-    throw new Error("Open Design GO 凭据缺少 runtimeKey 与 controlKey")
+    throw new Error("OpenDesign Go 凭据缺少 runtimeKey 与 controlKey")
   }
 
   private readCachedModels(): string[] | null {
@@ -294,7 +294,7 @@ export class OpenDesignGoProvider implements Provider {
     const row = db.prepare("SELECT credential_data_ciphertext, credential_version FROM provider_credentials WHERE account_id = ?").get(account.id) as { credential_data_ciphertext: string; credential_version: number } | undefined
     if (!row) throw new Error(`No provider credentials found for account ${account.id}`)
     const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as OpenDesignGoCredentialData
-    if (!data.runtimeKey) throw new Error(`Open Design GO 凭据缺少 runtimeKey（account ${account.id}）`)
+    if (!data.runtimeKey) throw new Error(`OpenDesign Go 凭据缺少 runtimeKey（account ${account.id}）`)
     return { token: data.runtimeKey, credentialVersion: row.credential_version }
   }
 

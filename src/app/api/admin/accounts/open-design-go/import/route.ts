@@ -172,18 +172,18 @@ export async function POST(request: Request) {
       signal: AbortSignal.timeout(10000),
     })
     const text = await resp.text()
-    if (!resp.ok) throw new Error(`Open Design GO /models 拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
+    if (!resp.ok) throw new Error(`OpenDesign Go /models 拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
     models = parseModels(text)
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause)
     if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired|forbidden/i.test(message)) {
       return Response.json(
-        { error: { type: "open_design_go_invalid", message: `Open Design GO 推理凭据验证失败：${message}` } },
+        { error: { type: "open_design_go_invalid", message: `OpenDesign Go 推理凭据验证失败：${message}` } },
         { status: 400 },
       )
     }
     return Response.json(
-      { error: { type: "open_design_go_unreachable", message: `Open Design GO 上游暂时不可达：${message}` } },
+      { error: { type: "open_design_go_unreachable", message: `OpenDesign Go 上游暂时不可达：${message}` } },
       { status: 502 },
     )
   }
@@ -214,7 +214,7 @@ export async function POST(request: Request) {
   const credRepo = new ProviderCredentialRepository(user.id, db)
   const externalId = createHash("sha256").update(`open-design-go:${controlKey ?? runtimeKey}:${runtimeKey}:${workspaceId ?? ""}`).digest("hex").slice(0, 24)
 
-  const accountName = name?.trim() || email || userName || "Open Design GO"
+  const accountName = name?.trim() || email || userName || "OpenDesign Go"
   const account = accountRepo.createProviderAccount({
     name: accountName,
     poolType: "open-design-go",

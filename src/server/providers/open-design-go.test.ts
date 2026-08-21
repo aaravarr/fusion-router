@@ -189,7 +189,7 @@ describe("open-design-go 凭据加解密往返", () => {
     const credRepo = new ProviderCredentialRepository("owner", db, new SecretVault(encryptionKey))
 
     const account = accountRepo.createProviderAccount({
-      name: "Open Design GO",
+      name: "OpenDesign Go",
       poolType: "open-design-go",
       email: "user@example.com",
       externalId: "ext-123",
