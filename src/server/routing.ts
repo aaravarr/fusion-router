@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto"
 import type { AppDatabase } from "./db"
 import { getDatabase } from "./db"
-import { AccountRepository } from "./repository"
-import { getSystemSettings, normalizeOfficialOpenCodeUpstreamUrl } from "./settings"
+import { AccountRepository, accountFromRow } from "./repository"
 import type { AccountRecord, PoolType, QuotaKind, RouteSelection } from "./types"
 import { tryGetProvider } from "./providers"
+import { OPENCODE_GO_UPSTREAM_BASE_URL } from "./providers/opencode-go"
 import { ModelRoutingRepository } from "./repository"
 import { refreshStaleLocalRollingUsage, resolveXaiBlockSeconds } from "./quota-usage"
 import { isBuiltinProviderEnabled } from "./builtin-provider-state"
@@ -95,11 +95,40 @@ export class RoutingService {
   private constrainedAccountId: string | null = null
   private interfaceFormat: InterfaceFormat | null = null
   private interfaceNativeOnly = false
+  private readonly sharedEnabled: boolean
+  private readonly accountOwner = new Map<string, string>()
+  private readonly accountById = new Map<string, AccountRecord>()
+
+  /** 账号真实 owner（共享账号的 owner 与其 ownerUserId 不同；优先取 select 时缓存，否则回查 DB）。 */
+  private resolveOwner(accountId: string): string {
+    const cached = this.accountOwner.get(accountId)
+    if (cached) return cached
+    const row = this.db.prepare("SELECT owner_user_id FROM accounts WHERE id = ?").get(accountId) as { owner_user_id: string } | undefined
+    const owner = row?.owner_user_id ?? this.ownerUserId
+    this.accountOwner.set(accountId, owner)
+    return owner
+  }
 
   constructor(readonly ownerUserId: string, readonly db: AppDatabase = getDatabase()) {
     if (!ownerUserId) throw new Error("ownerUserId is required")
     this.accounts = new AccountRepository(ownerUserId, db)
     this.modelRouting = new ModelRoutingRepository(ownerUserId, db)
+    const userRow = this.db.prepare("SELECT share_admin_pool_enabled FROM users WHERE id = ?").get(ownerUserId) as { share_admin_pool_enabled?: number } | undefined
+    this.sharedEnabled = Number(userRow?.share_admin_pool_enabled ?? 0) === 1
+  }
+
+  /** 拉取共享的管理员账号（按 user_shared_pools 明细；调用方保证 own 账号排在前）。 */
+  private listSharedAdminAccounts(): AccountRecord[] {
+    if (!this.sharedEnabled) return []
+    const rows = this.db.prepare(
+      `SELECT a.* FROM accounts a
+       JOIN users admin ON admin.id = a.owner_user_id AND admin.role = 'ADMIN' AND admin.status = 'ACTIVE'
+       JOIN user_shared_pools s ON s.user_id = ?
+       WHERE (s.pool_type = a.pool_type OR (s.pool_type = 'custom:*' AND a.pool_type LIKE 'custom:%'))
+         AND NOT EXISTS (SELECT 1 FROM accounts own WHERE own.id = a.id AND own.owner_user_id = ?)
+       ORDER BY a.owner_user_id, a.ordinal, a.created_at`,
+    ).all(this.ownerUserId, this.ownerUserId) as Row[]
+    return rows.map(accountFromRow)
   }
 
   getState() {
@@ -146,7 +175,13 @@ export class RoutingService {
       this.db.prepare("DELETE FROM route_leases WHERE owner_user_id = ? AND (completed_at IS NOT NULL OR expires_at <= ?)").run(this.ownerUserId, timestamp)
       const state = this.getState()
       const poolPrefs = this.getPoolPreferences()
-      const all = this.accounts.list().filter((account) => isBuiltinProviderEnabled(account.poolType, this.db))
+      const own = this.accounts.list().filter((account) => isBuiltinProviderEnabled(account.poolType, this.db))
+      const shared = this.listSharedAdminAccounts().filter((account) => isBuiltinProviderEnabled(account.poolType, this.db))
+      const all = [...own, ...shared]
+      for (const account of all) {
+        this.accountOwner.set(account.id, account.ownerUserId)
+        this.accountById.set(account.id, account)
+      }
       // Repair rows written by versions that treated every xAI 429 as daily
       // token exhaustion. A positive persisted token remainder proves the 429
       // was only a temporary throttle; keep that cooldown separate and restore
@@ -167,32 +202,37 @@ export class RoutingService {
       // rolling window) can otherwise block accounts forever. Refresh only a
       // bounded stale batch; upstream cooldown rows are deliberately excluded.
       refreshStaleLocalRollingUsage(this.ownerUserId, this.db, now)
-      const activeBlocks = this.db.prepare(`SELECT account_id, reset_at FROM quota_windows
-        WHERE owner_user_id = ? AND usage_percent >= 100 AND (reset_at IS NULL OR reset_at > ?)`)
-        .all(this.ownerUserId, timestamp) as { account_id: string; reset_at: string | null }[]
-      const blocked = new Set(activeBlocks.map((row) => row.account_id))
-      // Latest stored usage_percent for each account (any kind). Used to
-      // balance load across rolling-window pool accounts instead of always
-      // picking the lowest ordinal.
-      const usageRows = this.db.prepare(`SELECT quota.account_id, quota.usage_percent
-        FROM quota_windows quota
-        INNER JOIN (
-          SELECT account_id, MAX(last_observed_at) AS latest
-          FROM quota_windows
-          WHERE owner_user_id = ? AND kind = 'ROLLING_24H'
-          GROUP BY account_id
-        ) observed ON observed.account_id = quota.account_id AND observed.latest = quota.last_observed_at
-        WHERE quota.owner_user_id = ? AND quota.kind = 'ROLLING_24H'`)
-        .all(this.ownerUserId, this.ownerUserId) as { account_id: string; usage_percent: number | null }[]
+      // 账号维度查询（共享账号的阻断/用量/并发按账号真实 owner 落库，不能按请求用户过滤）。
+      const candidateIds = all.map((account) => account.id)
+      const inPlaceholders = candidateIds.map(() => "?").join(",")
+      let activeBlocks: { account_id: string; reset_at: string | null }[] = []
+      const blocked = new Set<string>()
       const usagePct = new Map<string, number>()
-      for (const row of usageRows) {
-        if (row.usage_percent != null) usagePct.set(row.account_id, Number(row.usage_percent))
-      }
       const inFlight = new Map<string, number>()
-      for (const row of this.db.prepare(`SELECT account_id, COUNT(*) AS count FROM route_leases
-        WHERE owner_user_id = ? AND completed_at IS NULL AND expires_at > ? GROUP BY account_id`)
-        .all(this.ownerUserId, timestamp) as { account_id: string; count: number }[]) {
-        inFlight.set(row.account_id, Number(row.count))
+      if (candidateIds.length > 0) {
+        activeBlocks = this.db.prepare(`SELECT account_id, reset_at FROM quota_windows
+          WHERE account_id IN (${inPlaceholders}) AND usage_percent >= 100 AND (reset_at IS NULL OR reset_at > ?)`)
+          .all(...candidateIds, timestamp) as { account_id: string; reset_at: string | null }[]
+        for (const row of activeBlocks) blocked.add(row.account_id)
+
+        const usageRows = this.db.prepare(`SELECT quota.account_id, quota.usage_percent
+          FROM quota_windows quota
+          INNER JOIN (
+            SELECT account_id, MAX(last_observed_at) AS latest
+            FROM quota_windows
+            WHERE account_id IN (${inPlaceholders}) AND kind = 'ROLLING_24H'
+            GROUP BY account_id
+          ) observed ON observed.account_id = quota.account_id AND observed.latest = quota.last_observed_at
+          WHERE quota.account_id IN (${inPlaceholders}) AND quota.kind = 'ROLLING_24H'`)
+          .all(...candidateIds, ...candidateIds) as { account_id: string; usage_percent: number | null }[]
+        for (const row of usageRows) {
+          if (row.usage_percent != null) usagePct.set(row.account_id, Number(row.usage_percent))
+        }
+
+        const inFlightRows = this.db.prepare(`SELECT account_id, COUNT(*) AS count FROM route_leases
+          WHERE account_id IN (${inPlaceholders}) AND completed_at IS NULL AND expires_at > ? GROUP BY account_id`)
+          .all(...candidateIds, timestamp) as { account_id: string; count: number }[]
+        for (const row of inFlightRows) inFlight.set(row.account_id, Number(row.count))
       }
 
       const otherwiseEligible = all.filter(isAccountReady)
@@ -363,14 +403,14 @@ export class RoutingService {
       this.db.prepare(`INSERT INTO route_leases(id, owner_user_id, request_id, account_id, credential_version, expires_at, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
         .run(leaseId, this.ownerUserId, requestId, selected.id, selected.credentialVersion, new Date(now.getTime() + 10 * 60_000).toISOString(), timestamp)
-      this.db.prepare("UPDATE accounts SET last_selected_at=?, last_request_at=?, updated_at=? WHERE id=? AND owner_user_id=?")
-        .run(timestamp, timestamp, timestamp, selected.id, this.ownerUserId)
-      if (state.currentAccountId !== selected.id) {
+      this.db.prepare("UPDATE accounts SET last_selected_at=?, last_request_at=?, updated_at=? WHERE id=?")
+        .run(timestamp, timestamp, timestamp, selected.id)
+      // 共享账号不写入请求用户的 routing_state（永不 sticky）；只有自有账号才更新 current_account_id。
+      if (state.currentAccountId !== selected.id && (this.accountOwner.get(selected.id) ?? this.ownerUserId) === this.ownerUserId) {
         this.db.prepare("UPDATE routing_state SET current_account_id=?, cursor_version=cursor_version+1, updated_at=? WHERE owner_user_id=?")
           .run(selected.id, timestamp, this.ownerUserId)
       }
-      const settings = getSystemSettings(this.db)
-      return { account: selected, leaseId, target: { baseUrl: normalizeOfficialOpenCodeUpstreamUrl(settings.upstreamBaseUrl), authStyle: "BEARER" as const } }
+      return { account: selected, leaseId, target: { baseUrl: OPENCODE_GO_UPSTREAM_BASE_URL, authStyle: "BEARER" as const } }
     })()
   }
 
@@ -432,25 +472,26 @@ export class RoutingService {
 
   markSuccess(accountId: string): void {
     const timestamp = nowIso()
-    this.db.prepare("UPDATE accounts SET last_success_at=?, updated_at=? WHERE id=? AND owner_user_id=?")
-      .run(timestamp, timestamp, accountId, this.ownerUserId)
+    this.db.prepare("UPDATE accounts SET last_success_at=?, updated_at=? WHERE id=?")
+      .run(timestamp, timestamp, accountId)
     // Clear expired blocks always. For temporary provider rate-limits, a live
     // success is strong evidence the cooldown is stale, so clear those early
     // (sub2api-style recovery). Keep hard ROLLING_24H over-quota blocks until
     // their reset time unless they already expired.
     this.db.prepare(`DELETE FROM quota_windows
-      WHERE account_id=? AND owner_user_id=? AND usage_percent>=100 AND (
+      WHERE account_id=? AND usage_percent>=100 AND (
         (reset_at IS NOT NULL AND reset_at<=?)
         OR kind='PROVIDER_RATE_LIMIT'
-      )`).run(accountId, this.ownerUserId, timestamp)
+      )`).run(accountId, timestamp)
   }
 
   markQuota(accountId: string, kind: QuotaKind, retryAfterSeconds: number | null, now = new Date()): void {
     const timestamp = now.toISOString()
-    const account = this.accounts.get(accountId)
+    const owner = this.resolveOwner(accountId)
+    const account = this.accountById.get(accountId) ?? this.accounts.get(accountId)
     const previous = this.db.prepare(`SELECT last_observed_at, reset_at, kind FROM quota_windows
       WHERE owner_user_id=? AND account_id=? AND usage_percent>=100
-      ORDER BY last_observed_at DESC LIMIT 1`).get(this.ownerUserId, accountId) as {
+      ORDER BY last_observed_at DESC LIMIT 1`).get(owner, accountId) as {
       last_observed_at: string | null
       reset_at: string | null
       kind: string | null
@@ -465,7 +506,7 @@ export class RoutingService {
     if (account?.poolType === "xai-grok") {
       const failureRow = this.db.prepare(`SELECT COUNT(*) AS value FROM events
         WHERE owner_user_id=? AND account_id=? AND type='ACCOUNT_QUOTA_BLOCKED'
-          AND (? IS NULL OR created_at>?)`).get(this.ownerUserId, accountId, account.lastSuccessAt, account.lastSuccessAt) as { value: number }
+          AND (? IS NULL OR created_at>?)`).get(owner, accountId, account.lastSuccessAt, account.lastSuccessAt) as { value: number }
       consecutiveFailures = Number(failureRow.value) + 1
       const decision = resolveXaiBlockSeconds({
         accountId,
@@ -499,11 +540,11 @@ export class RoutingService {
         source='UPSTREAM_429',
         observation_version=observation_version+1,
         last_observed_at=excluded.last_observed_at`)
-        .run(this.ownerUserId, accountId, kindToStore, resetAt, timestamp)
-      this.db.prepare("UPDATE accounts SET last_limit_at=?, updated_at=? WHERE id=? AND owner_user_id=?")
-        .run(timestamp, timestamp, accountId, this.ownerUserId)
+        .run(owner, accountId, kindToStore, resetAt, timestamp)
+      this.db.prepare("UPDATE accounts SET last_limit_at=?, updated_at=? WHERE id=?")
+        .run(timestamp, timestamp, accountId)
       const state = this.getState()
-      if (state.currentAccountId === accountId) {
+      if (state.currentAccountId === accountId && owner === this.ownerUserId) {
         this.db.prepare("UPDATE routing_state SET current_account_id=NULL,cursor_version=cursor_version+1,updated_at=? WHERE owner_user_id=?")
           .run(timestamp, this.ownerUserId)
       }
@@ -521,6 +562,11 @@ export class RoutingService {
 
   markPermanentlyDisabled(accountId: string, reason: string, message: string): void {
     const timestamp = nowIso()
+    // 共享账号只读红线：普通用户无权禁用管理员账号，仅记录一条事件（不落库禁用）。
+    if (this.resolveOwner(accountId) !== this.ownerUserId) {
+      this.event("ACCOUNT_CREDENTIAL_INVALID", "WARN", accountId, null, { reason, message: message.slice(0, 500), sharedAccountId: accountId })
+      return
+    }
     const spendingBlocked = reason === "SPENDING_BLOCKED"
     const authState = spendingBlocked ? "VALID" : "AUTH_ERROR"
     const eventType = reason === "CREDENTIAL_INVALID"

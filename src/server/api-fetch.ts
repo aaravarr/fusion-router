@@ -10,37 +10,68 @@
 // they just fetch the original upstream URL and the interceptor handles
 // routing through whatever proxy/mirror the operator has configured.
 
-import { getSystemSettings } from "./settings"
-import type { DomainMirrorConfig, DomainMirrorGroup, DomainMirrorMap, DomainMirrorTarget, RequestMirrorRule, RequestMirrorRuleGroup, RequestMirrorSource } from "./settings"
+import type { DomainMirrorConfig, DomainMirrorGroup, DomainMirrorRule, DomainMirrorTarget, RequestMirrorRule, RequestMirrorRuleGroup, RequestMirrorSource } from "./settings"
 import { getDatabase } from "./db"
 import { createHash } from "node:crypto"
 
-let cachedMirrorMap: DomainMirrorMap | null = null
-let cachedMirrorGroups: DomainMirrorGroup[] = []
-let cacheExpiry = 0
+type Row = Record<string, unknown>
+
 const CACHE_TTL_MS = 10_000
+const cachedGroupsByOwner = new Map<string, { groups: DomainMirrorGroup[]; expiry: number }>()
 const mirrorCacheGlobal = globalThis as typeof globalThis & { __invalidateDomainMirrorCache?: () => void }
 
-function getMirrorMap(): DomainMirrorMap {
-  const now = Date.now()
-  if (cachedMirrorMap !== null && now < cacheExpiry) return cachedMirrorMap
-  try {
-    const settings = getSystemSettings(getDatabase())
-    cachedMirrorMap = settings.domainMirrorMap ?? {}
-    cachedMirrorGroups = settings.domainMirrorGroups ?? []
-  } catch {
-    cachedMirrorMap = {}
-    cachedMirrorGroups = []
+function rowsToGroups(rows: Row[]): DomainMirrorGroup[] {
+  const groups: DomainMirrorGroup[] = []
+  for (const row of rows) {
+    try {
+      groups.push({
+        id: String(row.id),
+        name: String(row.name),
+        enabled: Boolean(row.enabled),
+        domains: JSON.parse(String(row.domains_json)) as string[],
+        accountIds: JSON.parse(String(row.account_ids_json)) as string[],
+        mirrors: JSON.parse(String(row.mirrors_json)) as DomainMirrorTarget[],
+        rules: JSON.parse(String(row.rules_json)) as DomainMirrorRule[],
+        requestRules: row.request_rules_json ? (JSON.parse(String(row.request_rules_json)) as RequestMirrorRuleGroup[]) : undefined,
+      })
+    } catch { /* 跳过损坏行 */ }
   }
-  cacheExpiry = now + CACHE_TTL_MS
-  return cachedMirrorMap
+  return groups
 }
 
-// Invalidate the mirror map cache — call after settings are updated.
+/** 读取某用户自己的镜像组（按 owner_user_id 隔离，TTL 缓存）。 */
+export function getMirrorGroupsForOwner(ownerUserId: string): DomainMirrorGroup[] {
+  if (!ownerUserId) return []
+  const now = Date.now()
+  const cached = cachedGroupsByOwner.get(ownerUserId)
+  if (cached && now < cached.expiry) return cached.groups
+  let groups: DomainMirrorGroup[] = []
+  try {
+    const rows = getDatabase().prepare(
+      "SELECT id, name, enabled, domains_json, account_ids_json, mirrors_json, rules_json, request_rules_json FROM user_mirror_groups WHERE owner_user_id = ? AND enabled = 1 ORDER BY created_at",
+    ).all(ownerUserId) as Row[]
+    groups = rowsToGroups(rows)
+  } catch { groups = [] }
+  cachedGroupsByOwner.set(ownerUserId, { groups, expiry: now + CACHE_TTL_MS })
+  return groups
+}
+
+/** 无主上下文回退：首个 ADMIN 的镜像组（即历史系统级出口策略）。 */
+export function getSystemFallbackGroups(): DomainMirrorGroup[] {
+  try {
+    const admin = getDatabase().prepare("SELECT id FROM users WHERE role = 'ADMIN' ORDER BY created_at ASC LIMIT 1").get() as { id: string } | undefined
+    return admin ? getMirrorGroupsForOwner(admin.id) : []
+  } catch { return [] }
+}
+
+/** 失效某用户的镜像组缓存（写成功后调用，即时生效）。 */
+export function invalidateMirrorCacheForOwner(ownerUserId: string): void {
+  cachedGroupsByOwner.delete(ownerUserId)
+}
+
+// 全量失效（保留给旧 settings 调用点做兼容）。
 export function invalidateMirrorCache(): void {
-  cachedMirrorMap = null
-  cachedMirrorGroups = []
-  cacheExpiry = 0
+  cachedGroupsByOwner.clear()
 }
 mirrorCacheGlobal.__invalidateDomainMirrorCache = invalidateMirrorCache
 
@@ -53,6 +84,7 @@ export function resolveMirrorUrl(originalUrl: string): string {
 
 export interface MirrorSelectionAccount {
   id: string
+  ownerUserId?: string | null
   name?: string | null
   email?: string | null
   workspaceId?: string | null
@@ -62,6 +94,8 @@ export interface MirrorSelectionAccount {
 
 export interface MirrorSelectionContext {
   account?: MirrorSelectionAccount | null
+  /** 显式指定镜像组归属用户（第 1 级优先级）。 */
+  ownerUserId?: string | null
   shardKey?: string | null
   /** 已解析的请求体 JSON（可选，用于请求规则匹配） */
   body?: unknown
@@ -124,22 +158,19 @@ export function applyMirrorTarget(originalUrl: string, target: DomainMirrorTarge
 }
 
 export function resolveMirrorUrlForContext(originalUrl: string, context: MirrorSelectionContext = {}): string {
-  const mirrorMap = getMirrorMap()
-  if ((!mirrorMap || Object.keys(mirrorMap).length === 0) && cachedMirrorGroups.length === 0) return originalUrl
   try {
     const parsed = new URL(originalUrl)
+    const owner = context.ownerUserId ?? context.account?.ownerUserId ?? null
+    const groups = owner ? getMirrorGroupsForOwner(owner) : getSystemFallbackGroups()
+    if (groups.length === 0) return originalUrl
     const hostname = parsed.hostname.toLowerCase()
     const accountId = context.account?.id
-    const group = selectDomainMirrorGroup(cachedMirrorGroups, hostname, accountId)
+    const group = selectDomainMirrorGroup(groups, hostname, accountId)
     if (group) {
       const selected = selectMirrorGroupTarget(group, { ...context, shardKey: context.shardKey || accountId || hostname })
       if (selected) return applyMirrorTarget(parsed.toString(), selected)
     }
-    const config = mirrorMap[hostname]
-    if (!config) return originalUrl
-    const selected = selectDomainMirror(config, { ...context, shardKey: context.shardKey || context.account?.id || hostname })
-    if (!selected) return originalUrl
-    return applyMirrorTarget(parsed.toString(), selected)
+    return originalUrl
   } catch {
     return originalUrl
   }

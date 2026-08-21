@@ -55,11 +55,22 @@ import {
 import { StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useConfirm } from "@/components/ui/confirm-provider";
+import { Checkbox } from "@/components/ui/checkbox";
+
+const SHARING_POOL_OPTIONS = [
+  { value: "opencode-go", label: "OpenCode Go" },
+  { value: "openai", label: "OpenAI" },
+  { value: "xai-grok", label: "xAI Grok" },
+  { value: "kimi-code", label: "Kimi Code" },
+  { value: "open-design-go", label: "OpenDesign Go" },
+  { value: "custom:*", label: "自定义 Provider（全部）" },
+];
 
 interface UserSummary extends SessionUser {
   accountCount?: number;
   apiKeyCount?: number;
   lastLoginAt?: string | null;
+  sharing?: { enabled: boolean; poolTypes: string[] };
 }
 interface UsersPayload {
   users?: UserSummary[];
@@ -78,6 +89,10 @@ export function UsersPage() {
   const [passwordUser, setPasswordUser] = useState<UserSummary | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
+  const [sharingUser, setSharingUser] = useState<UserSummary | null>(null);
+  const [sharingEnabled, setSharingEnabled] = useState(false);
+  const [sharingPoolTypes, setSharingPoolTypes] = useState<Set<string>>(new Set());
+  const [sharingBusy, setSharingBusy] = useState(false);
   if (!isAdmin)
     return (
       <Panel>
@@ -132,6 +147,28 @@ export function UsersPage() {
     setPasswordBusy(false);
     setPasswordUser(null);
     setNewPassword("");
+  }
+
+  function openSharing(user: UserSummary) {
+    setSharingUser(user);
+    setSharingEnabled(user.sharing?.enabled ?? false);
+    setSharingPoolTypes(new Set(user.sharing?.poolTypes ?? []));
+  }
+
+  async function saveSharing() {
+    if (!sharingUser) return;
+    setSharingBusy(true);
+    const response = await sessionFetch(`/api/admin/users/${sharingUser.id}/sharing`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: sharingEnabled, poolTypes: [...sharingPoolTypes] }),
+    });
+    setSharingBusy(false);
+    if (response.ok) {
+      setSharingUser(null);
+      await resource.refresh();
+    } else {
+      setError((await response.json().catch(() => null))?.error?.message || "保存共享配置失败");
+    }
   }
 
   async function revoke(user: UserSummary) {
@@ -211,6 +248,7 @@ export function UsersPage() {
                 <TableHead>状态</TableHead>
                 <TableHead>Provider 账号</TableHead>
                 <TableHead>API 密钥</TableHead>
+                <TableHead>共享池</TableHead>
                 <TableHead>创建时间</TableHead>
                 <TableHead className="w-14" />
               </TableRow>
@@ -255,6 +293,11 @@ export function UsersPage() {
                   <TableCell className="font-mono text-xs">
                     {user.apiKeyCount ?? 0}
                   </TableCell>
+                  <TableCell className="text-xs">
+                    {user.sharing?.enabled
+                      ? `已开启 ${user.sharing.poolTypes.length} 类`
+                      : "关闭"}
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {formatDate(user.createdAt)}
                   </TableCell>
@@ -286,6 +329,9 @@ export function UsersPage() {
                           onSelect={() => { setPasswordUser(user); setNewPassword(""); }}
                         >
                           重置密码
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => openSharing(user)}>
+                          配置共享池
                         </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => void revoke(user)}>
                           注销全部会话
@@ -390,6 +436,43 @@ export function UsersPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setPasswordUser(null)} disabled={passwordBusy}>取消</Button>
             <Button type="submit" form="reset-user-password" disabled={passwordBusy || newPassword.length < 6}>{passwordBusy ? "正在重置" : "重置密码"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(sharingUser)} onOpenChange={(next) => { if (!next && !sharingBusy) setSharingUser(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>配置共享管理员账号池</DialogTitle>
+            <DialogDescription>允许 {sharingUser?.username} 复用管理员账号池中的账号（自有账号优先）。仅当管理员开启后明细才生效。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <label className="flex cursor-pointer items-center gap-3 rounded-md border bg-[#fafafa] p-3">
+              <Checkbox checked={sharingEnabled} onCheckedChange={(v) => setSharingEnabled(v === true)} />
+              <span>
+                <span className="block text-sm font-medium">启用共享管理员账号池</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">关闭时忽略下方勾选。</span>
+              </span>
+            </label>
+            <div className="space-y-1">
+              {SHARING_POOL_OPTIONS.map((option) => (
+                <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm transition-colors hover:bg-muted/40">
+                  <Checkbox
+                    checked={sharingPoolTypes.has(option.value)}
+                    disabled={!sharingEnabled}
+                    onCheckedChange={(v) => setSharingPoolTypes((current) => {
+                      const next = new Set(current);
+                      if (v === true) next.add(option.value); else next.delete(option.value);
+                      return next;
+                    })}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSharingUser(null)} disabled={sharingBusy}>取消</Button>
+            <Button onClick={() => void saveSharing()} disabled={sharingBusy}>{sharingBusy ? "正在保存" : "保存"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

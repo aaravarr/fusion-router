@@ -8,7 +8,14 @@ export function GET(request: Request) {
   const actor = requireAdministrator(request); if (actor instanceof Response) return actor;
   const db = getDatabase(); const users = getAuthService().listUsers(actor.id);
   const stats = db.prepare(`SELECT u.id, COUNT(DISTINCT a.id) AS accountCount, COUNT(DISTINCT k.id) AS apiKeyCount FROM users u LEFT JOIN accounts a ON a.owner_user_id=u.id LEFT JOIN api_keys k ON k.owner_user_id=u.id GROUP BY u.id`).all() as Array<{id:string;accountCount:number;apiKeyCount:number}>;
-  return Response.json({ users: users.map((user) => ({ ...user, ...stats.find((item) => item.id === user.id) })) });
+  const sharingRows = db.prepare(`SELECT u.id, u.share_admin_pool_enabled, s.pool_type FROM users u LEFT JOIN user_shared_pools s ON s.user_id = u.id`).all() as Array<{id:string;share_admin_pool_enabled:number;pool_type:string|null}>;
+  const sharingByUser = new Map<string, { enabled: boolean; poolTypes: string[] }>();
+  for (const row of sharingRows) {
+    let entry = sharingByUser.get(row.id);
+    if (!entry) { entry = { enabled: Number(row.share_admin_pool_enabled) === 1, poolTypes: [] }; sharingByUser.set(row.id, entry); }
+    if (row.pool_type) entry.poolTypes.push(row.pool_type);
+  }
+  return Response.json({ users: users.map((user) => ({ ...user, ...stats.find((item) => item.id === user.id), sharing: sharingByUser.get(user.id) ?? { enabled: false, poolTypes: [] } })) });
 }
 export async function POST(request: Request) {
   const actor = requireAdministrator(request); if (actor instanceof Response) return actor;

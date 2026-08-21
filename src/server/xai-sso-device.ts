@@ -13,8 +13,7 @@
 
 // Resolve hostnames through the domain mirror map so operators behind mirrors
 // can reach accounts.x.ai / auth.x.ai without a proxy.
-import { resolveMirrorUrl } from "./api-fetch"
-import { getSystemSettings } from "./settings"
+import { getSystemFallbackGroups, resolveMirrorUrl } from "./api-fetch"
 import { EnvHttpProxyAgent } from "undici"
 
 // ─── Constants ───────────────────────────────────────────────────────────
@@ -151,16 +150,7 @@ function safeXaiAuthUrl(raw: string): boolean {
   // Path-prefix mirrors rewrite 3xx Location headers to their own domain, so
   // allow any host that is configured as a mirror target in system_settings.
   try {
-    const mirrorMap = getSystemSettings().domainMirrorMap ?? {}
-    for (const config of Object.values(mirrorMap)) {
-      for (const mirror of config.mirrors) {
-        try {
-          const target = new URL(mirror.url)
-          if (target.hostname.toLowerCase() === host) return true
-        } catch { /* skip invalid mirror entry */ }
-      }
-    }
-    for (const group of getSystemSettings().domainMirrorGroups ?? []) {
+    for (const group of getSystemFallbackGroups()) {
       for (const mirror of group.mirrors) {
         try {
           const target = new URL(mirror.url.replaceAll("$host", "origin.example.com"))

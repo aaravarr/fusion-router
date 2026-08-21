@@ -474,3 +474,106 @@ describe("open-design-go 并发排队等待", () => {
     ).rejects.toBeInstanceOf(NoEligibleAccountError)
   })
 })
+
+describe("共享管理员账号池", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  function makeShared(sharePools?: string[]) {
+    const db = createDatabase(":memory:")
+    const timestamp = new Date().toISOString()
+    const insertUser = (id: string, role: string) => db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES (?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run(id, id, id, id, role, "hash", timestamp, timestamp)
+    // 管理员 user-admin + 普通用户 ownerUserId（请求方）
+    insertUser("user-admin", "ADMIN")
+    insertUser(ownerUserId, "USER")
+    const adminAccounts = new AccountRepository("user-admin", db, new SecretVault(encryptionKey))
+    const adminAccount = adminAccounts.createProviderAccount({ name: "admin shared", poolType: "xai-grok", externalId: "admin-shared" })
+    const userAccounts = new AccountRepository(ownerUserId, db, new SecretVault(encryptionKey))
+    const enable = (poolTypes: string[]) => {
+      db.prepare("UPDATE users SET share_admin_pool_enabled=1 WHERE id=?").run(ownerUserId)
+      const ins = db.prepare("INSERT INTO user_shared_pools(user_id,pool_type,created_at,updated_at) VALUES(?,?,?,?)")
+      for (const pt of poolTypes) ins.run(ownerUserId, pt, timestamp, timestamp)
+    }
+    // sharedEnabled 在 RoutingService 构造时读取一次，故必须先 enable 再构造。
+    if (sharePools) enable(sharePools)
+    const routing = new RoutingService(ownerUserId, db)
+    return { db, adminAccounts, adminAccount, userAccounts, routing, enable }
+  }
+
+  it("开启共享后候选含管理员该池账号且 own 在前", () => {
+    const { routing, userAccounts, adminAccount } = makeShared(["xai-grok"])
+    const own = userAccounts.createProviderAccount({ name: "own xai", poolType: "xai-grok", externalId: "own-xai" })
+    routing.setModel("grok-4.5")
+    const selected = routing.select("shared-1", "chat/completions", new Set())
+    expect(selected.account.id).toBe(own.id)
+    routing.releaseLease(selected.leaseId)
+    const next = routing.select("shared-2", "chat/completions", new Set([own.id]))
+    expect(next.account.id).toBe(adminAccount.id)
+  })
+
+  it("未开启共享时候选不含管理员账号", () => {
+    const { routing, userAccounts } = makeShared()
+    userAccounts.createProviderAccount({ name: "own xai", poolType: "xai-grok", externalId: "own-xai" })
+    routing.setModel("grok-4.5")
+    const selected = routing.select("noswap-1", "chat/completions", new Set())
+    expect(selected.account.ownerUserId).toBe(ownerUserId)
+    expect(() => routing.select("noswap-2", "chat/completions", new Set([selected.account.id]))).toThrowError(NoEligibleAccountError)
+  })
+
+  it("custom:* 覆盖 custom:<id> 账号", () => {
+    const { db, routing, adminAccounts } = makeShared(["custom:*"])
+    setGlobalDatabase(db)
+    try {
+      const provider = new CustomProviderRepository("user-admin", db).create({ name: "admin custom provider", baseUrl: "https://x.example.com/v1", interfaceTypes: ["chat"] })
+      const customAccount = adminAccounts.createProviderAccount({ name: "admin custom", poolType: provider.poolType })
+      const selected = routing.select("custom-shared", "chat/completions", new Set())
+      expect(selected.account.id).toBe(customAccount.id)
+    } finally {
+      invalidateCustomProviderCache()
+      setGlobalDatabase(undefined)
+    }
+  })
+
+  it("管理员账号阻断对共享者可见", () => {
+    const { db, routing, adminAccount } = makeShared(["xai-grok"])
+    db.prepare("INSERT INTO quota_windows(owner_user_id,account_id,kind,usage_percent,reset_at,source,last_observed_at) VALUES(?,?,?,100,?,?,?)")
+      .run("user-admin", adminAccount.id, "ROLLING_24H", null, "UPSTREAM_429", new Date().toISOString())
+    routing.setModel("grok-4.5")
+    expect(() => routing.select("blocked-shared", "chat/completions", new Set())).toThrowError(NoEligibleAccountError)
+  })
+
+  it("markQuota 写回归属到账号 owner，不触碰请求用户 routing_state", () => {
+    const { db, routing, adminAccount } = makeShared(["xai-grok"])
+    routing.markQuota(adminAccount.id, "ROLLING_24H", 3600)
+    const qw = db.prepare("SELECT owner_user_id FROM quota_windows WHERE account_id=?").get(adminAccount.id) as { owner_user_id: string }
+    expect(qw.owner_user_id).toBe("user-admin")
+    const state = db.prepare("SELECT current_account_id FROM routing_state WHERE owner_user_id=?").get(ownerUserId) as { current_account_id: string | null }
+    expect(state.current_account_id).toBeNull()
+  })
+
+  it("markPermanentlyDisabled 对共享账号仅记录事件、不落库禁用", () => {
+    const { db, routing, adminAccount } = makeShared(["xai-grok"])
+    routing.markPermanentlyDisabled(adminAccount.id, "CREDENTIAL_INVALID", "bad")
+    const acc = db.prepare("SELECT admin_state FROM accounts WHERE id=?").get(adminAccount.id) as { admin_state: string }
+    expect(acc.admin_state).toBe("ENABLED")
+    const evt = db.prepare("SELECT COUNT(*) AS c FROM events WHERE account_id=? AND type='ACCOUNT_CREDENTIAL_INVALID'").get(adminAccount.id) as { c: number }
+    expect(evt.c).toBe(1)
+  })
+
+  it("setPoolPreference 拒绝共享账号", () => {
+    const { routing, adminAccount } = makeShared(["xai-grok"])
+    expect(() => routing.setPoolPreference("xai-grok", adminAccount.id)).toThrow(/Account not found/)
+  })
+
+  it("两个不同 owner 对同一共享账号各写 1 条活跃 lease → in-flight 计数=2", () => {
+    const { db, routing, adminAccount } = makeShared(["xai-grok"])
+    db.prepare("UPDATE accounts SET max_concurrency=1 WHERE id=?").run(adminAccount.id)
+    const now = new Date()
+    const mkLease = (owner: string, reqId: string) => db.prepare("INSERT INTO route_leases(id,owner_user_id,request_id,account_id,credential_version,expires_at,created_at) VALUES(?,?,?,?,?,?,?)")
+      .run(owner + reqId, owner, reqId, adminAccount.id, 1, new Date(now.getTime() + 600_000).toISOString(), now.toISOString())
+    mkLease("user-admin", "admin-req")
+    mkLease(ownerUserId, "user-req")
+    routing.setModel("grok-4.5")
+    expect(() => routing.select("concurrency-shared", "chat/completions", new Set())).toThrowError(NoEligibleAccountError)
+  })
+})
