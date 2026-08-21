@@ -24,6 +24,10 @@
   --color-warning-soft: var(--warning-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  --color-accent-blue: var(--accent-blue);
+  --color-accent-blue-strong: var(--accent-blue-strong);
+  --color-accent-blue-soft: var(--accent-blue-soft);
+  --color-accent-blue-soft-2: var(--accent-blue-soft-2);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -76,6 +80,10 @@
   --warning-soft: oklch(0.97 0.04 75);
   --info: oklch(0.52 0.19 256);
   --info-soft: oklch(0.965 0.025 256);
+  --accent-blue: #2563EB;
+  --accent-blue-strong: #1D4ED8;
+  --accent-blue-soft: #EFF4FF;
+  --accent-blue-soft-2: #DCE8FF;
   --radius: 8px;
   --sidebar: oklch(1 0 0);
   --sidebar-foreground: oklch(0.145 0 0);

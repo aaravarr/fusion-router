@@ -8,17 +8,23 @@ export function PageIntro({
   title,
   description,
   actions,
+  showTitle = true,
 }: {
   eyebrow: string;
   title: string;
   description: string;
   actions?: React.ReactNode;
+  showTitle?: boolean;
 }) {
   return (
     <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
-        <p className="mb-2 font-mono text-[10px] font-medium tracking-[0.1em] text-muted-foreground">{eyebrow}</p>
-        <h1 className="text-2xl font-semibold tracking-[-0.04em] sm:text-[28px]">{title}</h1>
+        {showTitle ? (
+          <>
+            <p className="mb-2 font-mono text-[10px] font-medium tracking-[0.1em] text-muted-foreground">{eyebrow}</p>
+            <h1 className="text-2xl font-semibold tracking-[-0.04em] sm:text-[28px]">{title}</h1>
+          </>
+        ) : null}
         <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
       </div>
       {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}

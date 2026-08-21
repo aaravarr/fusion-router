@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { ArrowRight, Check, ChevronRight, Network, PenLine, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,8 @@ import { getPoolLabel } from "./status-ui";
 import { useConfirm } from "@/components/ui/confirm-provider";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 
 interface MirrorTarget { id: string; name: string; url: string; enabled: boolean }
 interface MirrorRule { id: string; pattern: string; mirrorId: string; enabled: boolean }
@@ -34,6 +36,15 @@ export function NetworkPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  // 镜像组编辑对话框的受控状态：null = 关闭，{ group } = 编辑，{} = 新建
+  const [editorGroup, setEditorGroup] = useState<MirrorGroup | null | undefined>(undefined);
+  const editor = {
+    open: (target: { group?: MirrorGroup }) =>
+      setEditorGroup(target.group ?? null),
+    close: () => setEditorGroup(undefined),
+    current: editorGroup,
+  };
 
   async function load() {
     setLoading(true);
@@ -83,12 +94,19 @@ export function NetworkPage() {
       <PageIntro
         eyebrow="NETWORK"
         title="网络"
+        showTitle={false}
         description="按账号组管理域名镜像路由；每个用户只管理自己的镜像组与账号，未命中时按账号 ID 稳定 Hash。"
         actions={
-          <Button variant="outline" size="sm" onClick={() => void load()}>
-            <RefreshCw data-icon="inline-start" />
-            重新载入
-          </Button>
+          <>
+            <Button size="sm" onClick={() => editor.open({})}>
+              <Plus data-icon="inline-start" />
+              新建镜像组
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              <RefreshCw data-icon="inline-start" />
+              重新载入
+            </Button>
+          </>
         }
       />
       {error ? (
@@ -97,14 +115,44 @@ export function NetworkPage() {
         </Panel>
       ) : null}
       {loading && !data ? <Panel><div className="p-4 text-sm text-muted-foreground">加载中…</div></Panel> : null}
-      <Panel
-        title="域名镜像路由"
-        description="每组包含一批账号、多个原始域名和多个镜像节点；组内先按正则规则选择节点，未命中时按账号 ID 稳定 Hash。"
-      >
-        <div className="p-4 sm:p-5">
-          <DomainMirrorsEditor value={groups} accounts={accounts} onChange={(value) => setDraft(value)} />
+      {!loading && !error && groups.length === 0 ? (
+        <div className="mb-4 flex min-h-52 flex-col items-center justify-center rounded-lg border border-border px-6 py-12 text-center">
+          <div className="mb-4 grid size-9 place-items-center rounded-md border bg-[#fafafa]">
+            <Network className="size-4 text-muted-foreground" aria-hidden="true" />
+          </div>
+          <h3 className="text-sm font-medium">还没有镜像组</h3>
+          <p className="mt-1.5 max-w-sm text-sm leading-6 text-muted-foreground">
+            为你的账号配置备用线路：将上游请求按域名分流到代理或镜像节点，在官方端点不稳定时自动切换。
+          </p>
+          <div className="mt-5">
+            <Button size="sm" onClick={() => editor.open({})}>
+              <Plus data-icon="inline-start" />
+              新建镜像组
+            </Button>
+          </div>
+          <a
+            href="#"
+            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent-blue hover:underline"
+          >
+            了解镜像组的典型用法
+            <ArrowRight className="size-3.5" aria-hidden="true" />
+          </a>
         </div>
-      </Panel>
+      ) : null}
+      {groups.length > 0 || loading ? (
+        <Panel
+          title="域名镜像路由"
+          description="每组包含一批账号、多个原始域名和多个镜像节点；组内先按正则规则选择节点，未命中时按账号 ID 稳定 Hash。"
+        >
+          <div className="p-4 sm:p-5">
+            <DomainMirrorsEditor
+              value={groups}
+              editor={editor}
+              onChange={(value) => setDraft(value)}
+            />
+          </div>
+        </Panel>
+      ) : null}
       <div className="sticky bottom-4 flex items-center justify-between rounded-lg border bg-white/95 p-3 shadow-lg backdrop-blur">
         <p className="text-xs text-muted-foreground" role="status">
           {message || "镜像路由保存在持久数据目录和数据库中。"}
@@ -114,47 +162,108 @@ export function NetworkPage() {
           {saving ? "正在保存" : "保存镜像路由"}
         </Button>
       </div>
+      {editorGroup !== undefined ? (
+        <MirrorGroupDialog
+          key={editorGroup?.id ?? "new"}
+          group={editorGroup}
+          groups={groups}
+          accounts={accounts}
+          onClose={() => setEditorGroup(undefined)}
+          onSave={(group) => {
+            setDraft(
+              editorGroup
+                ? groups.map((item) => (item.id === editorGroup.id ? group : item))
+                : [...groups, group],
+            );
+            setEditorGroup(undefined);
+          }}
+        />
+      ) : null}
     </>
   );
 }
 
-function Field({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
-      {description ? <p className="text-xs leading-4 text-muted-foreground">{description}</p> : null}
-      {children}
-    </div>
-  );
+interface EditorControl {
+  open: (target: { group?: MirrorGroup }) => void;
+  close: () => void;
+  current: MirrorGroup | null | undefined;
 }
 
-function DomainMirrorsEditor({ value, accounts, onChange }: { value: MirrorGroup[]; accounts: MirrorAccount[]; onChange: (value: MirrorGroup[]) => void }) {
+function DomainMirrorsEditor({ value, editor, onChange }: { value: MirrorGroup[]; editor: EditorControl; onChange: (value: MirrorGroup[]) => void }) {
   const confirm = useConfirm();
   const groups = value;
-  const [editingGroup, setEditingGroup] = useState<MirrorGroup | null | undefined>(undefined);
   async function removeGroup(id: string) {
     const group = groups.find((item) => item.id === id);
     const approved = await confirm({ title: `删除镜像组${group?.name ? `“${group.name}”` : ""}？`, description: "组内的域名、规则和账号绑定会一起移除。保存设置后生效。", confirmText: "删除镜像组", destructive: true });
     if (!approved) return;
     onChange(groups.filter((group) => group.id !== id));
   }
-  return <div className="space-y-3">
-    <div className="flex flex-wrap items-start gap-3">
-      <p className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">每组包含一批账号、多个原始域名和多个镜像地址。组内先按正则规则选择节点，未命中时按账号 ID 稳定 Hash；地址中的 <code className="text-foreground">$host</code> 会替换为原始请求 host。</p>
-      <Button type="button" size="sm" onClick={() => setEditingGroup(null)}><Plus />新增镜像组</Button>
+  function setGroupEnabled(id: string, enabled: boolean) {
+    onChange(groups.map((group) => (group.id === id ? { ...group, enabled } : group)));
+  }
+  if (!groups.length) return (
+    <div className="rounded-md border border-border px-4 py-8 text-center text-xs text-muted-foreground">
+      暂无镜像组
     </div>
-    {groups.length ? <div className="space-y-2">
-      {groups.map((group) => <div key={group.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border bg-white px-3 py-3">
-        <div className="min-w-48 flex-1">
-          <div className="flex items-center gap-2"><p className="text-sm font-medium">{group.name}</p><span className={`rounded-full px-2 py-0.5 text-[10px] ${group.enabled ? "bg-success-soft text-success" : "bg-muted text-muted-foreground"}`}>{group.enabled ? "启用" : "停用"}</span></div>
-          <p className="mt-1 truncate text-[11px] text-muted-foreground">{group.mirrors.map((mirror) => mirror.name).join(" · ")}</p>
+  );
+  return (
+    <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
+      {groups.map((group) => (
+        <div key={group.id} className="flex flex-col overflow-hidden rounded-lg border bg-white transition-colors hover:border-border-strong">
+          <div className="flex items-start justify-between gap-2 border-b px-3.5 py-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold tracking-[-0.01em]">{group.name}</p>
+              <p className="mt-0.5 font-mono text-[10.5px] text-muted-foreground">{group.id}</p>
+            </div>
+            <Switch checked={group.enabled} onCheckedChange={(checked) => setGroupEnabled(group.id, checked)} />
+          </div>
+          <div className="flex flex-1 flex-col gap-2.5 px-3.5 py-3">
+            <div>
+              <p className="mb-1 text-[10.5px] font-semibold tracking-[0.04em] text-muted-foreground uppercase">原始域名</p>
+              <div className="flex flex-wrap gap-1">
+                {group.domains.slice(0, 3).map((domain) => (
+                  <span key={domain} className="rounded border bg-[#f7f7f5] px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">{domain}</span>
+                ))}
+                {group.domains.length > 3 ? <span className="rounded border border-dashed px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">+{group.domains.length - 3}</span> : null}
+              </div>
+            </div>
+            <div>
+              <p className="mb-1 text-[10.5px] font-semibold tracking-[0.04em] text-muted-foreground uppercase">绑定账号</p>
+              <div className="flex flex-wrap gap-1">
+                <span className="rounded border bg-[#f7f7f5] px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">{group.accountIds.length ? "已选 " + group.accountIds.length + " 个" : "全部账号"}</span>
+              </div>
+            </div>
+            <div>
+              <p className="mb-1 text-[10.5px] font-semibold tracking-[0.04em] text-muted-foreground uppercase">镜像目标</p>
+              <div className="space-y-1">
+                {group.mirrors.map((mirror) => (
+                  <div key={mirror.id} className="flex min-w-0 items-center gap-1.5 text-[11.5px]">
+                    <span className={`size-[7px] shrink-0 rounded-full ${mirror.enabled ? "bg-success" : "bg-[#d6d6d4]"}`} aria-hidden="true" />
+                    <span className="font-medium">{mirror.name}</span>
+                    <span className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground">{mirror.url}</span>
+                  </div>
+                ))}
+                {!group.mirrors.length ? <span className="text-xs text-muted-foreground">无节点</span> : null}
+              </div>
+            </div>
+            <div>
+              <p className="mb-1 text-[10.5px] font-semibold tracking-[0.04em] text-muted-foreground uppercase">规则</p>
+              <p className="font-mono text-[11px] text-muted-foreground">{group.rules.length} 条路由规则 · {group.requestRules?.length ?? 0} 组请求规则</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 border-t bg-[#fafafa] px-3.5 py-2">
+            <button type="button" onClick={() => editor.open({ group })} className="inline-flex h-[26px] items-center gap-1 rounded px-2 text-xs font-medium text-foreground/80 transition-colors hover:bg-muted">
+              <PenLine className="size-3" />编辑
+            </button>
+            <span className="flex-1" />
+            <button type="button" onClick={() => removeGroup(group.id)} className="inline-flex h-[26px] items-center gap-1 rounded px-2 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10">
+              <Trash2 className="size-3" />删除
+            </button>
+          </div>
         </div>
-        <div className="text-right text-[11px] leading-5 text-muted-foreground"><p>{group.accountIds.length ? `${group.accountIds.length} 个账号` : "全部账号"} · {group.mirrors.length} 个镜像 · {group.rules.length} 条规则</p><p className="max-w-80 truncate font-mono">{group.domains.length} 个域名 · {group.domains.join(", ")}</p></div>
-        <div className="flex gap-1"><Button type="button" variant="outline" size="sm" onClick={() => setEditingGroup(group)}>编辑</Button><Button type="button" variant="ghost" size="icon-sm" className="text-destructive" onClick={() => removeGroup(group.id)}><Trash2 /></Button></div>
-      </div>)}
-    </div> : <div className="rounded-md border border-dashed px-4 py-8 text-center text-xs text-muted-foreground">暂无镜像组</div>}
-    {editingGroup !== undefined ? <MirrorGroupDialog key={editingGroup?.id ?? "new"} group={editingGroup} groups={groups} accounts={accounts} onClose={() => setEditingGroup(undefined)} onSave={(group) => { onChange(editingGroup ? groups.map((item) => item.id === editingGroup.id ? group : item) : [...groups, group]); setEditingGroup(undefined); }} /> : null}
-  </div>;
+      ))}
+    </div>
+  );
 }
 
 function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group: MirrorGroup | null; groups: MirrorGroup[]; accounts: MirrorAccount[]; onClose: () => void; onSave: (group: MirrorGroup) => void }) {
@@ -184,19 +293,118 @@ function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group
   }
   function removeMirror(id: string) { setMirrors((current) => current.filter((mirror) => mirror.id !== id)); setRules((current) => current.filter((rule) => rule.mirrorId !== id)); setRequestRules((current) => current.filter((group) => group.mirrorId !== id)); if (ruleMirrorId === id) setRuleMirrorId(""); }
   const valid = Boolean(name.trim() && domains.size && mirrors.length);
-  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
-    <DialogHeader><DialogTitle>{group ? "编辑镜像组" : "新增镜像组"}</DialogTitle><DialogDescription>先选定这组账号，再为该组配置多个镜像节点和节点选择规则。</DialogDescription></DialogHeader>
-    <div className="space-y-5 py-1">
-      <Field label="组名称"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 XAI 账号组" /></Field>
-      <label className="flex cursor-pointer items-center gap-2 text-sm"><Checkbox checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />启用这个镜像组</label>
-      <Field label={`账号（已选 ${accountIds.size} 个）`} description="只有选中的账号会进入本组；不选账号表示该组对匹配域名下的全部账号生效。"><Input className="mb-2 h-8 text-xs" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号" /><div className="max-h-44 overflow-y-auto rounded-md border">{filteredAccounts.map((account) => <label key={account.id} className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-xs transition-colors hover:bg-muted/40 last:border-b-0"><Checkbox checked={accountIds.has(account.id)} onCheckedChange={() => toggle(setAccountIds, account.id)} /><span className="min-w-0 flex-1 truncate">{account.name || account.email || account.id}</span><span className="text-[11px] text-muted-foreground">{getPoolLabel(account.poolType, account.poolLabel)}</span></label>)}</div></Field>
-      <Field label={`原始域名（已选 ${domains.size} 个）`} description="一组可以包含多个需要代理的原始域名。"><div className="grid max-h-44 gap-1 overflow-y-auto rounded-md border p-2 sm:grid-cols-2">{knownDomains.map((domain) => { const preset = presetDomains.find((item) => item.domain === domain); return <label key={domain} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors hover:bg-muted/40"><Checkbox checked={domains.has(domain)} onCheckedChange={() => toggle(setDomains, domain)} /><span className="min-w-0 truncate font-mono">{domain}</span>{preset ? <span className="ml-auto truncate text-[10px] text-muted-foreground">{preset.label}</span> : null}</label>; })}</div><div className="mt-2 flex gap-2"><Input className="h-8 flex-1 font-mono text-xs" value={customDomain} onChange={(event) => setCustomDomain(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addCustomDomain(); } }} placeholder="其他域名，例如 custom.example.com" /><Button type="button" variant="outline" size="sm" onClick={addCustomDomain} disabled={!customDomain.trim()}>添加</Button></div></Field>
-      <Field label={`镜像节点（${mirrors.length} 个）`} description="每组可以添加多个地址；$host 会替换成请求的原始 host。"><div className="space-y-2">{mirrors.map((mirror) => <div key={mirror.id} className="grid items-center gap-2 sm:grid-cols-[28px_140px_1fr_34px]"><Checkbox checked={mirror.enabled} onCheckedChange={(value) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, enabled: value === true } : item))} /><Input className="h-8 text-xs" value={mirror.name} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, name: event.target.value } : item))} /><Input className="h-8 font-mono text-xs" value={mirror.url} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, url: event.target.value } : item))} /><Button type="button" variant="ghost" size="icon-sm" onClick={() => removeMirror(mirror.id)}><Trash2 /></Button></div>)}<div className="grid gap-2 sm:grid-cols-[140px_1fr_auto]"><Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="节点名称" /><Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.ahao1.tech/$host" /><Button type="button" variant="outline" size="sm" disabled={!mirrorName.trim() || !mirrorUrl.trim()} onClick={() => { setMirrors((current) => [...current, { id: newId("mirror"), name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }]); setMirrorName(""); setMirrorUrl(""); }}><Plus />节点</Button></div></div></Field>
-      <RequestRulesEditor value={requestRules} mirrors={mirrors} onChange={setRequestRules} />
-      <Field label={`路由规则（${rules.length} 条）`} description="按顺序匹配账号名称、邮箱、ID、工作区或账号池；未命中时在启用节点间稳定 Hash。"><div className="space-y-2">{rules.map((rule) => <div key={rule.id} className="grid items-center gap-2 sm:grid-cols-[28px_1fr_150px_34px]"><Checkbox checked={rule.enabled} onCheckedChange={(value) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, enabled: value === true } : item))} /><Input className="h-8 font-mono text-xs" value={rule.pattern} onChange={(event) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, pattern: event.target.value } : item))} /><MirrorSelect mirrors={mirrors} value={rule.mirrorId} onChange={(mirrorId) => setRules((current) => current.map((item) => item.id === rule.id ? { ...item, mirrorId } : item))} /><Button type="button" variant="ghost" size="icon-sm" onClick={() => setRules((current) => current.filter((item) => item.id !== rule.id))}><Trash2 /></Button></div>)}<div className="grid gap-2 sm:grid-cols-[1fr_150px_auto]"><Input className="h-8 font-mono text-xs" value={pattern} onChange={(event) => setPattern(event.target.value)} placeholder="例如 @example\.com$ 或 ^prod-" /><MirrorSelect mirrors={mirrors} value={ruleMirrorId} onChange={setRuleMirrorId} /><Button type="button" variant="outline" size="sm" disabled={!pattern.trim() || !ruleMirrorId} onClick={() => { setRules((current) => [...current, { id: newId("rule"), pattern: pattern.trim(), mirrorId: ruleMirrorId, enabled: true }]); setPattern(""); }}><Plus />规则</Button></div></div></Field>
-    </div>
-    <DialogFooter><Button type="button" variant="outline" onClick={onClose}>取消</Button><Button type="button" disabled={!valid} onClick={() => onSave({ id: group?.id ?? newId("group"), name: name.trim(), enabled, domains: [...domains], accountIds: [...accountIds], mirrors, rules, requestRules })}>保存镜像组</Button></DialogFooter>
-  </DialogContent></Dialog>;
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden p-0 sm:max-w-[860px]">
+        <DialogHeader className="border-b px-5 py-4">
+          <DialogTitle>{group ? "编辑镜像组" : "新增镜像组"}</DialogTitle>
+          <DialogDescription>先选定这组账号，再为该组配置多个镜像节点与节点选择规则。保存后即时生效。</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="space-y-5">
+            <div>
+              <Label className="text-[12.5px] font-semibold">组名称</Label>
+              <Input className="mt-1.5" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 XAI 账号组" />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-md border bg-[#fafafa] px-3 py-2.5">
+              <span className="text-[12.5px] font-semibold text-foreground">启用这个镜像组</span>
+              <Switch checked={enabled} onCheckedChange={setEnabled} />
+            </div>
+            <div>
+              <Label className="flex items-center justify-between text-[12.5px] font-semibold">
+                <span>绑定账号</span>
+                <span className="text-[11.5px] font-medium text-muted-foreground">已选 {accountIds.size} 个 · 仅显示你名下的账号</span>
+              </Label>
+              <div className="mt-1.5 overflow-hidden rounded-md border">
+                <Input className="h-8 rounded-none border-0 text-xs focus-visible:ring-0" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索账号" />
+                <div className="max-h-44 overflow-y-auto border-t bg-white">
+                  {filteredAccounts.map((account) => (
+                    <label key={account.id} className="flex cursor-pointer items-center gap-2 border-b px-3 py-2 text-xs transition-colors hover:bg-muted/40 last:border-b-0">
+                      <Checkbox checked={accountIds.has(account.id)} onCheckedChange={() => toggle(setAccountIds, account.id)} />
+                      <span className="min-w-0 flex-1 truncate">{account.name || account.email || account.id}</span>
+                      <span className="text-[11px] text-muted-foreground">{getPoolLabel(account.poolType, account.poolLabel)}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div>
+              <Label className="flex items-center justify-between text-[12.5px] font-semibold">
+                <span>原始域名</span>
+                <span className="text-[11.5px] font-medium text-muted-foreground">已选 {domains.size} 个</span>
+              </Label>
+              <div className="mt-1.5 grid max-h-44 gap-1 overflow-y-auto rounded-md border bg-white p-2 sm:grid-cols-2">
+                {knownDomains.map((domain) => {
+                  const preset = presetDomains.find((item) => item.domain === domain);
+                  return (
+                    <label key={domain} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors hover:bg-muted/40">
+                      <Checkbox checked={domains.has(domain)} onCheckedChange={() => toggle(setDomains, domain)} />
+                      <span className="min-w-0 truncate font-mono">{domain}</span>
+                      {preset ? <span className="ml-auto truncate text-[10px] text-muted-foreground">{preset.label}</span> : null}
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <Input className="h-8 flex-1 font-mono text-xs" value={customDomain} onChange={(event) => setCustomDomain(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addCustomDomain(); } }} placeholder="添加域名，如 custom.example.com" />
+                <Button type="button" variant="outline" size="sm" onClick={addCustomDomain} disabled={!customDomain.trim()}>添加</Button>
+              </div>
+            </div>
+            <div>
+              <Label className="flex items-center justify-between text-[12.5px] font-semibold">
+                <span>镜像目标</span>
+                <span className="text-[11.5px] font-medium text-muted-foreground">{mirrors.length} 个节点</span>
+              </Label>
+              <div className="mt-1.5 space-y-0">
+                {mirrors.map((mirror) => (
+                  <div key={mirror.id} className="grid items-center gap-2 py-1.5 sm:grid-cols-[18px_1.2fr_1.6fr_26px]">
+                    <button
+                      type="button"
+                      className={cn("mx-auto grid size-[15px] place-items-center rounded-[3px] border-[1.5px] text-white", mirror.enabled ? "border-accent-blue bg-accent-blue" : "border-[#d6d6d4] bg-white")}
+                      onClick={() => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, enabled: !item.enabled } : item))}
+                      aria-label={mirror.enabled ? "停用节点" : "启用节点"}
+                    >
+                      <Check className={cn("size-2.5", mirror.enabled ? "opacity-100" : "opacity-0")} strokeWidth={3} />
+                    </button>
+                    <Input className="h-8 text-xs" value={mirror.name} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, name: event.target.value } : item))} placeholder="节点名称" />
+                    <Input className="h-8 font-mono text-xs" value={mirror.url} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, url: event.target.value } : item))} placeholder="https://mirror.example.com/$host" />
+                    <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => removeMirror(mirror.id)} aria-label="删除节点"><Trash2 /></Button>
+                  </div>
+                ))}
+                <div className="grid items-center gap-2 border-t py-1.5 sm:grid-cols-[18px_1.2fr_1.6fr_auto]">
+                  <span aria-hidden="true" />
+                  <Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="节点名称" />
+                  <Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.example.com/$host" />
+                  <button
+                    type="button"
+                    onClick={() => { if (mirrorName.trim() && mirrorUrl.trim()) { setMirrors((current) => [...current, { id: newId("mirror"), name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }]); setMirrorName(""); setMirrorUrl(""); } }}
+                    className="inline-flex min-w-16 shrink-0 items-center gap-1.5 rounded border border-dashed border-accent-blue-soft-2 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap text-accent-blue transition-colors hover:bg-accent-blue-soft"
+                  >
+                    <Plus className="size-3.5" />添加
+                  </button>
+                </div>
+              </div>
+            </div>
+            <details className="overflow-hidden rounded-md border" open>
+              <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2.5 text-[12.5px] font-semibold text-foreground/80 select-none hover:bg-muted [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-open:rotate-90" />
+                高级规则
+                <span className="ml-auto font-mono text-[11px] font-medium text-muted-foreground">{rules.length} 条路由规则 · {requestRules.length} 组请求规则</span>
+              </summary>
+              <div className="space-y-4 border-t bg-[#fafafa] px-3.5 py-3">
+                <AdvancedRulesEditor rules={rules} mirrors={mirrors} onChange={setRules} ruleMirrorId={ruleMirrorId} setRuleMirrorId={setRuleMirrorId} pattern={pattern} setPattern={setPattern} />
+                <RequestRulesEditor value={requestRules} mirrors={mirrors} onChange={setRequestRules} />
+              </div>
+            </details>
+          </div>
+        </div>
+        <DialogFooter className="border-t bg-[#fafafa] px-5">
+          <Button type="button" variant="outline" onClick={onClose}>取消</Button>
+          <Button type="button" disabled={!valid} onClick={() => onSave({ id: group?.id ?? newId("group"), name: name.trim(), enabled, domains: [...domains], accountIds: [...accountIds], mirrors, rules, requestRules })}>保存镜像组</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function RequestRulesEditor({ value, mirrors, onChange }: { value: RequestMirrorRuleGroup[]; mirrors: MirrorTarget[]; onChange: (next: RequestMirrorRuleGroup[]) => void }) {
@@ -205,10 +413,9 @@ function RequestRulesEditor({ value, mirrors, onChange }: { value: RequestMirror
     updateGroup(groupIndex, { ...value[groupIndex], rules: value[groupIndex].rules.map((item, i) => (i === ruleIndex ? next : item)) })
   }
   return (
-    <Field
-      label={`请求规则（${value.length} 组）`}
-      description="按请求体/请求头匹配选择镜像，优先于账号路由规则；未命中时回退账号规则/Hash。例如 body.model 包含 gpt 的请求走指定镜像。"
-    >
+    <div>
+      <p className="mb-2 text-[12.5px] font-semibold text-foreground/80">请求规则（{value.length} 组）</p>
+      <p className="mb-2 text-[11.5px] leading-5 text-muted-foreground">按请求体/请求头匹配选择镜像，优先于账号路由规则；未命中时回退账号规则/Hash。例如 body.model 包含 gpt 的请求走指定镜像。</p>
       <div className="space-y-3">
         {value.map((group, groupIndex) => (
           <div key={group.id} className="rounded-md border bg-[#fafafa] p-3">
@@ -269,8 +476,41 @@ function RequestRulesEditor({ value, mirrors, onChange }: { value: RequestMirror
           <Plus />添加规则组
         </Button>
       </div>
-    </Field>
+    </div>
   )
+}
+
+interface AdvancedRulesEditorProps {
+  rules: MirrorRule[];
+  mirrors: MirrorTarget[];
+  onChange: (rules: MirrorRule[]) => void;
+  ruleMirrorId: string;
+  setRuleMirrorId: (id: string) => void;
+  pattern: string;
+  setPattern: (pattern: string) => void;
+}
+
+function AdvancedRulesEditor({ rules, mirrors, onChange, ruleMirrorId, setRuleMirrorId, pattern, setPattern }: AdvancedRulesEditorProps) {
+  return (
+    <div>
+      <p className="mb-2 text-[12.5px] font-semibold text-foreground/80">路由规则</p>
+      <div className="space-y-2">
+        {rules.map((rule) => (
+          <div key={rule.id} className="grid items-center gap-2 sm:grid-cols-[28px_1fr_150px_34px]">
+            <Checkbox checked={rule.enabled} onCheckedChange={(value) => onChange(rules.map((item) => item.id === rule.id ? { ...item, enabled: value === true } : item))} />
+            <Input className="h-8 font-mono text-xs" value={rule.pattern} onChange={(event) => onChange(rules.map((item) => item.id === rule.id ? { ...item, pattern: event.target.value } : item))} />
+            <MirrorSelect mirrors={mirrors} value={rule.mirrorId} onChange={(mirrorId) => onChange(rules.map((item) => item.id === rule.id ? { ...item, mirrorId } : item))} />
+            <Button type="button" variant="ghost" size="icon-sm" onClick={() => onChange(rules.filter((item) => item.id !== rule.id))}><Trash2 /></Button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_150px_auto]">
+        <Input className="h-8 font-mono text-xs" value={pattern} onChange={(event) => setPattern(event.target.value)} placeholder="例如 ^prod- 或 @example\.com$" />
+        <MirrorSelect mirrors={mirrors} value={ruleMirrorId} onChange={setRuleMirrorId} />
+        <Button type="button" variant="outline" size="sm" disabled={!pattern.trim() || !ruleMirrorId} onClick={() => { onChange([...rules, { id: newId("rule"), pattern: pattern.trim(), mirrorId: ruleMirrorId, enabled: true }]); setPattern(""); }}><Plus />规则</Button>
+      </div>
+    </div>
+  );
 }
 
 function MirrorSelect({ mirrors, value, onChange }: { mirrors: MirrorTarget[]; value: string; onChange: (value: string) => void }) {
