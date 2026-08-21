@@ -23,18 +23,15 @@ function formatDuration(startedAt?: number, completedAt?: number): string {
   return seconds >= 1 ? seconds.toFixed(1) + "s" : "<1s"
 }
 
-export function DetailsPanel({
-  open,
+function PanelInner({
   onClose,
   toolCalls,
   usage,
 }: {
-  open: boolean
   onClose: () => void
   toolCalls: ChatToolCall[]
   usage?: UsageInfo | null
 }) {
-  if (!open) return null
   const ok = toolCalls.filter((call) => call.state === "ok").length
   const running = toolCalls.filter((call) => call.state === "running").length
   const failed = toolCalls.filter((call) => call.state === "error").length
@@ -42,10 +39,10 @@ export function DetailsPanel({
   const totalTokens = usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0)
   const hasUsage = totalTokens > 0
   return (
-    <aside className="flex min-h-0 w-[min(360px,26vw)] min-w-[300px] flex-col border-l border-[var(--chat-border-l1)] bg-white">
-      <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-[var(--chat-border-l1)] px-4">
+    <>
+      <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-[var(--chat-border-l1)] px-4 max-md:h-14">
         <span className="text-[13.5px] font-semibold">运行详情</span>
-        <button type="button" onClick={onClose} aria-label="关闭" className="flex size-[26px] items-center justify-center rounded-lg text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)] hover:text-[var(--chat-label-primary)]"><X className="size-4" /></button>
+        <button type="button" onClick={onClose} aria-label="关闭" className="flex size-11 items-center justify-center rounded-xl text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)] hover:text-[var(--chat-label-primary)] md:size-[26px] md:rounded-lg"><X className="size-5 md:size-4" /></button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
         <section>
@@ -82,7 +79,7 @@ export function DetailsPanel({
                 <span className="text-xl font-bold tracking-[-.02em]">{formatTokens(totalTokens)}<span className="ml-1 text-xs font-medium text-[var(--chat-label-tertiary)]">tokens</span></span>
                 <span className="font-mono text-[11.5px] text-[var(--chat-label-tertiary)]">输入 {formatTokens(usage?.inputTokens)} · 输出 {formatTokens(usage?.outputTokens)}</span>
               </div>
-              <div className="flex h-2 rounded bg-[var(--chat-bg-layer-2)] overflow-hidden">
+              <div className="flex h-2 overflow-hidden rounded bg-[var(--chat-bg-layer-2)]">
                 <span className="h-full bg-[#94A3B8]" style={{ width: usage?.inputTokens ? Math.min(100, (usage.inputTokens / totalTokens) * 100) + "%" : "0%" }} />
                 <span className="h-full bg-[var(--chat-accent)]" style={{ width: usage?.outputTokens ? Math.min(100, (usage.outputTokens / totalTokens) * 100) + "%" : "0%" }} />
               </div>
@@ -96,7 +93,36 @@ export function DetailsPanel({
           )}
         </section>
       </div>
-    </aside>
+    </>
+  )
+}
+
+export function DetailsPanel({
+  open,
+  onClose,
+  toolCalls,
+  usage,
+}: {
+  open: boolean
+  onClose: () => void
+  toolCalls: ChatToolCall[]
+  usage?: UsageInfo | null
+}) {
+  if (!open) return null
+  return (
+    <>
+      {/* Desktop side panel */}
+      <aside className="hidden min-h-0 w-[min(360px,26vw)] min-w-[300px] flex-col border-l border-[var(--chat-border-l1)] bg-white md:flex">
+        <PanelInner onClose={onClose} toolCalls={toolCalls} usage={usage} />
+      </aside>
+      {/* Mobile drawer/overlay from right */}
+      <div className="fixed inset-0 z-40 flex justify-end md:hidden" role="dialog" aria-modal="true" aria-label="运行详情">
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={onClose} aria-hidden="true" />
+        <aside className="relative flex w-[88vw] max-w-[360px] flex-col bg-white shadow-xl">
+          <PanelInner onClose={onClose} toolCalls={toolCalls} usage={usage} />
+        </aside>
+      </div>
+    </>
   )
 }
 
@@ -116,4 +142,3 @@ function StateIcon({ state }: { state: ChatToolCall["state"] }) {
   if (state === "stopped") return <span className="chat-state-dot warn" />
   return <span className="chat-state-dot running" />
 }
-

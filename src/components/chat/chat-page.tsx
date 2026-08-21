@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { CircleAlert, PanelRightClose, PanelRightOpen } from "lucide-react"
+import { CircleAlert, Menu, PanelRightClose, PanelRightOpen } from "lucide-react"
 import { useSession } from "@/components/dashboard/admin-context"
 import {
   createChatStreamState,
@@ -98,6 +98,7 @@ export function ChatPage() {
   const [route, setRoute] = useState("auto")
   const [status, setStatus] = useState<Status>("ready")
   const [detailsOpen, setDetailsOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [queue, setQueue] = useState<string[]>([])
   const [usage, setUsage] = useState<UsageInfo | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -128,6 +129,18 @@ export function ChatPage() {
       hydratedRef.current = true
     }, 0)
     return () => window.clearTimeout(timer)
+  }, [])
+
+  // 移动端：详情默认收起，抽屉交互
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const m = window.matchMedia("(max-width: 767px)")
+    const sync = () => {
+      if (m.matches) setDetailsOpen(false)
+    }
+    sync()
+    // 仅初始化时同步一次，避免桌面端后续状态被覆盖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -301,14 +314,19 @@ export function ChatPage() {
     setStatus("ready")
     queueRef.current = []
     setQueue([])
+    setSidebarOpen(false)
   }, [stop])
 
   const selectSession = useCallback((id: string) => {
-    if (id === currentId) return
+    if (id === currentId) {
+      setSidebarOpen(false)
+      return
+    }
     setCurrentId(id)
     activeIdRef.current = id
     setMessages([])
     setUsage(null)
+    setSidebarOpen(false)
   }, [currentId])
 
   const discardError = useCallback((messageId: string) => {
@@ -349,20 +367,26 @@ export function ChatPage() {
         onNew={newChat}
         onSelect={selectSession}
         onDelete={deleteSession}
+        mobileOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-[52px] shrink-0 items-center justify-between gap-3 border-b border-[var(--chat-border-l1)] px-5">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-[12.5px] text-[var(--chat-label-tertiary)]">工作区</span>
-            <span className="text-xs text-[var(--chat-border-l3)]">/</span>
-            <span className="text-[12.5px] text-[var(--chat-label-tertiary)]">聊天</span>
-            <span className="text-xs text-[var(--chat-border-l3)]">/</span>
-            <span className="max-w-[340px] truncate text-sm font-semibold text-[var(--chat-label-primary)]">{sessionTitle}</span>
+        <header className="flex h-[52px] shrink-0 items-center justify-between gap-2 border-b border-[var(--chat-border-l1)] px-3 md:gap-3 md:px-5 max-md:h-14">
+          <div className="flex min-w-0 items-center gap-1.5 md:gap-2">
+            <button type="button" onClick={() => setSidebarOpen(true)} aria-label="打开会话列表" className="flex size-11 shrink-0 items-center justify-center rounded-xl text-[var(--chat-label-primary)] hover:bg-[var(--chat-bg-layer-2)] md:hidden">
+              <Menu className="size-5" />
+            </button>
+            <span className="hidden text-[12.5px] text-[var(--chat-label-tertiary)] md:inline">工作区</span>
+            <span className="hidden text-xs text-[var(--chat-border-l3)] md:inline">/</span>
+            <span className="hidden text-[12.5px] text-[var(--chat-label-tertiary)] md:inline">聊天</span>
+            <span className="hidden text-xs text-[var(--chat-border-l3)] md:inline">/</span>
+            <span className="max-w-[60vw] truncate text-sm font-semibold text-[var(--chat-label-primary)] md:max-w-[340px]">{sessionTitle}</span>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <span className="flex h-7 items-center gap-1.5 rounded-full border border-[var(--chat-border-l1)] bg-white px-2.5 text-xs font-medium text-[var(--chat-label-secondary)]"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
-            <button type="button" onClick={() => setDetailsOpen((value) => !value)} aria-label="详情" className={"flex size-7 items-center justify-center rounded-lg " + (detailsOpen ? "bg-[var(--chat-accent-soft)] text-[var(--chat-accent)]" : "text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)]")}>
-              {detailsOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+            <span className="hidden h-7 items-center gap-1.5 rounded-full border border-[var(--chat-border-l1)] bg-white px-2.5 text-xs font-medium text-[var(--chat-label-secondary)] md:flex"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
+            <span className="flex h-7 items-center gap-1 rounded-full border border-[var(--chat-border-l1)] bg-white px-2 text-[11px] font-medium text-[var(--chat-label-secondary)] md:hidden"><span className="size-[6px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools}</span>
+            <button type="button" onClick={() => setDetailsOpen((value) => !value)} aria-label="详情" className={"flex size-11 items-center justify-center rounded-xl md:size-7 md:rounded-lg " + (detailsOpen ? "bg-[var(--chat-accent-soft)] text-[var(--chat-accent)]" : "text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)]")}>
+              {detailsOpen ? <PanelRightClose className="size-5 md:size-4" /> : <PanelRightOpen className="size-5 md:size-4" />}
             </button>
           </div>
         </header>
@@ -375,7 +399,7 @@ export function ChatPage() {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[748px] px-6 pb-8 pt-6">
+          <div className="mx-auto w-full max-w-[748px] px-3 pb-8 pt-4 md:px-6 md:pt-6">
             {!messages.length ? <EmptyState onPick={(text) => submit(text, true)} disabled={!model} /> : (
               <div className="flex flex-col gap-7">
                 {messages.map((message) => message.role === "user" ? (
@@ -438,4 +462,3 @@ function EmptyState({ onPick, disabled }: { onPick: (text: string) => void; disa
     </div>
   )
 }
-

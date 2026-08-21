@@ -597,6 +597,67 @@ html { scroll-behavior: smooth; }
 .landing .cta-band .btn { margin-top: 28px; background: #fff; color: var(--landing-accent); }
 .landing .cta-band .btn:hover { background: #f4f6fb; }
 .landing .cta-band .cta-mono { display: block; margin-top: 18px; font-family: var(--mono); font-size: 12px; color: rgba(255,255,255,.7); letter-spacing: .05em; text-transform: uppercase; }
+/* ── mobile overflow & anchor fix ── */
+.landing { overflow-x: clip; }
+.landing main, .landing .container { min-width: 0; max-width: 100%; }
+.landing .section[id], .landing section[id], .landing main > section[id], #overview, #quickstart, #features, #flow, #models, #faq, #cta, #top {
+  scroll-margin-top: 88px;
+}
+.landing .hero-grid > *, .landing .code-grid > *, .landing .cta-band > *, .landing .steps > *, .landing .bento > *, .landing .panels > *, .landing .kpis > *, .landing .footer-grid > * {
+  min-width: 0;
+}
+.landing .step, .landing .cell, .landing .kpi, .landing .panel, .landing .code-card, .landing .cta-band, .landing .code-grid, .landing .hero-visual, .landing .flow-panel {
+  min-width: 0;
+  max-width: 100%;
+}
+.landing .step-cmd,
+.landing .step-path,
+.landing .cta-term,
+.landing .code-body {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--landing-border-strong) 70%, transparent) transparent;
+  overscroll-behavior-x: contain;
+}
+.landing .step-cmd::-webkit-scrollbar,
+.landing .step-path::-webkit-scrollbar,
+.landing .cta-term::-webkit-scrollbar,
+.landing .code-body::-webkit-scrollbar,
+.landing .matrix-wrap::-webkit-scrollbar,
+.landing .mock-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.landing .matrix-wrap {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  max-width: 100%;
+  min-width: 0;
+}
+.landing .mock-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  max-width: 100%;
+  min-width: 0;
+}
+.landing .hero-spec {
+  word-break: keep-all;
+  overflow-wrap: normal;
+  line-break: strict;
+  white-space: normal;
+  text-wrap: balance;
+}
+.landing .cta-band h2 {
+  text-wrap: balance;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
 .landing .footer { border-top: 1px solid var(--landing-border); padding: 64px 0 56px; background: var(--landing-surface); }
 .landing .footer-grid { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; gap: 40px; margin-bottom: 48px; }
 .landing .footer-brand .brand-name { font-size: 17px; }
@@ -629,26 +690,57 @@ html { scroll-behavior: smooth; }
   .landing .footer-grid { grid-template-columns: 1fr 1fr; gap: 32px; }
 }
 @media (max-width: 768px) {
-  .landing .section { padding: 72px 0; }
+  .landing .section { padding: 64px 0; }
   .landing .container { padding: 0 20px; }
   .landing .nav-links { display: none; }
-  .landing .hero { padding: 56px 0 64px; }
-  .landing .hero h1 { font-size: 38px; }
+  .landing .nav-right a { min-height: 40px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 8px 10px; }
+  .landing .nav-inner { gap: 16px; }
+  .landing .hero { padding: 40px 0 48px; }
+  .landing .hero h1 { font-size: 38px; line-height: 1.08; }
   .landing .hero-sub { font-size: 16px; }
+  .landing .hero-cta { flex-wrap: wrap; }
+  .landing .hero-cta .btn { min-height: 44px; }
   .landing .kpis { grid-template-columns: repeat(2, 1fr); }
+  .landing .kpi { min-width: 0; overflow: hidden; }
   .landing .bento { grid-template-columns: 1fr; }
   .landing .cell.span-3, .landing .cell.span-4, .landing .cell.span-6, .landing .cell.span-2 { grid-column: span 1; }
   .landing .steps { grid-template-columns: 1fr; }
+  .landing .step { min-width: 0; overflow: hidden; }
   .landing .console { grid-template-columns: 1fr; min-height: 0; }
   .landing .sidebar { display: none; }
   .landing .footer-grid { grid-template-columns: 1fr; }
-  .landing .cta-band { padding: 40px 28px; grid-template-columns: 1fr; }
-  .landing .cta-band h2 { font-size: 26px; }
+  .landing .cta-band { padding: 36px 24px; grid-template-columns: 1fr; gap: 32px; }
+  .landing .cta-band h2 { font-size: 26px; line-height: 1.25; }
+  .landing .cta-term { font-size: 12px; padding: 16px 14px; }
 }
-.landing .mock-scroll { overflow-x: auto; }
+.landing .mock-scroll { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
 @media (max-width: 768px) {
-  .landing .mock-scroll { overflow-x: auto; }
+  .landing .mock-scroll { overflow-x: auto; max-width: 100%; }
   .landing .browser { min-width: 860px; }
+}
+@media (max-width: 640px) {
+  .landing .container { padding: 0 16px; }
+  .landing .section { padding: 48px 0; }
+  .landing .section-head { margin-bottom: 32px; }
+  .landing .section-head h2 { font-size: 26px; }
+  .landing .hero { padding: 32px 0 40px; }
+  .landing .hero h1 { font-size: 35px; line-height: 1.1; letter-spacing: -.022em; }
+  .landing .hero-sub { font-size: 15px; margin-top: 16px; }
+  .landing .hero-spec { font-size: 11px; letter-spacing: .05em; line-height: 1.7; }
+  .landing .hero-cta { gap: 10px; margin-top: 24px; }
+  .landing .cell { padding: 20px; }
+  .landing .cta-band { padding: 32px 20px; gap: 24px; border-radius: 16px; }
+  .landing .cta-band h2 { font-size: 24px; }
+  .landing .cta-band p { font-size: 14px; }
+  .landing .cta-term { font-size: 11.5px; line-height: 1.9; }
+  .landing .step { padding: 20px; }
+  .landing .matrix-wrap { max-width: 100%; min-width: 0; }
+  .landing .matrix-wrap .matrix-table th, .landing .matrix-wrap .matrix-table td { padding: 10px 14px; }
+  .landing .kpis { gap: 10px; }
+  .landing .kpi { padding: 12px 14px; }
+  .landing .kpi .k-value { font-size: 20px; }
+  .landing .legend { gap: 12px; font-size: 12px; }
+  .landing .nav-right a { min-height: 44px; }
 }
 /* ================================================================
    Fusion Router · 聊天页 v2 设计 token（--chat-* 前缀，避免与 landing 冲突）

@@ -100,8 +100,8 @@ export function Composer(props: {
   const onlineCount = compatiblePools.reduce((sum, pool) => sum + pool.readyAccounts, 0)
 
   return (
-    <div className="relative flex-none px-6 pb-3 pt-2">
-      <div className="mx-auto max-w-[780px]">
+    <div className="relative flex-none px-3 pb-[calc(12px+env(safe-area-inset-bottom))] pt-2 md:px-6 md:pb-3">
+      <div className="mx-auto w-full max-w-[780px] max-md:max-w-none">
         {queuedCount > 0 ? (
           <div className="mb-3 flex items-center gap-2 rounded-[var(--chat-r-12)] border border-[var(--chat-warn-border)] bg-[var(--chat-warn-soft)] px-3 py-2 text-[12.5px] text-[var(--chat-label-secondary)]">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-3.5 shrink-0 text-[var(--chat-warn)]"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></svg>
@@ -114,33 +114,33 @@ export function Composer(props: {
           <textarea rows={1} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={onKeyDown}
             placeholder={model ? ("询问 " + model) : "正在加载模型…"} disabled={!model}
             className="block min-h-[44px] w-full resize-none border-none bg-transparent px-4 pb-1 pt-3 text-[14.5px] leading-[1.6] outline-none placeholder:text-[var(--chat-label-caption)]" />
-          <div className="flex items-center justify-between gap-2.5 px-2 pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1.5 pb-2 md:gap-2.5 md:px-2">
             <div className="flex min-w-0 items-center gap-1.5">
-              <button type="button" aria-label="附件" className="flex size-7 items-center justify-center rounded-lg text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)] hover:text-[var(--chat-label-primary)]"><Paperclip className="size-4" /></button>
-              <button type="button" onClick={() => { setRouteOpen((v) => !v); setModelOpen(false) }} className="flex h-7 items-center gap-1.5 rounded-full border border-[var(--chat-border-l1)] bg-white px-2.5 text-xs font-medium text-[var(--chat-label-secondary)] hover:bg-[var(--chat-bg-layer-1)]">
+              <button type="button" aria-label="附件" className="flex size-11 items-center justify-center rounded-xl text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)] hover:text-[var(--chat-label-primary)] md:size-7 md:rounded-lg"><Paperclip className="size-4" /></button>
+              <button type="button" onClick={() => { setRouteOpen((v) => !v); setModelOpen(false) }} className="flex h-11 items-center gap-1.5 rounded-full border border-[var(--chat-border-l1)] bg-white px-3 text-xs font-medium text-[var(--chat-label-secondary)] hover:bg-[var(--chat-bg-layer-1)] md:h-7 md:px-2.5">
                 <ShieldCheck className="size-3.5 text-[var(--chat-label-tertiary)]" />
                 <span>路由 <span className="font-semibold text-[var(--chat-label-primary)]">{routeLabel}</span></span>
                 <ChevronDown className="size-3 text-[var(--chat-label-tertiary)]" />
               </button>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <button type="button" onClick={() => { setModelOpen((v) => !v); setRouteOpen(false) }} className="flex h-[30px] items-center gap-[7px] rounded-full border border-[var(--chat-border-l1)] bg-white py-0 pl-[9px] pr-1 hover:bg-[var(--chat-bg-layer-1)]">
+              <button type="button" onClick={() => { setModelOpen((v) => !v); setRouteOpen(false) }} className="flex h-11 items-center gap-[7px] rounded-full border border-[var(--chat-border-l1)] bg-white py-0 pl-3 pr-1 hover:bg-[var(--chat-bg-layer-1)] md:h-[30px] md:pl-[9px]">
                 <span className="size-2 rounded-full bg-[var(--chat-accent)]" />
-                <span className="max-w-[160px] truncate text-[12.5px] font-medium text-[var(--chat-label-primary)]">{model || "选择模型"}</span>
+                <span className="max-w-[120px] truncate text-[12.5px] font-medium text-[var(--chat-label-primary)] md:max-w-[160px]">{model || "选择模型"}</span>
                 <span className="rounded bg-[var(--chat-bg-layer-2)] px-[5px] py-[1px] font-mono text-[10px] font-medium leading-[14px] text-[var(--chat-label-tertiary)]">{reasoning}</span>
                 <ChevronDown className="mr-0.5 size-[13px] text-[var(--chat-label-tertiary)]" />
               </button>
               {busy ? (
-                <button type="button" onClick={onStop} aria-label="停止" className="flex size-[34px] items-center justify-center rounded-full bg-[var(--chat-gray-900)] text-white transition-transform hover:bg-[var(--chat-gray-800)] active:scale-[.94]"><span className="size-3 rounded-[2px] bg-white" /></button>
+                <button type="button" onClick={onStop} aria-label="停止" className="flex size-11 items-center justify-center rounded-full bg-[var(--chat-gray-900)] text-white transition-transform hover:bg-[var(--chat-gray-800)] active:scale-[.94] md:size-[34px]"><span className="size-3 rounded-[2px] bg-white" /></button>
               ) : (
-                <button type="button" onClick={() => submit(true)} disabled={!model || !draft.trim()} aria-label="发送" className="flex size-[34px] items-center justify-center rounded-full bg-[var(--chat-accent)] text-white transition-[background,transform] hover:bg-[var(--chat-accent-hover)] active:scale-[.94] disabled:opacity-40">
+                <button type="button" onClick={() => submit(true)} disabled={!model || !draft.trim()} aria-label="发送" className="flex size-11 items-center justify-center rounded-full bg-[var(--chat-accent)] text-white transition-[background,transform] hover:bg-[var(--chat-accent-hover)] active:scale-[.94] disabled:opacity-40 md:size-[34px]">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="size-4"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
                 </button>
               )}
             </div>
           </div>
         </div>
-        <div className="mt-[7px] flex items-center gap-2 px-2 font-mono text-[11px] text-[var(--chat-label-caption)]">
+        <div className="mt-[7px] hidden items-center gap-2 px-2 font-mono text-[11px] text-[var(--chat-label-caption)] md:flex">
           <span><span className="kbd-chip">Enter</span> 发送</span>
           <span className="text-[var(--chat-border-l3)]">·</span>
           <span><span className="kbd-chip">Shift+Enter</span> 换行</span>
@@ -148,13 +148,13 @@ export function Composer(props: {
           <span>路由：{routeLabel} · {compatiblePools.length}/{compatiblePools.length} 池在线</span>
         </div>
         {modelOpen ? (
-          <div ref={popRef} className="absolute left-6 right-6 z-30 mt-2 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l2)] bg-white shadow-[var(--chat-shadow-lv3)]">
+          <div ref={popRef} className="absolute left-3 right-3 z-30 mt-2 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l2)] bg-white shadow-[var(--chat-shadow-lv3)] md:left-6 md:right-6">
             <div className="mx-3 mb-1.5 mt-2.5 flex h-[34px] items-center gap-2 rounded-lg border border-[var(--chat-border-l1)] px-2.5 text-[var(--chat-label-tertiary)]">
               <Search className="size-3.5" />
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索模型" className="w-full border-none bg-transparent text-[13px] outline-none placeholder:text-[var(--chat-label-caption)]" />
               <span className="kbd-chip">⌘K</span>
             </div>
-            <div className="grid max-h-[300px] grid-cols-[150px_1fr] border-t border-[var(--chat-border-l1)]">
+            <div className="grid max-h-[min(60vh,300px)] grid-cols-1 border-t border-[var(--chat-border-l1)] md:max-h-[300px] md:grid-cols-[150px_1fr]">
               <div className="overflow-y-auto p-1.5">
                 <div className="sticky top-0 bg-white px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[.04em] text-[var(--chat-label-tertiary)]">Provider</div>
                 {filteredGroups.map((group) => (
@@ -176,7 +176,7 @@ export function Composer(props: {
                 {!filteredGroups.length ? <p className="px-2 py-4 text-center text-xs text-[var(--chat-label-tertiary)]">没有匹配的模型</p> : null}
                 <div className="mt-1 border-t border-[var(--chat-border-l1)] p-2">
                   <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[.04em] text-[var(--chat-label-tertiary)]">推理强度</div>
-                  <div className="flex gap-1 rounded-lg bg-[var(--chat-bg-layer-2)] p-[3px]">
+                  <div className="flex flex-wrap gap-1 rounded-lg bg-[var(--chat-bg-layer-2)] p-[3px]">
                     {REASONING_LEVELS.map((level) => (
                       <button key={level} type="button" onClick={() => onReasoningChange(level)} className={cn("h-6 flex-1 rounded-md text-[11.5px] font-medium text-[var(--chat-label-tertiary)] hover:text-[var(--chat-label-primary)]", level === reasoning ? "bg-white font-semibold text-[var(--chat-label-primary)] shadow-sm" : "")}>{level}</button>
                     ))}
@@ -188,7 +188,7 @@ export function Composer(props: {
           </div>
         ) : null}
         {routeOpen ? (
-          <div ref={popRef} className="absolute left-6 right-6 z-30 mt-2 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l2)] bg-white shadow-[var(--chat-shadow-lv3)]">
+          <div ref={popRef} className="absolute left-3 right-3 z-30 mt-2 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l2)] bg-white shadow-[var(--chat-shadow-lv3)] md:left-6 md:right-6">
             <div className="p-2">
               <RouteItem name="自动（智能路由）" desc="按成本、池健康度与失败重试自动分发" selected={route === "auto"} onSelect={() => { onRouteChange("auto"); setRouteOpen(false) }} />
               <RouteItem name="按池" desc="锁定到某个模型池" selected={route.startsWith("pool:")} onSelect={() => {}} />
@@ -237,4 +237,3 @@ function RouteItem(props: { name: string; desc: string; selected: boolean; onSel
     </button>
   )
 }
-
