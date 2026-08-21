@@ -149,7 +149,6 @@ export async function POST(request: Request) {
     if (!name && email) name = email
   }
 
-  // linkUrl 缺省回退 DEFAULT_LINK_URL；controlKey 可选（双通道）
   linkUrl = linkUrl?.trim() || DEFAULT_LINK_URL
   if (!runtimeKey) {
     return Response.json(
@@ -160,56 +159,49 @@ export async function POST(request: Request) {
 
   const normalizedApiUrl = normalizeApiUrl(apiUrl)
   const normalizedLinkUrl = normalizeLinkUrl(linkUrl)
-  // 校验：优先用 controlKey 打控制面，缺 controlKey 则回退用 runtimeKey 打 linkBase
+  // 优先用 runtimeKey 验证推理面（核心），controlKey 仅用于附带拉取 wallet/balance 自动发现 workspaceId
   let models: string[] = []
-  let validateVia: "controlKey" | "runtimeKey" = "controlKey"
-  if (controlKey) {
+  try {
+    const resp = await apiFetch(`${normalizedLinkUrl}/models`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${runtimeKey}`, accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    })
+    const text = await resp.text()
+    if (!resp.ok) throw new Error(`Open Design GO /models 拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
+    models = parseModels(text)
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired|forbidden/i.test(message)) {
+      return Response.json(
+        { error: { type: "open_design_go_invalid", message: `Open Design GO 推理凭据验证失败：${message}` } },
+        { status: 400 },
+      )
+    }
+    return Response.json(
+      { error: { type: "open_design_go_unreachable", message: `Open Design GO 上游暂时不可达：${message}` } },
+      { status: 502 },
+    )
+  }
+
+  // controlKey 存在时，附带拉取 wallet/balance 自动发现 workspaceId（best-effort，不阻塞导入）
+  if (controlKey && !workspaceId) {
     try {
-      const resp = await apiFetch(`${normalizedApiUrl}/api/v1/models`, {
+      const resp = await apiFetch(`${normalizedApiUrl}/api/v1/wallet/balance`, {
         method: "GET",
         headers: { authorization: `Bearer ${controlKey}`, accept: "application/json" },
         signal: AbortSignal.timeout(10000),
       })
-      const text = await resp.text()
-      if (!resp.ok) throw new Error(`Open Design GO /api/v1/models 拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
-      models = parseModels(text)
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause)
-      if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired|forbidden/i.test(message)) {
-        return Response.json(
-          { error: { type: "open_design_go_invalid", message: `Open Design GO 凭据验证失败：${message}` } },
-          { status: 400 },
-        )
+      if (resp.ok) {
+        const body = await resp.text()
+        try {
+          const parsed = JSON.parse(body) as { workspaceId?: unknown; workspace_id?: unknown }
+          const discovered = typeof parsed.workspaceId === "string" ? parsed.workspaceId.trim() : typeof parsed.workspace_id === "string" ? parsed.workspace_id.trim() : undefined
+          if (discovered) workspaceId = discovered
+        } catch {}
       }
-      return Response.json(
-        { error: { type: "open_design_go_unreachable", message: `Open Design GO 上游暂时不可达：${message}` } },
-        { status: 502 },
-      )
-    }
-  } else {
-    // 回退通道：用 runtimeKey 验 linkBase/models
-    validateVia = "runtimeKey"
-    try {
-      const resp = await apiFetch(`${normalizedLinkUrl}/models`, {
-        method: "GET",
-        headers: { authorization: `Bearer ${runtimeKey}`, accept: "application/json" },
-        signal: AbortSignal.timeout(10000),
-      })
-      const text = await resp.text()
-      if (!resp.ok) throw new Error(`Open Design GO /models 回退拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
-      models = parseModels(text)
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause)
-      if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired|forbidden/i.test(message)) {
-        return Response.json(
-          { error: { type: "open_design_go_invalid", message: `Open Design GO 凭据验证失败（回退通道）：${message}` } },
-          { status: 400 },
-        )
-      }
-      return Response.json(
-        { error: { type: "open_design_go_unreachable", message: `Open Design GO 上游暂时不可达（回退通道）：${message}` } },
-        { status: 502 },
-      )
+    } catch {
+      // best-effort，忽略
     }
   }
 
@@ -236,7 +228,6 @@ export async function POST(request: Request) {
   if (plan) credentialData.plan = plan
   if (userId) credentialData.userId = userId
   if (workspaceId) credentialData.workspaceId = workspaceId
-  // 兼容旧字段：linkUrl 已规整
 
   credRepo.upsert({ accountId: account.id, poolType: "open-design-go", credentialData })
 
@@ -253,6 +244,7 @@ export async function POST(request: Request) {
       poolType: account.poolType,
     },
     models,
-    validatedVia: validateVia,
+    validatedVia: "runtimeKey" as const,
+    workspaceId: workspaceId ?? null,
   })
 }

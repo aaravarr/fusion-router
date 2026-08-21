@@ -349,7 +349,7 @@ describe("open-design-go 凭据 workspaceId", () => {
 })
 
 describe("open-design-go 双通道模型拉取与 isAccountReady 放宽", () => {
-  it("缺 controlKey 但有 runtimeKey 时回退到 linkBase/models", async () => {
+  it("缺 controlKey 但有 runtimeKey 时走推理面 linkBase/models", async () => {
     const { vi } = await import("vitest")
     const apiFetchModule = await import("../api-fetch")
     let calledUrl: string | null = null
@@ -376,26 +376,79 @@ describe("open-design-go 双通道模型拉取与 isAccountReady 放宽", () => 
       spy.mockRestore()
     }
   })
-  it("有 controlKey 时优先走控制面", async () => {
+  it("有 runtimeKey 时优先走推理面，即使有 controlKey 也优先 runtimeKey", async () => {
     const { vi } = await import("vitest")
     const apiFetchModule = await import("../api-fetch")
     let calledUrl: string | null = null
-    const spy = vi.spyOn(apiFetchModule, "apiFetch").mockImplementation(async (url: string) => {
+    let calledAuth: string | null = null
+    const spy = vi.spyOn(apiFetchModule, "apiFetch").mockImplementation(async (url: string, init?: RequestInit) => {
       calledUrl = url
-      return new Response(JSON.stringify({ data: [{ id: "kimi-k2.6" }] }), { status: 200 })
+      const headers = init?.headers as Record<string, string> | Headers | undefined
+      if (headers instanceof Headers) calledAuth = headers.get("authorization")
+      else if (headers && typeof headers === "object") calledAuth = (headers as Record<string, string>).authorization ?? null
+      return new Response(JSON.stringify({ data: [{ id: "deepseek-v4-flash" }] }), { status: 200 })
     })
     try {
       const provider = new OpenDesignGoProvider()
       ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
-        runtimeKey: "rk",
+        runtimeKey: "rk-priority",
         linkUrl: "https://amr-link.open-design.ai",
         controlKey: "ck-priority",
         apiUrl: "https://amr-api.open-design.ai",
       })
       const fakeAccount = { id: "dual2", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
       const models = await provider.fetchRemoteModels(fakeAccount)
+      expect(calledUrl).toBe("https://amr-link.open-design.ai/v1/models")
+      expect(calledAuth).toBe("Bearer rk-priority")
+      expect(models).toEqual(["deepseek-v4-flash"])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+  it("仅 controlKey 时兜底走控制面并解析 name 优先、剥 public_model_ 前缀", async () => {
+    const { vi } = await import("vitest")
+    const apiFetchModule = await import("../api-fetch")
+    let calledUrl: string | null = null
+    const spy = vi.spyOn(apiFetchModule, "apiFetch").mockImplementation(async (url: string) => {
+      calledUrl = url
+      return new Response(
+        JSON.stringify({
+          data: [
+            { id: "public_model_claude_fable_5", name: "claude-fable-5" },
+            { id: "public_model_deepseek_v4_flash", name: "" },
+            { id: "glm-5.2", name: "glm-5.2" },
+          ],
+        }),
+        { status: 200 },
+      )
+    })
+    try {
+      const provider = new OpenDesignGoProvider()
+      ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+        runtimeKey: "",
+        linkUrl: "https://amr-link.open-design.ai",
+        controlKey: "ck-only",
+        apiUrl: "https://amr-api.open-design.ai",
+      } as unknown as ReturnType<typeof provider["readCredentialData"]>)
+      // 模拟 runtimeKey 为空时，provider 会跳过推理面直接走控制面
+      // 需要 runtimeKey 为 falsy 时，isAccountReady 会 false，但 fetchRemoteModels 仍应走控制面兜底
+      // 为测试兜底，临时让 runtimeKey 缺失
+      const fakeAccount = { id: "dual-control", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+      // 直接测试解析器
+      const { parseOpenDesignControlModels, parseOpenDesignLinkModels } = await import("./open-design-go")
+      expect(parseOpenDesignControlModels(JSON.stringify({ data: [{ id: "public_model_claude_fable_5", name: "claude-fable-5" }] }))).toEqual(["claude-fable-5"])
+      expect(parseOpenDesignControlModels(JSON.stringify({ data: [{ id: "public_model_deepseek_v4_flash" }] }))).toEqual(["deepseek_v4_flash"])
+      expect(parseOpenDesignLinkModels(JSON.stringify({ data: [{ id: "deepseek-v4-flash" }] }))).toEqual(["deepseek-v4-flash"])
+      // 实际 fetch
+      ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+        runtimeKey: undefined as unknown as string,
+        linkUrl: "https://amr-link.open-design.ai",
+        controlKey: "ck-only",
+        apiUrl: "https://amr-api.open-design.ai",
+      } as unknown as ReturnType<typeof provider["readCredentialData"]>)
+      const models = await provider.fetchRemoteModels(fakeAccount)
       expect(calledUrl).toBe("https://amr-api.open-design.ai/api/v1/models")
-      expect(models).toEqual(["kimi-k2.6"])
+      expect(models).toEqual(["claude-fable-5", "deepseek_v4_flash", "glm-5.2"])
     } finally {
       spy.mockRestore()
     }

@@ -65,7 +65,8 @@ function retryAfterSeconds(value: string | null): number | null {
   return Number.isNaN(parsed) ? null : Math.max(0, Math.ceil((parsed - Date.now()) / 1000))
 }
 
-function parseOpenDesignModels(body: string): string[] {
+// 推理面：干净 id
+export function parseOpenDesignLinkModels(body: string): string[] {
   try {
     const parsed = JSON.parse(body) as { data?: unknown }
     const rows = Array.isArray((parsed as { data?: unknown }).data) ? (parsed as { data: unknown[] }).data : []
@@ -81,6 +82,42 @@ function parseOpenDesignModels(body: string): string[] {
   } catch {
     return []
   }
+}
+
+// 控制面：name 优先于 id，并剥掉 public_model_ 前缀
+export function parseOpenDesignControlModels(body: string): string[] {
+  try {
+    const parsed = JSON.parse(body) as { data?: unknown }
+    const rows = Array.isArray((parsed as { data?: unknown }).data) ? (parsed as { data: unknown[] }).data : []
+    const models = new Set<string>()
+    for (const row of rows as unknown[]) {
+      if (typeof row === "string") {
+        let candidate = row.trim()
+        if (!candidate) continue
+        if (candidate.startsWith("public_model_")) candidate = candidate.slice("public_model_".length)
+        if (candidate) models.add(candidate)
+        continue
+      }
+      if (row && typeof row === "object") {
+        const r = row as { id?: unknown; name?: unknown; slug?: unknown }
+        let candidate: string | undefined
+        if (typeof r.name === "string" && r.name.trim()) candidate = r.name.trim()
+        else if (typeof r.slug === "string" && r.slug.trim()) candidate = r.slug.trim()
+        else if (typeof r.id === "string" && r.id.trim()) candidate = r.id.trim()
+        if (!candidate) continue
+        if (candidate.startsWith("public_model_")) candidate = candidate.slice("public_model_".length)
+        if (candidate) models.add(candidate)
+      }
+    }
+    return [...models].sort((a, b) => a.localeCompare(b))
+  } catch {
+    return []
+  }
+}
+
+// 兼容旧名：默认用 link 解析（干净 id）
+export function parseOpenDesignModels(body: string): string[] {
+  return parseOpenDesignLinkModels(body)
 }
 
 export class OpenDesignGoProvider implements Provider {
@@ -133,7 +170,30 @@ export class OpenDesignGoProvider implements Provider {
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
     const data = this.readCredentialData(account)
     if (!data) throw new Error("Open Design GO 凭据不存在")
-    // 优先用 controlKey 打控制面
+    // 优先 runtimeKey -> 推理面干净 id
+    if (data.runtimeKey) {
+      const linkBase = normalizeOpenDesignGoBaseUrl(data.linkUrl)
+      try {
+        const resp = await apiFetch(`${linkBase}/models`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${data.runtimeKey}`, accept: "application/json" },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        })
+        const body = await resp.text()
+        if (resp.ok) {
+          const models = parseOpenDesignLinkModels(body)
+          return models
+        }
+        // 非 ok 且有 controlKey 兜底，则继续尝试控制面
+        if (!data.controlKey) {
+          throw new Error(`Open Design GO /models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
+        }
+      } catch (e) {
+        if (!data.controlKey) throw e
+        // 有 controlKey 兜底，继续
+      }
+    }
+    // 兜底：controlKey -> 控制面（name 优先，剥前缀）
     if (data.controlKey) {
       const apiUrl = normalizeOpenDesignGoApiUrl(data.apiUrl)
       const resp = await apiFetch(`${apiUrl}/api/v1/models`, {
@@ -143,21 +203,9 @@ export class OpenDesignGoProvider implements Provider {
       })
       const body = await resp.text()
       if (!resp.ok) throw new Error(`Open Design GO /api/v1/models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
-      return parseOpenDesignModels(body)
+      return parseOpenDesignControlModels(body)
     }
-    // 回退：用 runtimeKey 打 linkBase /models
-    if (data.runtimeKey) {
-      const linkBase = normalizeOpenDesignGoBaseUrl(data.linkUrl)
-      const resp = await apiFetch(`${linkBase}/models`, {
-        method: "GET",
-        headers: { authorization: `Bearer ${data.runtimeKey}`, accept: "application/json" },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      })
-      const body = await resp.text()
-      if (!resp.ok) throw new Error(`Open Design GO /models 回退拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
-      return parseOpenDesignModels(body)
-    }
-    throw new Error("Open Design GO 凭据缺少 controlKey 与 runtimeKey")
+    throw new Error("Open Design GO 凭据缺少 runtimeKey 与 controlKey")
   }
 
   private readCachedModels(): string[] | null {
@@ -186,7 +234,39 @@ export class OpenDesignGoProvider implements Provider {
   async validateCredential(account: AccountRecord): Promise<{ valid: boolean; email?: string; planType?: string; extra?: Record<string, unknown> }> {
     const data = this.readCredentialData(account)
     if (!data) return { valid: false }
-    // 优先用 controlKey 校验
+    // 优先 runtimeKey 校验推理面
+    if (data.runtimeKey) {
+      const linkBase = normalizeOpenDesignGoBaseUrl(data.linkUrl)
+      try {
+        const resp = await apiFetch(`${linkBase}/models`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${data.runtimeKey}`, accept: "application/json" },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        })
+        const body = await resp.text()
+        if (resp.ok) {
+          const models = parseOpenDesignLinkModels(body)
+          return { valid: true, email: data.email, planType: data.plan, extra: { modelCount: models.length, linkBase, via: "runtimeKey" } }
+        }
+        if (resp.status === 401 || resp.status === 403) {
+          // 若有 controlKey 兜底，尝试控制面
+          if (!data.controlKey) return { valid: false }
+        } else {
+          if (!data.controlKey) {
+            const lower = body.toLowerCase()
+            if (lower.includes("unauthorized") || lower.includes("invalid") || lower.includes("forbidden")) return { valid: false }
+            return { valid: true }
+          }
+        }
+      } catch (e) {
+        if (!data.controlKey) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (/\b(401|403)\b/.test(msg)) return { valid: false }
+          return { valid: true }
+        }
+        // 有 controlKey 兜底，继续
+      }
+    }
     if (data.controlKey) {
       const apiUrl = normalizeOpenDesignGoApiUrl(data.apiUrl)
       try {
@@ -197,7 +277,7 @@ export class OpenDesignGoProvider implements Provider {
         })
         const body = await resp.text()
         if (resp.ok) {
-          const models = parseOpenDesignModels(body)
+          const models = parseOpenDesignControlModels(body)
           return { valid: true, email: data.email, planType: data.plan, extra: { modelCount: models.length, apiUrl, via: "controlKey" } }
         }
         if (resp.status === 401 || resp.status === 403) return { valid: false }
@@ -210,34 +290,11 @@ export class OpenDesignGoProvider implements Provider {
         return { valid: true }
       }
     }
-    // 回退用 runtimeKey 校验 linkBase/models
-    if (data.runtimeKey) {
-      const linkBase = normalizeOpenDesignGoBaseUrl(data.linkUrl)
-      try {
-        const resp = await apiFetch(`${linkBase}/models`, {
-          method: "GET",
-          headers: { authorization: `Bearer ${data.runtimeKey}`, accept: "application/json" },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        })
-        const body = await resp.text()
-        if (resp.ok) {
-          const models = parseOpenDesignModels(body)
-          return { valid: true, email: data.email, planType: data.plan, extra: { modelCount: models.length, linkBase, via: "runtimeKey" } }
-        }
-        if (resp.status === 401 || resp.status === 403) return { valid: false }
-        return { valid: true }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        if (/\b(401|403)\b/.test(msg)) return { valid: false }
-        return { valid: true }
-      }
-    }
     return { valid: false }
   }
 
   getUpstreamBaseUrl(account: AccountRecord): string {
     const data = this.readCredentialData(account)
-    // 缺 linkUrl 时回退 DEFAULT_LINK_URL
     const linkUrl = data?.linkUrl?.trim() || DEFAULT_LINK_URL
     return normalizeOpenDesignGoBaseUrl(linkUrl)
   }
@@ -255,13 +312,11 @@ export class OpenDesignGoProvider implements Provider {
     if (!headers.has("content-type") && input.method.toUpperCase() !== "GET") headers.set("content-type", "application/json")
     headers.set("authorization", `Bearer ${credential.token}`)
     headers.set("accept", "application/json, text/event-stream")
-    // 遥测头仿真（来自 vela 二进制逆向）
     headers.set("X-AMR-Client-Source", "vela")
     if (data?.workspaceId) {
       headers.set("x-vela-workspace-id", data.workspaceId)
       headers.set("X-Open-Design-Workspace-Id", data.workspaceId)
     }
-    // 每次请求生成新的 Run/Session Id
     headers.set("X-Open-Design-Run-Id", randomUUID())
     headers.set("X-Open-Design-Session-Id", randomUUID())
     return { url: `${baseUrl}/chat/completions`, headers, body: input.body }
