@@ -129,6 +129,7 @@ export interface RequestRecord {
   attemptCount?: number | null;
   attempts?: RouteAttempt[] | null;
   latencyMs?: number | null;
+  localPrepMs?: number | null;
  firstTokenMs?: number | null;
  tps?: number | null;
  promptTokens?: number | null;

@@ -4,7 +4,7 @@ import { getDatabase } from "./db"
 import { ApiKeyHasher } from "./crypto"
 import { authenticateApiKey } from "./repository"
 import { AccountRepository } from "./repository"
-import { NoEligibleAccountError, RoutingService } from "./routing"
+import { NoEligibleAccountError, QueueWaitAbortedError, QueueWaitTimeoutError, RoutingService } from "./routing"
 import { getLogSettings, getSystemSettings, type LogSettings } from "./settings"
 import type { PoolType, QuotaKind } from "./types"
 import { collectRequestHeaders } from "./client-meta"
@@ -478,7 +478,7 @@ export class GatewayService {
         return new Response(body, { status, headers: { "content-type": "application/json", ...(headers ?? {}) } })
       }
       let selection
-      try { selection = routing.select(requestId, effectiveEndpoint, tried) } catch (cause) {
+      try { selection = await routing.selectWithQueue(requestId, effectiveEndpoint, tried, { signal: request.signal }) } catch (cause) {
         if (cause instanceof NoEligibleAccountError) {
           const exhausted = cause.reason === "EXHAUSTED" || (tried.size > permanentlyDisabled.size)
           const status = exhausted ? 429 : 503
@@ -488,6 +488,16 @@ export class GatewayService {
           // upstream account; clients commonly retry these 429/503 responses.
           if (attemptNumber > 0) this.finalizeRequest(requestId, { status, outcome: type, attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: 0, error: type, logSettings, requestBodyJson, meta, ...routeMeta })
           return Response.json({ error: { type, message: exhausted ? "All eligible provider accounts are temporarily rate-limited or quota-limited." : "No eligible provider account is available.", ...(cause.retryAfterSeconds ? { retry_after: cause.retryAfterSeconds } : {}) } }, { status, headers })
+        }
+        if (cause instanceof QueueWaitTimeoutError) {
+          const type = "concurrency_queue_timeout"
+          const message = "All eligible provider accounts are at concurrency capacity; timed out waiting for a free slot."
+          if (attemptNumber > 0) this.finalizeRequest(requestId, { status: 503, outcome: type, attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: 0, error: type, logSettings, requestBodyJson, meta, ...routeMeta })
+          return Response.json({ error: { type, message } }, { status: 503 })
+        }
+        if (cause instanceof QueueWaitAbortedError) {
+          // 客户端已断开，等待被取消；无需再写请求日志。
+          return new Response(null, { status: 499 })
         }
         throw cause
       }

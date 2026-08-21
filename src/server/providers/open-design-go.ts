@@ -140,6 +140,13 @@ function retryAfterSeconds(value: string | null): number | null {
   return Number.isNaN(parsed) ? null : Math.max(0, Math.ceil((parsed - Date.now()) / 1000))
 }
 
+/** 从 body 的 "resets <ISO时间>"（或 "resets <秒>"）中解析重试等待秒数。 */
+function parseResetsRetryAfter(body: string): number | null {
+  const match = /resets?\s+<?([^\s>",}]+)/i.exec(body || "")
+  if (!match) return null
+  return retryAfterSeconds(match[1])
+}
+
 // 推理面：干净 id
 export function parseOpenDesignLinkModels(body: string): string[] {
   try {
@@ -397,6 +404,17 @@ export class OpenDesignGoProvider implements Provider {
     }
     if (lower.includes("tier_upgrade") || lower.includes("not_entitled")) return { shouldSwitchAccount: true, errorType: "ModelError" }
     if (status === 400) {
+      // 上游账号级并发限制（400 tier_limit_exceeded / concurrency limit exceeded）：
+      // 快速失败，先同账号退避重试再切号；从 body 的 "resets <ISO时间>" 解析 retryAfterSeconds。
+      if (lower.includes("tier_limit_exceeded") || lower.includes("concurrency limit exceeded")) {
+        return {
+          shouldSwitchAccount: true,
+          quotaKind: "PROVIDER_RATE_LIMIT",
+          retryAfterSeconds: parseResetsRetryAfter(body),
+          errorType: "TierConcurrencyLimit",
+          retrySameAccount: { maxRetries: 3 },
+        }
+      }
       if (lower.includes("model") && (lower.includes("not supported") || lower.includes("unsupported") || lower.includes("not_entitled") || lower.includes("tier_upgrade"))) return { shouldSwitchAccount: true, errorType: "ModelError" }
       if (lower.includes("unsupported model") || lower.includes("model_not_supported")) return { shouldSwitchAccount: true, errorType: "ModelError" }
     }

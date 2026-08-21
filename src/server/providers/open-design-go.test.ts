@@ -152,6 +152,34 @@ describe("open-design-go classifyError", () => {
     })
   })
 
+  it("400 tier_limit_exceeded 切号 + 同账号退避 + 解析 resets", () => {
+    const resets = new Date(Date.now() + 30_000).toISOString()
+    const r = provider.classifyError(400, JSON.stringify({ error: { message: "concurrency limit exceeded, resets " + resets } }), new Headers())
+    expect(r).toMatchObject({
+      shouldSwitchAccount: true,
+      quotaKind: "PROVIDER_RATE_LIMIT",
+      errorType: "TierConcurrencyLimit",
+      retrySameAccount: { maxRetries: 3 },
+    })
+    expect(r?.retryAfterSeconds).toBeGreaterThanOrEqual(29)
+    expect(r?.retryAfterSeconds).toBeLessThanOrEqual(31)
+  })
+
+  it("400 tier_limit_exceeded 无 resets 也返回 TierConcurrencyLimit 且 retryAfterSeconds 为 null", () => {
+    const r = provider.classifyError(400, "tier_limit_exceeded", new Headers())
+    expect(r).toMatchObject({
+      shouldSwitchAccount: true,
+      quotaKind: "PROVIDER_RATE_LIMIT",
+      errorType: "TierConcurrencyLimit",
+      retrySameAccount: { maxRetries: 3 },
+    })
+    expect(r?.retryAfterSeconds).toBeNull()
+  })
+
+  it("body 含 concurrency limit exceeded 也命中 TierConcurrencyLimit", () => {
+    expect(provider.classifyError(400, "concurrency limit exceeded", new Headers())).toMatchObject({ errorType: "TierConcurrencyLimit", shouldSwitchAccount: true })
+  })
+
   it("无关错误返回 null", () => {
     expect(provider.classifyError(500, "internal error", new Headers())).toBeNull()
     expect(provider.classifyError(200, "ok", new Headers())).toBeNull()
@@ -601,5 +629,29 @@ describe("open-design-go refreshQuota（billing/summary 数据源）", () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+describe("open-design-go 建号默认并发", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  it("createProviderAccount 传入 maxConcurrency=5 时落库为 5", () => {
+    const db = createDatabase(":memory:")
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("owner-mc", "owner-mc", "owner-mc", "Owner", "USER", "hash", new Date().toISOString(), new Date().toISOString())
+    const repo = new AccountRepository("owner-mc", db, new SecretVault(encryptionKey))
+    const account = repo.createProviderAccount({ name: "odg", poolType: "open-design-go", externalId: "odg-mc", maxConcurrency: 5 })
+    expect(account.maxConcurrency).toBe(5)
+    db.close()
+  })
+
+  it("未传 maxConcurrency 时保持默认 4（其它池不受影响）", () => {
+    const db = createDatabase(":memory:")
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("owner-mc2", "owner-mc2", "owner-mc2", "Owner", "USER", "hash", new Date().toISOString(), new Date().toISOString())
+    const repo = new AccountRepository("owner-mc2", db, new SecretVault(encryptionKey))
+    const account = repo.createProviderAccount({ name: "xai", poolType: "xai-grok", externalId: "xai-mc" })
+    expect(account.maxConcurrency).toBe(4)
+    db.close()
   })
 })

@@ -220,6 +220,7 @@ export async function POST(request: Request) {
     poolType: "open-design-go",
     email: email || null,
     externalId,
+    maxConcurrency: 5,
   })
 
   const credentialData: Record<string, string> = {

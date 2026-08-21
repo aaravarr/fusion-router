@@ -14,9 +14,45 @@ type Row = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
 
 export class NoEligibleAccountError extends Error {
-  constructor(readonly reason: "EXHAUSTED" | "NO_ELIGIBLE", readonly retryAfterSeconds?: number) {
+  constructor(readonly reason: "EXHAUSTED" | "NO_ELIGIBLE" | "CONCURRENCY_FULL", readonly retryAfterSeconds?: number) {
     super(reason)
   }
+}
+
+/** 并发槽位排队等待超时（等不到槽位时的兜底错误，网关据此返回 503）。 */
+export class QueueWaitTimeoutError extends Error {
+  constructor(readonly waitedMs: number) {
+    super("concurrency queue wait timeout")
+  }
+}
+
+/** 并发槽位排队等待期间请求被取消（客户端 abort）。 */
+export class QueueWaitAbortedError extends Error {
+  constructor() {
+    super("concurrency queue wait aborted")
+  }
+}
+
+// 并发已满时允许「排队等待槽位」的池。仅 open-design-go 启用；其它池保持立即失败的原行为。
+const QUEUE_WHEN_FULL_POOLS: ReadonlySet<PoolType> = new Set(["open-design-go"])
+const DEFAULT_QUEUE_WAIT_TIMEOUT_MS = 120_000
+const DEFAULT_QUEUE_POLL_INTERVAL_MS = 250
+
+function isQueueWhenFullPool(poolType: PoolType): boolean {
+  return QUEUE_WHEN_FULL_POOLS.has(poolType)
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new QueueWaitAbortedError()); return }
+    const timer = setTimeout(resolve, ms)
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer)
+        reject(new QueueWaitAbortedError())
+      }, { once: true })
+    }
+  })
 }
 
 // Pool types whose quota is a rolling window (e.g. the xAI free tier's
@@ -217,6 +253,17 @@ export class RoutingService {
             : undefined
           throw new NoEligibleAccountError("EXHAUSTED", retry)
         }
+        // 并发槽位已满：这些「只差一个槽位」的账号全部属于可排队池（open-design-go）时，
+        // 抛出 CONCURRENCY_FULL 交给 selectWithQueue 轮询等待，而不是立即失败。
+        const fullButQueueable = capabilityPool.filter((account) =>
+          !blocked.has(account.id)
+          && !triedAccountIds.has(account.id)
+          && account.maxConcurrency > 0
+          && (inFlight.get(account.id) ?? 0) >= account.maxConcurrency
+        )
+        if (fullButQueueable.length > 0 && fullButQueueable.every((account) => isQueueWhenFullPool(account.poolType))) {
+          throw new NoEligibleAccountError("CONCURRENCY_FULL")
+        }
         throw new NoEligibleAccountError("NO_ELIGIBLE")
       }
 
@@ -325,6 +372,40 @@ export class RoutingService {
       const settings = getSystemSettings(this.db)
       return { account: selected, leaseId, target: { baseUrl: normalizeOfficialOpenCodeUpstreamUrl(settings.upstreamBaseUrl), authStyle: "BEARER" as const } }
     })()
+  }
+
+  /**
+   * select 的「排队等待」包装：当 select 因并发槽位已满（CONCURRENCY_FULL）而失败时，
+   * 轮询等待槽位释放后再选路，等待期间不占任何租约。仅对可排队池（open-design-go）生效。
+   * - 请求被取消（signal abort）时立即以 QueueWaitAbortedError 退出；
+   * - 超过 queueWaitTimeoutMs 仍无槽位时以 QueueWaitTimeoutError 兜底失败。
+   */
+  async selectWithQueue(
+    requestId: string,
+    endpoint: string,
+    triedAccountIds: Set<string>,
+    options: {
+      signal?: AbortSignal
+      now?: Date
+      queueWaitTimeoutMs?: number
+      pollIntervalMs?: number
+      sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+    } = {},
+  ): Promise<RouteSelection> {
+    const timeoutMs = options.queueWaitTimeoutMs ?? DEFAULT_QUEUE_WAIT_TIMEOUT_MS
+    const pollMs = options.pollIntervalMs ?? DEFAULT_QUEUE_POLL_INTERVAL_MS
+    const sleep = options.sleep ?? abortableSleep
+    const startedAt = Date.now()
+    for (;;) {
+      try {
+        return this.select(requestId, endpoint, triedAccountIds, options.now)
+      } catch (cause) {
+        if (!(cause instanceof NoEligibleAccountError) || cause.reason !== "CONCURRENCY_FULL") throw cause
+      }
+      if (options.signal?.aborted) throw new QueueWaitAbortedError()
+      if (Date.now() - startedAt >= timeoutMs) throw new QueueWaitTimeoutError(Date.now() - startedAt)
+      await sleep(pollMs, options.signal)
+    }
   }
 
   setModel(model: string | null): void { this.currentModel = model }

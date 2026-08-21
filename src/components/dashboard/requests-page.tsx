@@ -193,6 +193,7 @@ export function RequestsPage() {
                 <TableHead className="text-xs text-muted-foreground">服务账号</TableHead>
                 <TableHead className="text-right text-xs text-muted-foreground">尝试</TableHead>
                 <TableHead className="text-right text-xs text-muted-foreground">延迟</TableHead>
+               <TableHead className="text-right text-xs text-muted-foreground">本地准备</TableHead>
                <TableHead className="text-right text-xs text-muted-foreground">TTFT</TableHead>
                <TableHead className="text-right text-xs text-muted-foreground">TPS</TableHead>
                <TableHead className="text-right text-xs text-muted-foreground">Tokens</TableHead>
@@ -223,6 +224,7 @@ export function RequestsPage() {
                   </TableCell>
                   <TableCell className="tabular text-right font-mono text-xs">{request.attemptCount ?? 0}</TableCell>
                   <TableCell className="tabular text-right font-mono text-xs">{request.latencyMs != null ? `${request.latencyMs} ms` : "—"}</TableCell>
+                 <TableCell className="tabular text-right font-mono text-xs">{request.localPrepMs != null && request.localPrepMs > 0 ? `${request.localPrepMs} ms` : "—"}</TableCell>
                  <TableCell className="tabular text-right font-mono text-xs">{request.firstTokenMs != null ? `${request.firstTokenMs} ms` : "—"}</TableCell>
                  <TableCell className="tabular text-right font-mono text-xs">{request.tps != null ? request.tps : "—"}</TableCell>
                   <TableCell className="tabular text-right font-mono text-xs">
@@ -369,7 +371,7 @@ function BasicInfo({ request, poolType, poolLabel }: { request: RequestDetail["r
     { label: "User-Agent", value: request.userAgent || "—", full: true },
     { label: "创建时间", value: formatDate(request.createdAt) },
     { label: "总延迟", value: request.latencyMs != null ? `${request.latencyMs} ms` : "—" },
-    { label: "本地准备", value: request.localPrepMs != null ? `${request.localPrepMs} ms` : "—" },
+    { label: "本地准备", value: request.localPrepMs != null && request.localPrepMs > 0 ? `${request.localPrepMs} ms` : "—" },
     { label: "首 Token", value: request.firstTokenMs != null ? `${request.firstTokenMs} ms` : "—" },
     { label: "TPS", value: request.tps != null ? String(request.tps) : "—" },
     { label: "请求大小", value: request.requestSizeBytes != null ? formatBytes(request.requestSizeBytes) : "—" },

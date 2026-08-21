@@ -388,11 +388,11 @@ export class AccountRepository {
    * placeholder auth/cookie ciphertext; the provider layer populates
    * `provider_credentials` separately. Defaults match createCpaAccount.
    */
-  createProviderAccount(input: { name: string; poolType: PoolType; email?: string | null; subscriptionState?: string; externalId?: string | null }): AccountRecord {
+  createProviderAccount(input: { name: string; poolType: PoolType; email?: string | null; subscriptionState?: string; externalId?: string | null; maxConcurrency?: number }): AccountRecord {
     return this.createProviderAccountTracked(input).account
   }
 
-  createProviderAccountTracked(input: { name: string; poolType: PoolType; email?: string | null; subscriptionState?: string; externalId?: string | null }): { account: AccountRecord; created: boolean } {
+  createProviderAccountTracked(input: { name: string; poolType: PoolType; email?: string | null; subscriptionState?: string; externalId?: string | null; maxConcurrency?: number }): { account: AccountRecord; created: boolean } {
     if (input.externalId) {
       const existing = this.db.prepare("SELECT id,disabled_reason FROM accounts WHERE owner_user_id=? AND pool_type=? AND external_id=?").get(this.ownerUserId, input.poolType, input.externalId) as { id: string; disabled_reason: string | null } | undefined
       if (existing) {
@@ -411,12 +411,13 @@ export class AccountRepository {
     const ordinal = Number((this.db.prepare("SELECT COALESCE(MAX(ordinal), -1) + 1 value FROM accounts WHERE owner_user_id=?").get(this.ownerUserId) as Row).value)
     const workspaceId = `${input.poolType === "xai-grok" ? "grok" : input.poolType}_${this.ownerUserId}_${input.externalId ?? id}`
     this.db.prepare(`INSERT INTO accounts(id, owner_user_id, name, pool_type, workspace_id, go_key_id, credential_source, last_synced_at,
-      auth_cookie_ciphertext, go_api_key_ciphertext, subscription_state, billing_guard, next_usage_check_at, ordinal, created_at, updated_at, external_id)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      auth_cookie_ciphertext, go_api_key_ciphertext, subscription_state, billing_guard, next_usage_check_at, ordinal, created_at, updated_at, external_id, max_concurrency)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, this.ownerUserId, input.name, input.poolType, workspaceId, input.poolType, "PROVIDER_IMPORT", timestamp,
       this.secretVault().encrypt("unused"), this.secretVault().encrypt("unused"),
       input.subscriptionState ?? "ACTIVE", "VERIFIED_GO_ONLY",
       new Date(Date.now() + 60_000).toISOString(), ordinal, timestamp, timestamp, input.externalId ?? null,
+      input.maxConcurrency ?? 4,
     )
     if (input.email) this.db.prepare("UPDATE accounts SET email=? WHERE id=? AND owner_user_id=?").run(input.email, id, this.ownerUserId)
     return { account: this.get(id)!, created: true }

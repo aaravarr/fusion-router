@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createDatabase, type AppDatabase } from "./db"
 import { SecretVault } from "./crypto"
 import { AccountRepository, ModelRoutingRepository } from "./repository"
-import { NoEligibleAccountError, RoutingService } from "./routing"
+import { NoEligibleAccountError, QueueWaitAbortedError, QueueWaitTimeoutError, RoutingService } from "./routing"
 import { setBuiltinProviderEnabled } from "./builtin-provider-state"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { CustomProviderRepository, invalidateCustomProviderCache } from "./custom-providers"
@@ -399,5 +399,78 @@ describe("routing", () => {
     // 非 raw（可转换）：responses 经 chat 枢纽可达
     routing.setInterfaceFormat("responses")
     expect(routing.select("processed-responses", "responses", new Set()).account).toBeDefined()
+  })
+})
+
+describe("open-design-go 并发排队等待", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+  afterEach(() => { setGlobalDatabase(undefined) })
+
+  function makeOpenDesign() {
+    const { db, accounts, routing } = make()
+    setGlobalDatabase(db)
+    const account = accounts.createProviderAccount({ name: "OpenDesign Go", poolType: "open-design-go", externalId: "odg-queue", maxConcurrency: 1 })
+    return { db, accounts, routing, account }
+  }
+
+  it("槽位已满时 select 抛出 CONCURRENCY_FULL 而非 NO_ELIGIBLE", () => {
+    const { routing, account } = makeOpenDesign()
+    const first = routing.select("req-1", "responses", new Set())
+    expect(first.account.id).toBe(account.id)
+    try {
+      routing.select("req-2", "responses", new Set())
+      throw new Error("expected failure")
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(NoEligibleAccountError)
+      expect((cause as NoEligibleAccountError).reason).toBe("CONCURRENCY_FULL")
+    }
+    routing.releaseLease(first.leaseId)
+  })
+
+  it("selectWithQueue 等待槽位释放后获得账号", async () => {
+    const { routing, account } = makeOpenDesign()
+    const first = routing.select("req-1", "responses", new Set())
+    let released = false
+    const sleep = async () => {
+      if (!released) { released = true; routing.releaseLease(first.leaseId) }
+    }
+    const selected = await routing.selectWithQueue("req-2", "responses", new Set(), { sleep, pollIntervalMs: 1, queueWaitTimeoutMs: 1000 })
+    expect(selected.account.id).toBe(account.id)
+    routing.releaseLease(selected.leaseId)
+  })
+
+  it("selectWithQueue 超时后抛出 QueueWaitTimeoutError", async () => {
+    const { routing } = makeOpenDesign()
+    routing.select("req-1", "responses", new Set())
+    await expect(
+      routing.selectWithQueue("req-2", "responses", new Set(), { queueWaitTimeoutMs: 20, pollIntervalMs: 5 }),
+    ).rejects.toBeInstanceOf(QueueWaitTimeoutError)
+  })
+
+  it("selectWithQueue 请求被取消时立即抛出 QueueWaitAbortedError", async () => {
+    const { routing } = makeOpenDesign()
+    routing.select("req-1", "responses", new Set())
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      routing.selectWithQueue("req-2", "responses", new Set(), { signal: controller.signal }),
+    ).rejects.toBeInstanceOf(QueueWaitAbortedError)
+  })
+
+  it("非排队池（opencode-go）并发满时仍立即失败，不排队", async () => {
+    const { routing, add, accounts } = make()
+    const accountId = add("go-full")
+    accounts.updateState(accountId, { maxConcurrency: 1 })
+    routing.select("req-1", "responses", new Set())
+    try {
+      routing.select("req-2", "responses", new Set())
+      throw new Error("expected failure")
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(NoEligibleAccountError)
+      expect((cause as NoEligibleAccountError).reason).toBe("NO_ELIGIBLE")
+    }
+    await expect(
+      routing.selectWithQueue("req-3", "responses", new Set(), { queueWaitTimeoutMs: 20, pollIntervalMs: 5 }),
+    ).rejects.toBeInstanceOf(NoEligibleAccountError)
   })
 })

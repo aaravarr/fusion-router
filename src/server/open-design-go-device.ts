@@ -222,6 +222,7 @@ export async function pollOpenDesignGoDeviceSession(ownerUserId: string, session
       poolType: "open-design-go",
       email: email || null,
       externalId,
+      maxConcurrency: 5,
     })
     const credentialData: Record<string, string> = {
       runtimeKey,
