@@ -28,6 +28,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { FusionMark } from "@/components/chat/icons";
 import { useSession } from "./admin-context";
 
 const navItems = [
@@ -49,6 +50,12 @@ const navItems = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, logout, isAdmin } = useSession();
+
+  // 聊天页为独立三栏全屏体验（会话侧栏 / 对话 / 运行详情），不再套用控制台导航骨架
+  if (pathname.startsWith("/chat")) {
+    return <div className="h-[100dvh] w-full overflow-hidden">{children}</div>;
+  }
+
   const active = navItems.find((item) => pathname.startsWith(item.href)) ?? navItems[0];
 
   return (
@@ -108,10 +115,10 @@ function Sidebar({ pathname, mobile = false }: { pathname: string; mobile?: bool
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center gap-2.5 border-b px-4">
-        <span className="grid size-7 place-items-center rounded-md bg-[#171717] text-[11px] font-semibold text-white">O</span>
+        <FusionMark className="size-7 shrink-0" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold tracking-[-0.025em]">Provider Gateway</p>
-          <p className="font-mono text-[10px] text-muted-foreground">ACCOUNT ROUTER</p>
+          <p className="truncate text-sm font-semibold tracking-[-0.025em]">Fusion Router</p>
+          <p className="font-mono text-[10px] text-muted-foreground">智能路由网关</p>
         </div>
       </div>
 

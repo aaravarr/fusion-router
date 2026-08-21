@@ -1,92 +1,37 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import {
-  ArrowUp,
-  Bot,
-  Check,
-  ChevronDown,
-  CircleAlert,
-  Copy,
-  MessageSquarePlus,
-  RotateCcw,
-  Sparkles,
-} from "lucide-react"
+import { CircleAlert, PanelRightClose, PanelRightOpen } from "lucide-react"
 import { useSession } from "@/components/dashboard/admin-context"
-import { Button } from "@/components/ui/button"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+  createChatStreamState,
+  extractStreamError,
+  finalizeStreamState,
+  reduceChatStreamEvent,
+  type ChatStreamState,
+  type ChatToolCall,
+} from "@/lib/chat-stream-mapper"
 import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-  ConversationScrollButton,
-} from "@/components/ai-elements/conversation"
+  Composer,
+  type ComposerOptions,
+  type ReasoningLevel,
+} from "./composer"
 import {
-  Message,
-  MessageAction,
-  MessageActions,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message"
-import {
-  PromptInput,
-  PromptInputBody,
-  PromptInputButton,
-  PromptInputFooter,
-  PromptInputSubmit,
-  PromptInputTextarea,
-  PromptInputTools,
-} from "@/components/ai-elements/prompt-input"
-import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning"
-import { cn, copyToClipboard } from "@/lib/utils"
-
-interface ChatOptions {
-  models: string[]
-  pools: Array<{ type: string; label: string; models: string[]; readyAccounts: number }>
-  accounts: Array<{ id: string; name: string; email?: string | null; poolType: string; poolLabel: string; ready: boolean; blocked: boolean }>
-  capabilities: { webSearch: boolean; mcp: boolean }
-}
+  AssistantMessage,
+  UserBubble,
+  type ChatMessage,
+} from "./message"
+import { DetailsPanel, type UsageInfo } from "./details-panel"
+import { SessionSidebar, type SessionItem } from "./session-sidebar"
+import { FusionMark } from "./icons"
 
 type ChatInterface = "chat" | "responses"
+type Status = "ready" | "submitted" | "streaming" | "error"
 
-type MessageStatus = "complete" | "streaming" | "error"
-interface ChatMessage {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  reasoning?: string
-  status: MessageStatus
-  error?: string
-  model?: string
-  routeLabel?: string
-  reasoningLabel?: string
-  interfaceLabel?: string
-}
-
-const reasoningOptions = [
-  { value: "auto", label: "自动思考", detail: "由模型决定" },
-  { value: "none", label: "不思考", detail: "尽快回答" },
-  { value: "minimal", label: "最少", detail: "极轻量推理" },
-  { value: "low", label: "低", detail: "简单任务" },
-  { value: "medium", label: "中", detail: "均衡速度与质量" },
-  { value: "high", label: "高", detail: "复杂问题" },
-  { value: "xhigh", label: "极高", detail: "最充分推理" },
-] as const
-
-const storageKey = "opencode-dashboard-chat-v1"
+const storageKey = "opencode-dashboard-chat-v2"
 
 function newId() {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
+  return globalThis.crypto?.randomUUID?.() ?? (Date.now() + "-" + Math.random())
 }
 
 function preferredModel(models: string[]): string {
@@ -121,42 +66,65 @@ function completedReasoning(payload: unknown): string {
   if (!Array.isArray(output)) return ""
   return output.flatMap((item) => {
     if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "reasoning") return []
-    const parts = [
-      (item as { summary?: unknown }).summary,
-      (item as { content?: unknown }).content,
-    ].flatMap((value) => Array.isArray(value) ? value : [])
-    return parts.flatMap((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-      ? [(part as { text: string }).text]
-      : [])
+    const parts = [(item as { summary?: unknown }).summary, (item as { content?: unknown }).content].flatMap((value) => Array.isArray(value) ? value : [])
+    return parts.flatMap((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : [])
   }).join("\n\n")
+}
+
+function completedUsage(payload: unknown): UsageInfo | null {
+  if (!payload || typeof payload !== "object") return null
+  const response = (payload as { response?: unknown }).response
+  if (!response || typeof response !== "object") return null
+  const usage = (response as { usage?: unknown }).usage
+  if (!usage || typeof usage !== "object") return null
+  const u = usage as Record<string, unknown>
+  const inputTokens = typeof u.input_tokens === "number" ? u.input_tokens : undefined
+  const outputTokens = typeof u.output_tokens === "number" ? u.output_tokens : undefined
+  const totalTokens = typeof u.total_tokens === "number" ? u.total_tokens : (inputTokens ?? 0) + (outputTokens ?? 0)
+  if (!inputTokens && !outputTokens && !totalTokens) return null
+  return { inputTokens, outputTokens, totalTokens }
 }
 
 export function ChatPage() {
   const { sessionFetch } = useSession()
-  const [options, setOptions] = useState<ChatOptions | null>(null)
+  const [options, setOptions] = useState<ComposerOptions | null>(null)
   const [optionsError, setOptionsError] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<SessionItem[]>([])
+  const [currentId, setCurrentId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [model, setModel] = useState("")
-  const [reasoning, setReasoning] = useState<(typeof reasoningOptions)[number]["value"]>("auto")
+  const [reasoning, setReasoning] = useState<ReasoningLevel>("auto")
   const [interfaceType, setInterfaceType] = useState<ChatInterface>("chat")
   const [route, setRoute] = useState("auto")
-  const [status, setStatus] = useState<"ready" | "submitted" | "streaming" | "error">("ready")
+  const [status, setStatus] = useState<Status>("ready")
+  const [detailsOpen, setDetailsOpen] = useState(true)
+  const [queue, setQueue] = useState<string[]>([])
+  const [usage, setUsage] = useState<UsageInfo | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const queueRef = useRef<string[]>([])
   const hydratedRef = useRef(false)
+  const activeIdRef = useRef<string | null>(null)
 
+  // ---- localStorage 会话持久化 ----
   useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
         const saved = window.localStorage.getItem(storageKey)
         if (saved) {
-          const parsed = JSON.parse(saved) as { messages?: ChatMessage[]; model?: string; reasoning?: typeof reasoning; interfaceType?: ChatInterface; route?: string }
-          if (Array.isArray(parsed.messages)) setMessages(parsed.messages.map((message) => message.status === "streaming" ? { ...message, status: "error", error: "上次生成已中断" } : message))
+          const parsed = JSON.parse(saved) as { sessions?: SessionItem[]; currentId?: string; messages?: ChatMessage[]; model?: string; reasoning?: ReasoningLevel; interfaceType?: ChatInterface; route?: string }
+          const restoredSessions = Array.isArray(parsed.sessions) ? parsed.sessions : []
+          const restoredId = typeof parsed.currentId === "string" ? parsed.currentId : null
+          const restoredMessages = Array.isArray(parsed.messages) ? parsed.messages.map((message) => message.status === "streaming" ? { ...message, status: "error" as const, error: "上次生成已中断" } : message) : []
+          setSessions(restoredSessions)
+          setCurrentId(restoredId)
+          activeIdRef.current = restoredId
+          setMessages(restoredMessages)
           if (typeof parsed.model === "string") setModel(parsed.model)
-          if (reasoningOptions.some((item) => item.value === parsed.reasoning)) setReasoning(parsed.reasoning!)
+          if (typeof parsed.reasoning === "string") setReasoning(parsed.reasoning as ReasoningLevel)
           if (parsed.interfaceType === "chat" || parsed.interfaceType === "responses") setInterfaceType(parsed.interfaceType)
           if (typeof parsed.route === "string") setRoute(parsed.route)
         }
-      } catch { /* Ignore malformed local drafts. */ }
+      } catch { /* ignore malformed drafts */ }
       hydratedRef.current = true
     }, 0)
     return () => window.clearTimeout(timer)
@@ -164,9 +132,10 @@ export function ChatPage() {
 
   useEffect(() => {
     if (!hydratedRef.current) return
-    window.localStorage.setItem(storageKey, JSON.stringify({ messages, model, reasoning, interfaceType, route }))
-  }, [messages, model, reasoning, interfaceType, route])
+    window.localStorage.setItem(storageKey, JSON.stringify({ sessions, currentId, messages, model, reasoning, interfaceType, route }))
+  }, [sessions, currentId, messages, model, reasoning, interfaceType, route])
 
+  // ---- 加载选项 ----
   const loadOptions = useCallback(async () => {
     setOptionsError(null)
     const response = await sessionFetch("/api/chat")
@@ -175,7 +144,7 @@ export function ChatPage() {
       setOptionsError(errorMessage(payload, "无法加载聊天配置"))
       return
     }
-    const next = payload as ChatOptions
+    const next = payload as ComposerOptions
     setOptions(next)
     setModel((current) => current && next.models.includes(current) ? current : preferredModel(next.models))
   }, [sessionFetch])
@@ -193,18 +162,17 @@ export function ChatPage() {
     ? "auto"
     : route.startsWith("account:") && !compatibleAccounts.some((account) => account.id === route.slice(8)) ? "auto" : route
 
-  const selectedReasoning = reasoningOptions.find((item) => item.value === reasoning) ?? reasoningOptions[0]
   const selectedPool = effectiveRoute.startsWith("pool:") ? compatiblePools.find((pool) => pool.type === effectiveRoute.slice(5)) : null
   const selectedAccount = effectiveRoute.startsWith("account:") ? compatibleAccounts.find((account) => account.id === effectiveRoute.slice(8)) : null
-  const routeLabel = selectedAccount ? selectedAccount.name : selectedPool ? selectedPool.label : "自动调度"
+  const routeLabel = selectedAccount ? selectedAccount.name : selectedPool ? selectedPool.label : "自动"
+  const onlineCount = options?.pools.reduce((sum, pool) => sum + pool.readyAccounts, 0) ?? 0
+  const totalPools = options?.pools.length ?? 0
 
   const stop = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
     setStatus("ready")
-    setMessages((current) => current.map((message) => message.status === "streaming"
-      ? { ...message, status: "error", error: "已停止生成" }
-      : message))
+    setMessages((current) => current.map((message) => message.status === "streaming" ? { ...message, status: "error" as const, error: "已停止生成" } : message))
   }, [])
 
   const runGeneration = useCallback(async (contextMessages: ChatMessage[], assistantId: string) => {
@@ -214,8 +182,8 @@ export function ChatPage() {
 
     try {
       const routing = effectiveRoute.startsWith("pool:")
-        ? { mode: "pool", poolType: effectiveRoute.slice(5) }
-        : effectiveRoute.startsWith("account:") ? { mode: "account", accountId: effectiveRoute.slice(8) } : { mode: "auto" }
+        ? { mode: "pool" as const, poolType: effectiveRoute.slice(5) }
+        : effectiveRoute.startsWith("account:") ? { mode: "account" as const, accountId: effectiveRoute.slice(8) } : { mode: "auto" as const }
       const response = await sessionFetch("/api/chat", {
         method: "POST",
         signal: controller.signal,
@@ -229,15 +197,14 @@ export function ChatPage() {
       })
       if (!response.ok || !response.body) {
         const payload = await response.json().catch(() => null)
-        throw new Error(errorMessage(payload, `调用失败（${response.status}）`))
+        throw new Error(errorMessage(payload, "调用失败（" + response.status + "）"))
       }
 
       setStatus("streaming")
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ""
-      let answer = ""
-      let reasoningText = ""
+      let stream: ChatStreamState = createChatStreamState()
       for (;;) {
         const chunk = await reader.read()
         if (chunk.done) break
@@ -245,51 +212,31 @@ export function ChatPage() {
         const parsed = readSseEvents(buffer)
         buffer = parsed.rest
         for (const event of parsed.events) {
-          const data = event.split("\n").filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart()).join("\n")
+          const data = event.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
           if (!data || data === "[DONE]") continue
-          const payload = JSON.parse(data) as {
-            type?: string
-            delta?: string
-            error?: unknown
-            response?: { error?: unknown }
-            choices?: Array<{
-              delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; thinking?: unknown }
-              message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; thinking?: unknown }
-            }>
+          const payload = JSON.parse(data)
+          const err = extractStreamError(payload)
+          if (err) throw new Error(err)
+          if (payload.type === "response.completed" && !stream.reasoning) {
+            const reasoningText = completedReasoning(payload)
+            if (reasoningText) stream = { ...stream, reasoning: reasoningText }
           }
-          const chatPart = payload.choices?.[0]?.delta ?? payload.choices?.[0]?.message
-          const chatContent = typeof chatPart?.content === "string" ? chatPart.content : ""
-          const chatReasoning = [chatPart?.reasoning_content, chatPart?.reasoning, chatPart?.thinking]
-            .find((value): value is string => typeof value === "string") ?? ""
-          if (payload.type === "response.output_text.delta" && typeof payload.delta === "string") {
-            answer += payload.delta
-            setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: answer } : message))
-          } else if (payload.type?.includes("reasoning") && payload.type.endsWith(".delta") && typeof payload.delta === "string") {
-            reasoningText += payload.delta
-            setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, reasoning: reasoningText } : message))
-          } else if (payload.type === "response.completed" && !reasoningText) {
-            reasoningText = completedReasoning(payload)
-            if (reasoningText) {
-              setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, reasoning: reasoningText } : message))
-            }
-          } else if (chatContent || chatReasoning) {
-            answer += chatContent
-            reasoningText += chatReasoning
-            setMessages((current) => current.map((message) => message.id === assistantId ? {
-              ...message,
-              content: answer,
-              reasoning: reasoningText || undefined,
-            } : message))
-          } else if (payload.type === "error" || payload.type === "response.failed") {
-            throw new Error(errorMessage(payload, errorMessage(payload.response, "模型返回失败")))
-          }
+          stream = reduceChatStreamEvent(stream, payload)
+          const usageInfo = completedUsage(payload)
+          if (usageInfo) setUsage(usageInfo)
+          setMessages((current) => current.map((message) => message.id === assistantId ? {
+            ...message,
+            content: stream.content,
+            reasoning: stream.reasoning || undefined,
+            toolCalls: stream.toolCalls,
+          } : message))
         }
       }
+      stream = finalizeStreamState(stream)
       setMessages((current) => current.map((message) => message.id === assistantId
-        ? answer ? { ...message, content: answer, reasoning: reasoningText || undefined, status: "complete" } : { ...message, reasoning: reasoningText || undefined, status: "error", error: "模型没有返回文本内容" }
+        ? stream.content ? { ...message, content: stream.content, reasoning: stream.reasoning || undefined, toolCalls: stream.toolCalls, status: "complete" } : { ...message, reasoning: stream.reasoning || undefined, toolCalls: stream.toolCalls, status: "error", error: "模型没有返回文本内容" }
         : message))
-      setStatus(answer ? "ready" : "error")
+      setStatus(stream.content ? "ready" : "error")
     } catch (cause) {
       if (controller.signal.aborted) return
       const message = cause instanceof Error ? cause.message : "聊天请求失败"
@@ -300,27 +247,38 @@ export function ChatPage() {
     }
   }, [effectiveRoute, interfaceType, model, reasoning, sessionFetch])
 
-  const submit = useCallback(async ({ text }: { text: string }) => {
-    const content = text.trim()
-    if (!content || !model || status === "submitted" || status === "streaming") return
-    const userMessage: ChatMessage = { id: newId(), role: "user", content, status: "complete" }
+  // 队列消费：上一轮结束后自动发送下一条
+  const messagesRef = useRef<ChatMessage[]>([])
+  useEffect(() => { messagesRef.current = messages }, [messages])
+  useEffect(() => {
+    if (status !== "ready" && status !== "error") return
+    const next = queueRef.current.shift()
+    if (!next) return
+    setQueue([...queueRef.current])
     const assistantId = newId()
-    const assistantMessage: ChatMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      status: "streaming",
-      model,
-      routeLabel,
-      reasoningLabel: selectedReasoning.label,
-      interfaceLabel: interfaceType === "chat" ? "Chat" : "Responses",
+    const assistantMessage: ChatMessage = { id: assistantId, role: "assistant", content: "", status: "streaming", model, routeLabel, reasoningLabel: reasoning }
+    const contextMessages = messagesRef.current.filter((message) => message.status !== "error")
+    setMessages((current) => [...current, assistantMessage])
+    void runGeneration(contextMessages, assistantId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, model, routeLabel, reasoning, runGeneration])
+
+  const submit = useCallback((text: string, immediate: boolean) => {
+    if (!model) return
+    const userMessage: ChatMessage = { id: newId(), role: "user", content: text, status: "complete" }
+    if (status === "submitted" || status === "streaming") {
+      if (immediate) queueRef.current.unshift(text)
+      else queueRef.current.push(text)
+      setQueue([...queueRef.current])
+      setMessages((current) => [...current, userMessage])
+      return
     }
+    const assistantId = newId()
+    const assistantMessage: ChatMessage = { id: assistantId, role: "assistant", content: "", status: "streaming", model, routeLabel, reasoningLabel: reasoning }
     const contextMessages = [...messages.filter((message) => message.status !== "error"), userMessage]
     setMessages((current) => [...current, userMessage, assistantMessage])
-    await runGeneration(contextMessages, assistantId)
-  }, [interfaceType, messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
-
-  const lastAssistantId = useMemo(() => [...messages].reverse().find((message) => message.role === "assistant")?.id, [messages])
+    void runGeneration(contextMessages, assistantId)
+  }, [messages, model, routeLabel, reasoning, runGeneration, status])
 
   const regenerate = useCallback(async (assistantId: string) => {
     if (!model || status === "submitted" || status === "streaming") return
@@ -328,205 +286,156 @@ export function ChatPage() {
     if (assistantIndex < 0) return
     const contextMessages = messages.slice(0, assistantIndex).filter((message) => message.status !== "error")
     if (!contextMessages.some((message) => message.role === "user")) return
-    setMessages((current) => current.map((message) => message.id === assistantId ? {
-      ...message,
-      content: "",
-      reasoning: undefined,
-      error: undefined,
-      status: "streaming",
-      model,
-      routeLabel,
-      reasoningLabel: selectedReasoning.label,
-      interfaceLabel: interfaceType === "chat" ? "Chat" : "Responses",
-    } : message))
+    setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: "", reasoning: undefined, error: undefined, toolCalls: undefined, status: "streaming", model, routeLabel, reasoningLabel: reasoning } : message))
     await runGeneration(contextMessages, assistantId)
-  }, [interfaceType, messages, model, routeLabel, runGeneration, selectedReasoning.label, status])
+  }, [messages, model, routeLabel, reasoning, runGeneration, status])
 
   const newChat = useCallback(() => {
     stop()
+    const id = newId()
+    setSessions((current) => [{ id, title: "新对话" }, ...current])
+    setCurrentId(id)
+    activeIdRef.current = id
     setMessages([])
+    setUsage(null)
     setStatus("ready")
+    queueRef.current = []
+    setQueue([])
   }, [stop])
 
+  const selectSession = useCallback((id: string) => {
+    if (id === currentId) return
+    setCurrentId(id)
+    activeIdRef.current = id
+    setMessages([])
+    setUsage(null)
+  }, [currentId])
+
+  const discardError = useCallback((messageId: string) => {
+    setMessages((current) => current.map((message) => message.id === messageId && message.status === "error"
+      ? { ...message, status: "complete" as const, error: undefined }
+      : message))
+    setStatus("ready")
+  }, [])
+
+  const deleteSession = useCallback((id: string) => {
+    setSessions((current) => current.filter((session) => session.id !== id))
+    if (id === currentId) {
+      setCurrentId(null)
+      activeIdRef.current = null
+      setMessages([])
+    }
+  }, [currentId])
+
+  const lastAssistantId = useMemo(() => [...messages].reverse().find((message) => message.role === "assistant")?.id, [messages])
+  const lastToolCalls: ChatToolCall[] = useMemo(() => {
+    const last = [...messages].reverse().find((message) => message.role === "assistant")
+    return last?.toolCalls ?? []
+  }, [messages])
+
+  const sessionTitle = useMemo(() => {
+    const firstUser = messages.find((message) => message.role === "user")
+    if (firstUser?.content) return firstUser.content.slice(0, 32)
+    return "新对话"
+  }, [messages])
+
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-white">
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-[#ececec] px-3 sm:px-5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#ecfdf7] text-[#0d8a6a]"><Bot className="size-4" /></span>
-          <span className="truncate text-sm font-semibold tracking-[-0.02em] text-[#222]">{model || (!options && !optionsError ? "正在加载模型…" : "聊天")}</span>
-          <span className="hidden h-4 w-px bg-[#e5e5e5] sm:block" />
-          <span className="hidden truncate text-xs text-[#8b8b8b] sm:block">{interfaceType === "chat" ? "Chat" : "Responses"} · {routeLabel} · {selectedReasoning.label}</span>
-        </div>
-        <Button variant="ghost" size="sm" onClick={newChat} className="rounded-full text-[#555]">
-          <MessageSquarePlus />新对话
-        </Button>
-      </div>
+    <div className="flex h-full min-h-0 w-full bg-white">
+      <SessionSidebar
+        sessions={sessions}
+        currentId={currentId}
+        onlineCount={onlineCount}
+        totalPools={totalPools}
+        onNew={newChat}
+        onSelect={selectSession}
+        onDelete={deleteSession}
+      />
+      <main className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-[52px] shrink-0 items-center justify-between gap-3 border-b border-[var(--chat-border-l1)] px-5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="text-[12.5px] text-[var(--chat-label-tertiary)]">工作区</span>
+            <span className="text-xs text-[var(--chat-border-l3)]">/</span>
+            <span className="text-[12.5px] text-[var(--chat-label-tertiary)]">聊天</span>
+            <span className="text-xs text-[var(--chat-border-l3)]">/</span>
+            <span className="max-w-[340px] truncate text-sm font-semibold text-[var(--chat-label-primary)]">{sessionTitle}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="flex h-7 items-center gap-1.5 rounded-full border border-[var(--chat-border-l1)] bg-white px-2.5 text-xs font-medium text-[var(--chat-label-secondary)]"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
+            <button type="button" onClick={() => setDetailsOpen((value) => !value)} aria-label="详情" className={"flex size-7 items-center justify-center rounded-lg " + (detailsOpen ? "bg-[var(--chat-accent-soft)] text-[var(--chat-accent)]" : "text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)]")}>
+              {detailsOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+            </button>
+          </div>
+        </header>
 
-      {optionsError ? (
-        <div className="m-4 flex items-center justify-between rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          <span className="flex items-center gap-2"><CircleAlert className="size-4" />{optionsError}</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadOptions()}>重试</Button>
-        </div>
-      ) : null}
+        {optionsError ? (
+          <div className="mx-4 mt-4 flex items-center justify-between rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <span className="flex items-center gap-2"><CircleAlert className="size-4" />{optionsError}</span>
+            <button type="button" onClick={() => void loadOptions()} className="rounded-full text-sm text-red-700 underline">重试</button>
+          </div>
+        ) : null}
 
-      <Conversation className="min-h-0 bg-white">
-        <ConversationContent className="mx-auto w-full max-w-3xl gap-7 px-4 pb-56 pt-8 sm:px-8 sm:pt-12">
-          {!messages.length ? (
-            <ConversationEmptyState className="min-h-[52vh] p-2" title="" description="">
-              <div className="flex max-w-xl flex-col items-center text-center">
-                <div className="mb-6 grid size-11 place-items-center rounded-full border border-[#e5e5e5] bg-[#fafafa]">
-                  <Sparkles className="size-5 text-[#10a37f]" strokeWidth={1.8} />
-                </div>
-                <h1 className="text-2xl font-semibold tracking-[-0.035em] text-[#171717] sm:text-[28px]">今天想聊点什么？</h1>
-                <p className="mt-2 max-w-md text-sm leading-6 text-[#777]">选择模型与思考等级，默认由网关在所有可用账号中自动调度。</p>
-                <div className="mt-7 grid w-full gap-2 sm:grid-cols-2">
-                  {["分析这段代码的潜在问题", "帮我整理一个实现方案", "解释一个复杂技术概念", "把这段内容写得更清楚"].map((prompt) => (
-                    <Button key={prompt} type="button" variant="outline" onClick={() => void submit({ text: prompt })} disabled={!model}
-                      className="h-auto justify-start rounded-xl bg-white px-4 py-3 text-left text-sm font-normal text-[#444]">
-                      {prompt}
-                    </Button>
-                  ))}
-                </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[748px] px-6 pb-8 pt-6">
+            {!messages.length ? <EmptyState onPick={(text) => submit(text, true)} disabled={!model} /> : (
+              <div className="flex flex-col gap-7">
+                {messages.map((message) => message.role === "user" ? (
+                  <UserBubble key={message.id} content={message.content} />
+                ) : (
+                  <AssistantMessage
+                    key={message.id}
+                    message={message}
+                    canRegenerate={message.id === lastAssistantId && message.status !== "streaming"}
+                    onRegenerate={message.id === lastAssistantId ? () => void regenerate(message.id) : undefined}
+                    onDiscard={message.status === "error" ? () => discardError(message.id) : undefined}
+                  />
+                ))}
               </div>
-            </ConversationEmptyState>
-          ) : messages.map((message) => (
-            <Message key={message.id} from={message.role} className="max-w-full">
-              <MessageContent className={cn("text-[15px] leading-7", message.role === "assistant" && "w-full") }>
-                {message.role === "assistant" && (message.status === "streaming" || message.reasoning) ? (
-                  <Reasoning isStreaming={message.status === "streaming"} defaultOpen={message.status === "streaming"}>
-                    <ReasoningTrigger getThinkingMessage={(isStreaming, duration) => (
-                      <span>{isStreaming ? "正在思考" : duration ? `思考了 ${duration} 秒` : "思考过程"}</span>
-                    )} />
-                    <ReasoningContent>{message.reasoning || `正在按「${message.reasoningLabel ?? "自动思考"}」生成思考过程…`}</ReasoningContent>
-                  </Reasoning>
-                ) : null}
-                {message.content ? (
-                  <MessageResponse
-                    isAnimating={message.status === "streaming"}
-                    className="chat-markdown"
-                  >
-                    {message.content}
-                  </MessageResponse>
-                ) : null}
-                {message.status === "error" ? (
-                  <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm leading-5 text-red-700">
-                    <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                    <span>{message.error}</span>
-                  </div>
-                ) : null}
-              </MessageContent>
-              {message.role === "assistant" ? (
-                <div className="flex items-center justify-between gap-3">
-                  <p className="truncate text-[11px] text-[#999]">{message.model} · {message.interfaceLabel ?? "Responses"} · {message.routeLabel} · {message.reasoningLabel}</p>
-                  <MessageActions className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-                    {message.id === lastAssistantId ? (
-                      <MessageAction tooltip="重新生成" onClick={() => void regenerate(message.id)} disabled={status === "submitted" || status === "streaming"}>
-                        <RotateCcw />
-                      </MessageAction>
-                    ) : null}
-                    {message.content ? <MessageAction tooltip="复制回答" onClick={() => void copyToClipboard(message.content)}><Copy /></MessageAction> : null}
-                  </MessageActions>
-                </div>
-              ) : null}
-            </Message>
-          ))}
-        </ConversationContent>
-        <ConversationScrollButton className="bottom-44" />
-      </Conversation>
-
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-white via-white/95 to-transparent px-3 pb-3 pt-10 sm:px-6 sm:pb-5 sm:pt-12">
-        <div className="pointer-events-auto mx-auto w-full max-w-4xl">
-          <PromptInput onSubmit={submit} className="rounded-[26px] border-black/10 bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] has-[[data-slot=input-group-control]:focus-visible]:ring-0 focus-within:border-black/20 focus-within:shadow-[0_12px_38px_rgba(0,0,0,0.10),0_1px_2px_rgba(0,0,0,0.05)]">
-            <PromptInputBody>
-              <PromptInputTextarea placeholder={model ? `询问 ${model}` : "正在加载模型…"} disabled={!model || status === "submitted" || status === "streaming"}
-                className="min-h-[68px] max-h-[200px] resize-none px-5.5 pt-4 pb-1.5 text-base leading-7 placeholder:text-[#9a9a9a]" />
-            </PromptInputBody>
-            <PromptInputFooter className="px-3 pb-2.5 pt-0">
-              <PromptInputTools className="min-w-0">
-                <span className="truncate px-1 text-xs text-[#8a8a8a]">{routeLabel}</span>
-              </PromptInputTools>
-              <div className="flex min-w-0 items-center gap-2">
-                <ComposerSettingsMenu
-                  models={options?.models ?? []}
-                  model={model}
-                  onModelChange={setModel}
-                  interfaceType={interfaceType}
-                  onInterfaceTypeChange={setInterfaceType}
-                  reasoning={reasoning}
-                  onReasoningChange={setReasoning}
-                  route={effectiveRoute}
-                  onRouteChange={setRoute}
-                  pools={compatiblePools}
-                  accounts={compatibleAccounts}
-                  routeLabel={routeLabel}
-                />
-                <PromptInputSubmit status={status === "ready" ? undefined : status} onStop={stop} disabled={!model || (!messages.length && !options)}
-                  className="size-9 rounded-full bg-[#171b1f] text-white shadow-sm transition-[background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-[#2b3035] active:scale-[0.96]">
-                  {status === "ready" ? <ArrowUp className="size-5" /> : undefined}
-                </PromptInputSubmit>
-              </div>
-            </PromptInputFooter>
-          </PromptInput>
-          <p className="mt-2 text-center text-[11px] text-[#999]">AI 可能会犯错，请核对重要信息</p>
+            )}
+          </div>
         </div>
+
+        <Composer
+          options={options}
+          model={model}
+          onModelChange={setModel}
+          reasoning={reasoning}
+          onReasoningChange={setReasoning}
+          route={effectiveRoute}
+          onRouteChange={setRoute}
+          status={status}
+          onSend={submit}
+          onStop={stop}
+          queuedCount={queue.length}
+        />
+      </main>
+      <DetailsPanel open={detailsOpen} onClose={() => setDetailsOpen(false)} toolCalls={lastToolCalls} usage={usage} />
+    </div>
+  )
+}
+
+const EMPTY_PROMPTS = [
+  { title: "接入新模型池", desc: "为网关添加一个上游 provider", icon: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" },
+  { title: "排查请求失败", desc: "定位一条请求的报错根因", icon: "M11 11m-7 0a7 7 0 1 0 14 0a7 7 0 1 0-14 0M21 21l-4.3-4.3" },
+  { title: "对比出口差异", desc: "chat 与 responses 入口行为", icon: "M8 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-1M12 3v6M9 6h6" },
+  { title: "写路由测试", desc: "为池路由策略补单元测试", icon: "M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4m0-4h18" },
+]
+
+function EmptyState({ onPick, disabled }: { onPick: (text: string) => void; disabled: boolean }) {
+  return (
+    <div className="flex flex-col items-center px-1 pb-1 pt-2 text-center">
+      <span className="mb-4 grid size-12 place-items-center rounded-[14px] bg-[var(--chat-bubble-bg)]"><FusionMark className="size-6" /></span>
+      <h2 className="text-[17px] font-bold tracking-[-.01em]">今天想做什么？</h2>
+      <p className="mb-5 mt-1.5 max-w-[380px] text-[12.5px] leading-[1.55] text-[var(--chat-label-tertiary)]">Fusion Router 聚合多个模型池，统一 OpenAI 与 Anthropic 兼容出口。选择一个任务开始。</p>
+      <div className="grid w-full grid-cols-2 gap-2.5">
+        {EMPTY_PROMPTS.map((prompt) => (
+          <button key={prompt.title} type="button" disabled={disabled} onClick={() => onPick(prompt.desc)} className="rounded-xl border border-[var(--chat-border-l1)] bg-white px-[13px] py-3 text-left text-[12.5px] leading-[1.45] text-[var(--chat-label-secondary)] transition-[border-color,background] hover:border-[var(--chat-accent)] hover:bg-[var(--chat-accent-soft)] disabled:opacity-50">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mb-2 size-3.5 text-[var(--chat-label-caption)]"><path d={prompt.icon} /></svg>
+            <span className="block text-[12.5px] font-semibold text-[var(--chat-label-primary)]">{prompt.title}</span>
+            {prompt.desc}
+          </button>
+        ))}
       </div>
     </div>
   )
 }
 
-function ComposerSettingsMenu({ models, model, onModelChange, interfaceType, onInterfaceTypeChange, reasoning, onReasoningChange, route, onRouteChange, pools, accounts, routeLabel }: {
-  models: string[]
-  model: string
-  onModelChange: (value: string) => void
-  interfaceType: ChatInterface
-  onInterfaceTypeChange: (value: ChatInterface) => void
-  reasoning: string
-  onReasoningChange: (value: (typeof reasoningOptions)[number]["value"]) => void
-  route: string
-  onRouteChange: (value: string) => void
-  pools: ChatOptions["pools"]
-  accounts: ChatOptions["accounts"]
-  routeLabel: string
-}) {
-  const selectedReasoning = reasoningOptions.find((item) => item.value === reasoning) ?? reasoningOptions[0]
-  return <DropdownMenu>
-    <DropdownMenuTrigger asChild>
-      <PromptInputButton tooltip="模型与调用设置" className="h-9 max-w-[min(58vw,320px)] rounded-full bg-[#f3f3f3] px-3 text-sm font-normal text-[#292929] transition-[background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-[#ebebeb] active:scale-[0.98]">
-        <span className="truncate">{model || "选择模型"}</span>
-        <span className="shrink-0 text-[#8a8a8a]">{selectedReasoning.label.replace("思考", "")}</span>
-        <ChevronDown className="size-4 shrink-0 text-[#8a8a8a]" />
-      </PromptInputButton>
-    </DropdownMenuTrigger>
-    <DropdownMenuContent align="end" sideOffset={8} className="w-[min(280px,calc(100vw-1.5rem))] rounded-[14px] p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.12)]">
-      <DropdownMenuSub>
-        <DropdownMenuSubTrigger className="h-10 rounded-[10px] px-2.5 text-sm font-medium"><span>接口类型</span><span className="ml-auto text-sm font-normal text-muted-foreground">{interfaceType === "chat" ? "Chat" : "Responses"}</span></DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="w-64 rounded-xl p-1">
-          <DropdownMenuItem onSelect={() => onInterfaceTypeChange("chat")} className="min-h-10 justify-between rounded-lg"><span><span className="block text-sm">Chat</span><span className="text-xs text-muted-foreground">兼容性更好，默认使用</span></span>{interfaceType === "chat" ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => onInterfaceTypeChange("responses")} className="min-h-10 justify-between rounded-lg"><span><span className="block text-sm">Responses</span><span className="text-xs text-muted-foreground">使用 Responses 原生能力</span></span>{interfaceType === "responses" ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-      <DropdownMenuSub>
-        <DropdownMenuSubTrigger className="h-10 rounded-[10px] px-2.5 text-sm font-medium"><span>模型</span><span className="ml-auto max-w-32 truncate font-normal text-muted-foreground">{model || "未选择"}</span></DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="max-h-[340px] w-[min(280px,calc(100vw-1.5rem))] overflow-y-auto rounded-xl p-1">
-          {models.map((item) => <DropdownMenuItem key={item} onSelect={() => onModelChange(item)} className="min-h-8 justify-between rounded-lg font-mono text-xs"><span className="truncate">{item}</span>{item === model ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}
-          {!models.length ? <p className="px-3 py-5 text-center text-xs text-muted-foreground">没有可用模型</p> : null}
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-      <DropdownMenuSub>
-        <DropdownMenuSubTrigger className="h-10 rounded-[10px] px-2.5 text-sm font-medium"><span>推理强度</span><span className="ml-auto text-sm font-normal text-muted-foreground">{selectedReasoning.label}</span></DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="w-60 rounded-xl p-1">
-          {reasoningOptions.map((item) => <DropdownMenuItem key={item.value} onSelect={() => onReasoningChange(item.value)} className="min-h-10 justify-between rounded-lg"><span><span className="block text-sm">{item.label}</span><span className="text-xs text-muted-foreground">{item.detail}</span></span>{item.value === reasoning ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-      <DropdownMenuSub>
-        <DropdownMenuSubTrigger className="h-10 rounded-[10px] px-2.5 text-sm font-medium"><span>调用账号</span><span className="ml-auto max-w-28 truncate text-sm font-normal text-muted-foreground">{routeLabel}</span></DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="max-h-[360px] w-64 overflow-y-auto rounded-xl p-1">
-          <DropdownMenuItem onSelect={() => onRouteChange("auto")} className="min-h-10 justify-between rounded-lg"><span><span className="block">自动调度</span><span className="text-xs text-muted-foreground">在所有兼容账号中智能切换</span></span>{route === "auto" ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>
-          {pools.length ? <><DropdownMenuSeparator /><DropdownMenuLabel>指定号池</DropdownMenuLabel>{pools.map((pool) => <DropdownMenuItem key={pool.type} onSelect={() => onRouteChange(`pool:${pool.type}`)} className="min-h-10 justify-between rounded-lg"><span><span className="block">{pool.label}</span><span className="text-xs text-muted-foreground">{pool.readyAccounts} 个可用账号</span></span>{route === `pool:${pool.type}` ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}</> : null}
-          {accounts.length ? <><DropdownMenuSeparator /><DropdownMenuLabel>指定账号</DropdownMenuLabel>{accounts.map((account) => <DropdownMenuItem key={account.id} onSelect={() => onRouteChange(`account:${account.id}`)} className="min-h-10 justify-between rounded-lg"><span className="min-w-0"><span className="block truncate">{account.name}</span><span className="block truncate text-xs text-muted-foreground">{(account.poolLabel?.startsWith("custom:") ? "自定义 Provider" : account.poolLabel) || "—"}{account.email ? ` · ${account.email}` : ""}</span></span>{route === `account:${account.id}` ? <Check className="text-[#10a37f]" /> : null}</DropdownMenuItem>)}</> : null}
-          {!pools.length ? <p className="px-2 py-3 text-xs text-muted-foreground">当前模型没有兼容的可用号池</p> : null}
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-    </DropdownMenuContent>
-  </DropdownMenu>
-}
