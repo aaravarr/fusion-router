@@ -328,12 +328,12 @@ html { scroll-behavior: smooth; }
 
 /* logo mark */
 .landing .logo-mark {
-  width: 30px; height: 30px; border-radius: 8px; background: var(--landing-accent); flex: none;
+  width: 30px; height: 30px; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
 }
-.landing .logo-mark svg { width: 18px; height: 18px; }
-.landing .logo-mark-sm { width: 24px; height: 24px; border-radius: 7px; }
-.landing .logo-mark-sm svg { width: 14px; height: 14px; }
+.landing .logo-mark svg { width: 26px; height: 26px; }
+.landing .logo-mark-sm { width: 24px; height: 24px; }
+.landing .logo-mark-sm svg { width: 20px; height: 20px; }
 
 /* hero */
 .landing .hero { position: relative; padding: 56px 0; min-height: min(700px, calc(100dvh - 64px)); display: flex; flex-direction: column; justify-content: center; overflow: hidden; }

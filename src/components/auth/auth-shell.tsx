@@ -29,5 +29,17 @@ export function AuthShell({ title, description, children, eyebrow }: { title: st
 }
 
 export function Brand() {
-  return <div className="flex items-center gap-2.5" aria-label="Provider Gateway Console"><span className="grid size-7 place-items-center rounded-md bg-[#171717] text-[11px] font-semibold text-white">P</span><span className="text-sm font-semibold tracking-[-0.025em]">Provider Gateway</span></div>;
+  return (
+    <div className="flex items-center gap-2.5" aria-label="Fusion Router">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" aria-hidden="true" className="size-7 shrink-0">
+        <path d="M32 8.5 L52.4 20.3 L52.4 43.7 L32 55.5 L11.6 43.7 L11.6 20.3 Z" stroke="#2563EB" strokeWidth="6" strokeLinejoin="round" />
+        <path d="M32 32 L32 8.5 M32 32 L52.4 43.7 M32 32 L11.6 43.7" stroke="#2563EB" strokeWidth="6" strokeLinecap="round" />
+        <circle cx="32" cy="32" r="7" fill="#2563EB" />
+        <circle cx="32" cy="8.5" r="4.5" fill="#2563EB" />
+        <circle cx="52.4" cy="43.7" r="4.5" fill="#2563EB" />
+        <circle cx="11.6" cy="43.7" r="4.5" fill="#2563EB" />
+      </svg>
+      <span className="text-sm font-semibold tracking-[-0.025em]">Fusion Router</span>
+    </div>
+  );
 }

@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Provider Gateway Console",
-    template: "%s | Provider Gateway Console",
+    default: "Fusion Router",
+    template: "%s | Fusion Router",
   },
   description: "多 Provider 账号池、额度、导入任务与智能路由管理控制台",
 };

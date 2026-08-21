@@ -8,15 +8,13 @@ export function LogoMark({
   const cls = size === "sm" ? "logo-mark logo-mark-sm" : "logo-mark";
   return (
     <span className={className ? `${cls} ${className}` : cls} aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none">
-        <rect width="24" height="24" rx="6" fill="#2563EB" />
-        <circle cx="12" cy="12" r="2.1" fill="#fff" />
-        <path
-          d="M12 12 L4.6 5.8 M12 12 L4.6 18.2 M12 12 L19.4 12"
-          stroke="#fff"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
+      <svg viewBox="0 0 64 64" fill="none">
+        <path d="M32 8.5 L52.4 20.3 L52.4 43.7 L32 55.5 L11.6 43.7 L11.6 20.3 Z" stroke="#2563EB" strokeWidth="6" strokeLinejoin="round" />
+        <path d="M32 32 L32 8.5 M32 32 L52.4 43.7 M32 32 L11.6 43.7" stroke="#2563EB" strokeWidth="6" strokeLinecap="round" />
+        <circle cx="32" cy="32" r="7" fill="#2563EB" />
+        <circle cx="32" cy="8.5" r="4.5" fill="#2563EB" />
+        <circle cx="52.4" cy="43.7" r="4.5" fill="#2563EB" />
+        <circle cx="11.6" cy="43.7" r="4.5" fill="#2563EB" />
       </svg>
     </span>
   );
