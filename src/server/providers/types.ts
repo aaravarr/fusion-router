@@ -45,6 +45,8 @@ export interface QuotaWindow {
   unit?: string | null
   /** 附加的钱包余额；仅当该窗口同时携带账户余额时存在。 */
   wallet?: QuotaWallet | null
+  /** 附加的结构化信息（如订阅周期、会员档位）；随窗口原样透传给管理端展示。 */
+  extra?: Record<string, unknown> | null
 }
 
 // Credential

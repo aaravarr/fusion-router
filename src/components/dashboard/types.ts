@@ -25,6 +25,8 @@ export interface QuotaWindow {
   remainingValue?: number | null;
   unit?: string | null;
   wallet?: QuotaWallet | null;
+  /** 附加结构化信息（订阅周期、会员档位等），来自上游 billing/summary。 */
+  extra?: Record<string, unknown> | null;
 }
 
 export interface Account {

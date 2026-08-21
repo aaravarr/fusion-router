@@ -86,6 +86,8 @@ export async function GET(request: Request) {
         limitValue: window.limitValue,
         remainingValue: window.remainingValue,
         unit: window.unit,
+        ...(window.wallet ? { wallet: window.wallet } : {}),
+        ...(window.extra ? { extra: window.extra } : {}),
       })),
     }
   })

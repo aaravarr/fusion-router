@@ -15,6 +15,28 @@ export function getPoolQuotaKinds(poolType?: string | null) {
   return POOL_TYPE_META[poolType || "opencode-go"]?.quotaKinds ?? ["fiveHour", "weekly", "monthly"];
 }
 
+export type ListWindowKey = "fiveHour" | "weekly" | "monthly" | "rolling24h";
+
+export interface ListWindowColumn {
+  key: ListWindowKey;
+  /** 单元格短标签，如 5H / WEEK / MONTH / 24H。 */
+  label: string;
+  /** 表头中文标签，如 5 小时 / 周 / 月度窗口 / 滚动 24 小时。 */
+  header: string;
+}
+
+/**
+ * 账号列表页“主/次额度窗口”两列的渲染口径：按号池实际支持的 quotaKinds 决定，
+ * 不再照抄 opencode-go 的 5H/WEEK 硬编码。次窗口为 null 时该列显示“—”。
+ * custom: 池由页面单独按余额/周期渲染，不经过本函数。
+ */
+export function listWindowColumns(poolType?: string | null): [ListWindowColumn | null, ListWindowColumn | null] {
+  const type = poolType || "opencode-go";
+  if (type === "xai-grok") return [{ key: "rolling24h", label: "24H", header: "滚动 24 小时" }, null];
+  if (type === "open-design-go") return [{ key: "monthly", label: "MONTH", header: "月度窗口" }, null];
+  return [{ key: "fiveHour", label: "5H", header: "5 小时" }, { key: "weekly", label: "WEEK", header: "周" }];
+}
+
 /** Slugify a provider display name into a stable unique key, e.g. "DeepSeek Official" -> "deepseek-official". */
 export function slugifyName(name: string): string {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");

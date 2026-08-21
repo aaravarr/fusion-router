@@ -39,7 +39,7 @@ import {
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, PaginationBar, StatsStrip, formatDate } from "./page-kit";
 import { QuotaForecastPanel } from "./quota-forecast-panel";
 import { InviteRewardsSection } from "./invite-rewards";
-import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
+import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, listWindowColumns, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
 import type { Account, QuotaWallet } from "./types";
@@ -617,8 +617,8 @@ export function AccountsPage() {
                 <TableHead className="w-[230px] px-4 text-xs text-muted-foreground">账号</TableHead>
                 <TableHead className="w-[110px] text-xs text-muted-foreground">号池</TableHead>
                 <TableHead className="w-[150px] text-xs text-muted-foreground">状态</TableHead>
-                <TableHead className="text-xs text-muted-foreground">{poolFilter === "xai-grok" ? "滚动 24 小时" : poolFilter.startsWith("custom:") ? "余额" : poolFilter === "all" ? "主额度窗口" : "5 小时"}</TableHead>
-                <TableHead className="text-xs text-muted-foreground">{poolFilter === "xai-grok" ? "其他窗口" : poolFilter.startsWith("custom:") ? "周期" : poolFilter === "all" ? "次额度窗口" : "周"}</TableHead>
+                <TableHead className="text-xs text-muted-foreground">{poolFilter.startsWith("custom:") ? "余额" : poolFilter === "all" ? "主额度窗口" : listWindowColumns(poolFilter)[0]?.header ?? "主额度窗口"}</TableHead>
+                <TableHead className="text-xs text-muted-foreground">{poolFilter.startsWith("custom:") ? "周期" : poolFilter === "all" ? "次额度窗口" : listWindowColumns(poolFilter)[1]?.header ?? "—"}</TableHead>
                 {showMonthly ? <TableHead className="text-xs text-muted-foreground">月</TableHead> : null}
                 <TableHead className="w-[150px] text-xs text-muted-foreground">订阅 / 凭据</TableHead>
                 <TableHead className="w-[130px] text-xs text-muted-foreground">最近同步</TableHead>
@@ -657,12 +657,16 @@ export function AccountsPage() {
                         <TableCell>{(() => { const quota = getQuota(account, "permanent") ?? getQuota(account, "fiveHour"); return quota ? <QuotaStatus label="余额" quota={quota} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>; })()}</TableCell>
                         <TableCell>{(() => { const quota = getQuota(account, "customPeriod") ?? getQuota(account, "weekly"); return quota ? <QuotaStatus label="周期" quota={quota} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>; })()}</TableCell>
                       </>
-                    ) : (
-                      <>
-                        <TableCell><QuotaStatus label="5H" quota={getQuota(account, "fiveHour")} /></TableCell>
-                        <TableCell><QuotaStatus label="WEEK" quota={getQuota(account, "weekly")} /></TableCell>
-                      </>
-                    )}
+                    ) : (() => {
+                      // 按号池实际 quotaKinds 渲染主/次窗口，open-design-go 只展示 MONTHLY。
+                      const [primary, secondary] = listWindowColumns(account.poolType);
+                      return (
+                        <>
+                          <TableCell>{primary ? <QuotaStatus label={primary.label} quota={getQuota(account, primary.key)} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>}</TableCell>
+                          <TableCell>{secondary ? <QuotaStatus label={secondary.label} quota={getQuota(account, secondary.key)} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>}</TableCell>
+                        </>
+                      );
+                    })()}
                     {showMonthly ? (
                       <TableCell>{isGo ? <QuotaStatus label="MONTH" quota={getQuota(account, "monthly")} /> : (account.poolType === "xai-grok" ? <span className="font-mono text-[10px] text-muted-foreground">滚动</span> : <span className="font-mono text-[10px] text-muted-foreground">—</span>)}</TableCell>
                     ) : null}
@@ -837,9 +841,11 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                   {quotaKinds.includes("permanent") && getQuota(account, "permanent") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="永久余额" quota={getQuota(account, "permanent")} variant="card" /></div> : null}
                   {quotaKinds.includes("customPeriod") && getQuota(account, "customPeriod") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="自定义周期" quota={getQuota(account, "customPeriod")} variant="card" /></div> : null}
                   {poolOf(account) === "kimi-code" ? (() => { const wallet = getQuota(account, "weekly")?.wallet; return wallet ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><WalletCard wallet={wallet} /></div> : null; })() : null}
+                  {poolOf(account) === "open-design-go" ? (() => { const wallet = getQuota(account, "monthly")?.wallet; return wallet ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><WalletCard wallet={wallet} /></div> : null; })() : null}
                   {isCustomPool && !getQuota(account, "permanent") && !getQuota(account, "customPeriod") ? <div className="rounded-md border bg-[#fafafa] px-3.5 py-3 text-xs leading-5 text-muted-foreground">尚未探测到余额，点击下方「立即同步」获取。</div> : null}
                 </div>
               </DetailSection>
+              {poolOf(account) === "open-design-go" ? <OpenDesignSubscriptionSection account={account} /> : null}
               {isGo ? (
                 <>
                   <DetailSection title="订阅与计费">
@@ -932,6 +938,34 @@ function WalletCard({ wallet }: { wallet: QuotaWallet }) {
 
 function DetailRow({ label, value, mono, title }: { label: string; value: string; mono?: boolean; title?: string }) {
   return <div className="grid gap-1 px-3 py-2.5 sm:grid-cols-[150px_minmax(0,1fr)]"><span className="text-xs text-muted-foreground">{label}</span><span className={`min-w-0 break-all text-sm sm:text-right ${mono ? "font-mono text-xs" : ""}`} title={title}>{value}</span></div>;
+}
+
+/** open-design-go 订阅与计费区块：数据来自 MONTHLY 窗口的 extra（上游 billing/summary）。 */
+function OpenDesignSubscriptionSection({ account }: { account: Account }) {
+  const extra = getQuota(account, "monthly")?.extra as Record<string, unknown> | undefined;
+  const str = (key: string): string | null => (typeof extra?.[key] === "string" && extra[key] ? (extra[key] as string) : null);
+  const num = (key: string): number | null => (typeof extra?.[key] === "number" && Number.isFinite(extra[key]) ? (extra[key] as number) : null);
+  const tier = str("membershipTier");
+  const subStatus = str("subscriptionStatus");
+  const start = str("subscriptionPeriodStart");
+  const end = str("subscriptionPeriodEnd");
+  const today = num("todayConsumedUsd");
+  const total = num("totalConsumedUsd");
+  const usageCount = num("usageCount");
+  const period = start && end ? `${formatDate(start)} ~ ${formatDate(end)}` : null;
+  return (
+    <DetailSection title="订阅与计费" description="来自上游 billing/summary；GO 为订阅无限量模型，消费金额仅作参考。">
+      <div className="divide-y rounded-md border">
+        <DetailRow label="会员档位" value={tier ? tier.toUpperCase() : "未返回"} mono />
+        <DetailRow label="订阅状态" value={subStatus ?? "未返回"} />
+        <DetailRow label="当前订阅周期" value={period ?? "未返回"} mono title={start && end ? `${start} ~ ${end}` : undefined} />
+        <DetailRow label="周期结束" value={end ? formatDate(end) : "未返回"} mono title={end ?? undefined} />
+        <DetailRow label="今日消费" value={today != null ? `$${today.toFixed(4)}` : "未返回"} mono />
+        <DetailRow label="累计消费" value={total != null ? `$${total.toFixed(4)}` : "未返回"} mono />
+        <DetailRow label="累计调用次数" value={usageCount != null ? usageCount.toLocaleString("zh-CN") : "未返回"} mono />
+      </div>
+    </DetailSection>
+  );
 }
 
 function Sub2ApiImportDialog({ open, poolType, onOpenChange, onCreated }: { open: boolean; poolType: string; onOpenChange: (open: boolean) => void; onCreated: () => void }) {

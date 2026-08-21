@@ -6,6 +6,7 @@ import {
   OpenDesignGoProvider,
   normalizeOpenDesignGoBaseUrl,
   normalizeOpenDesignGoApiUrl,
+  parseOpenDesignBillingSummary,
   OPEN_DESIGN_GO_DEFAULT_MODELS,
 } from "./open-design-go"
 
@@ -467,5 +468,138 @@ describe("open-design-go 双通道模型拉取与 isAccountReady 放宽", () => 
       linkUrl: "https://amr-link.open-design.ai",
     } as unknown as ReturnType<typeof provider["readCredentialData"]>)
     expect(provider.isAccountReady(fakeNotReady)).toBe(false)
+  })
+})
+
+describe("open-design-go parseOpenDesignBillingSummary", () => {
+  const sampleBody = JSON.stringify({
+    balanceUsd: "0.5000",
+    creditsPerUsd: 10000,
+    balances: { subscriptionCredits: "0", rechargeCredits: "5000", totalAvailableCredits: "5000" },
+    membershipTier: "go",
+    billingInterval: "monthly",
+    subscriptionStatus: "active",
+    subscriptionCurrentPeriodStart: "2026-08-21T02:29:36.000Z",
+    subscriptionCurrentPeriodEnd: "2026-09-21T02:29:36.000Z",
+    totalRechargedUsd: "0.5000",
+    totalConsumedUsd: "0.0000",
+    todayConsumedUsd: "0.0000",
+    rechargeCount: 1,
+    usageCount: 9,
+    updatedAt: "2026-09-19T00:00:00.000Z",
+  })
+
+  it("解析实测样例：MONTHLY 窗口 + 订阅周期 resetAt + wallet + extra", () => {
+    const nowMs = Date.parse("2026-09-20T02:29:36.000Z")
+    const win = parseOpenDesignBillingSummary(sampleBody, nowMs)[0]
+    expect(win).toBeTruthy()
+    expect(win.kind).toBe("MONTHLY")
+    expect(win.usagePercent).toBe(0) // 消费 0 / 充值 0.5
+    expect(win.resetAt).toBe("2026-09-21T02:29:36.000Z")
+    expect(win.resetInSeconds).toBe(86400)
+    expect(win.source).toBe("API_PROBE")
+    expect(win.wallet).toEqual({
+      balanceCents: 50,
+      totalCents: 50,
+      monthlyChargeLimitEnabled: false,
+      monthlyChargeLimitCents: 0,
+      monthlyUsedCents: 0,
+      currency: "USD",
+    })
+    expect(win.extra).toMatchObject({
+      membershipTier: "go",
+      subscriptionStatus: "active",
+      billingInterval: "monthly",
+      subscriptionPeriodStart: "2026-08-21T02:29:36.000Z",
+      subscriptionPeriodEnd: "2026-09-21T02:29:36.000Z",
+      todayConsumedUsd: 0,
+      totalConsumedUsd: 0,
+      totalRechargedUsd: 0.5,
+      usageCount: 9,
+      rechargeCount: 1,
+    })
+  })
+
+  it("usagePercent 按累计消费/充值总额计算", () => {
+    const body = JSON.stringify({ balanceUsd: "0.2000", totalRechargedUsd: "0.5000", totalConsumedUsd: "0.3000" })
+    const win = parseOpenDesignBillingSummary(body)[0]
+    expect(win.usagePercent).toBe(60)
+    expect(win.wallet?.monthlyUsedCents).toBe(30)
+    expect(win.wallet?.balanceCents).toBe(20)
+  })
+
+  it("无充值记录时用 消费/(消费+余额) 兜底", () => {
+    const body = JSON.stringify({ balanceUsd: "0.5000", totalRechargedUsd: "0.0000", totalConsumedUsd: "0.5000" })
+    const win = parseOpenDesignBillingSummary(body)[0]
+    expect(win.usagePercent).toBe(50)
+  })
+
+  it("缺订阅周期时 resetAt/resetInSeconds 为 null", () => {
+    const body = JSON.stringify({ balanceUsd: "1.0000" })
+    const win = parseOpenDesignBillingSummary(body)[0]
+    expect(win.resetAt).toBeNull()
+    expect(win.resetInSeconds).toBeNull()
+    expect(win.usagePercent).toBe(0)
+  })
+
+  it("非法 JSON 或缺 balanceUsd 返回空数组", () => {
+    expect(parseOpenDesignBillingSummary("not-json")).toEqual([])
+    expect(parseOpenDesignBillingSummary(JSON.stringify({ totalConsumedUsd: "1" }))).toEqual([])
+  })
+})
+
+describe("open-design-go refreshQuota（billing/summary 数据源）", () => {
+  it("GET billing/summary 并构造 MONTHLY 窗口", async () => {
+    const { vi } = await import("vitest")
+    const apiFetchModule = await import("../api-fetch")
+    let calledUrl: string | null = null
+    let calledAuth: string | null = null
+    const spy = vi.spyOn(apiFetchModule, "apiFetch").mockImplementation(async (url: string, init?: RequestInit) => {
+      calledUrl = url
+      const headers = init?.headers as Record<string, string>
+      calledAuth = headers?.authorization ?? null
+      return new Response(JSON.stringify({
+        balanceUsd: "0.5000",
+        membershipTier: "go",
+        subscriptionStatus: "active",
+        subscriptionCurrentPeriodEnd: "2026-09-21T02:29:36.000Z",
+        totalRechargedUsd: "0.5000",
+        totalConsumedUsd: "0.0000",
+        usageCount: 9,
+      }), { status: 200 })
+    })
+    try {
+      const provider = new OpenDesignGoProvider()
+      ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+        runtimeKey: "rk-1",
+        controlKey: "ck-1",
+        apiUrl: "https://amr-api.open-design.ai",
+      })
+      const fakeAccount = { id: "quota-1", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+      const windows = await provider.refreshQuota("quota-1", fakeAccount)
+      expect(calledUrl).toBe("https://amr-api.open-design.ai/api/v1/billing/summary")
+      expect(calledAuth).toBe("Bearer ck-1")
+      expect(windows).toHaveLength(1)
+      expect(windows[0]).toMatchObject({ kind: "MONTHLY", resetAt: "2026-09-21T02:29:36.000Z" })
+      expect(windows[0].extra?.membershipTier).toBe("go")
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it("缺 controlKey 或非 2xx 时返回空数组", async () => {
+    const { vi } = await import("vitest")
+    const apiFetchModule = await import("../api-fetch")
+    const spy = vi.spyOn(apiFetchModule, "apiFetch").mockResolvedValue(new Response("unauthorized", { status: 401 }))
+    try {
+      const provider = new OpenDesignGoProvider()
+      const fakeAccount = { id: "quota-2", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+      ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({ runtimeKey: "rk-2" })
+      expect(await provider.refreshQuota("quota-2", fakeAccount)).toEqual([])
+      ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({ runtimeKey: "rk-2", controlKey: "ck-2" })
+      expect(await provider.refreshQuota("quota-2", fakeAccount)).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

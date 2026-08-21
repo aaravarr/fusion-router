@@ -324,11 +324,13 @@ export class AccountRepository {
     limitValue: number | null
     remainingValue: number | null
     unit: string | null
+    wallet: Record<string, unknown> | null
+    extra: Record<string, unknown> | null
   }> {
     if (accountIds && accountIds.length === 0) return []
     if (accountIds && accountIds.length > 0) {
       const placeholders = accountIds.map(() => "?").join(",")
-      const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit
+      const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit,wallet_json,extra_json
         FROM quota_windows WHERE owner_user_id=? AND account_id IN (${placeholders}) ORDER BY last_observed_at DESC`)
         .all(this.ownerUserId, ...accountIds) as Row[]
       return rows.map((row) => ({
@@ -341,9 +343,11 @@ export class AccountRepository {
         limitValue: row.limit_value == null ? null : Number(row.limit_value),
         remainingValue: row.remaining_value == null ? null : Number(row.remaining_value),
         unit: nullableString(row.unit),
+        wallet: row.wallet_json ? JSON.parse(String(row.wallet_json)) as Record<string, unknown> : null,
+        extra: row.extra_json ? JSON.parse(String(row.extra_json)) as Record<string, unknown> : null,
       }))
     }
-    const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit
+    const rows = this.db.prepare(`SELECT account_id,kind,usage_percent,reset_at,source,last_observed_at,limit_value,remaining_value,unit,wallet_json,extra_json
       FROM quota_windows WHERE owner_user_id=? ORDER BY last_observed_at DESC`).all(this.ownerUserId) as Row[]
     return rows.map((row) => ({
       accountId: String(row.account_id),
@@ -355,6 +359,8 @@ export class AccountRepository {
       limitValue: row.limit_value == null ? null : Number(row.limit_value),
       remainingValue: row.remaining_value == null ? null : Number(row.remaining_value),
       unit: nullableString(row.unit),
+      wallet: row.wallet_json ? JSON.parse(String(row.wallet_json)) as Record<string, unknown> : null,
+      extra: row.extra_json ? JSON.parse(String(row.extra_json)) as Record<string, unknown> : null,
     }))
   }
 

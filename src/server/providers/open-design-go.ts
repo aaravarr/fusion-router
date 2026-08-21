@@ -57,6 +57,81 @@ export function normalizeOpenDesignGoApiUrl(apiUrl?: string | null): string {
   return raw || DEFAULT_API_URL
 }
 
+/** GET {apiUrl}/api/v1/billing/summary 的响应结构（字段均为上游实测）。 */
+export interface OpenDesignBillingSummary {
+  balanceUsd?: string | number
+  creditsPerUsd?: number
+  balances?: { subscriptionCredits?: string; rechargeCredits?: string; totalAvailableCredits?: string }
+  membershipTier?: string
+  billingInterval?: string
+  subscriptionStatus?: string
+  subscriptionCurrentPeriodStart?: string
+  subscriptionCurrentPeriodEnd?: string
+  totalRechargedUsd?: string | number
+  totalConsumedUsd?: string | number
+  todayConsumedUsd?: string | number
+  rechargeCount?: number
+  usageCount?: number
+  updatedAt?: string
+}
+
+function toNumber(value: string | number | undefined): number {
+  if (value == null) return Number.NaN
+  return typeof value === "number" ? value : Number(value)
+}
+
+/**
+ * 把 billing/summary 响应解析为 MONTHLY 额度窗口。
+ * GO 为无限量订阅模型（不按 token 计费），usagePercent 仅作“累计消费 / 充值总额”的
+ * 参考口径；核心展示是订阅周期（resetAt=subscriptionCurrentPeriodEnd）与钱包余额。
+ * membershipTier / subscriptionStatus / todayConsumedUsd / usageCount 等放进 extra
+ * 供管理端详情页展示。
+ */
+export function parseOpenDesignBillingSummary(body: string, nowMs: number = Date.now()): QuotaWindow[] {
+  let parsed: OpenDesignBillingSummary
+  try {
+    parsed = JSON.parse(body) as OpenDesignBillingSummary
+  } catch { return [] }
+  const balanceUsd = toNumber(parsed.balanceUsd)
+  if (!Number.isFinite(balanceUsd)) return []
+  const totalConsumedUsd = toNumber(parsed.totalConsumedUsd)
+  const totalRechargedUsd = toNumber(parsed.totalRechargedUsd)
+  const todayConsumedUsd = toNumber(parsed.todayConsumedUsd)
+  const consumed = Number.isFinite(totalConsumedUsd) ? totalConsumedUsd : 0
+  const recharged = Number.isFinite(totalRechargedUsd) ? totalRechargedUsd : 0
+  // 消耗占比：优先“累计消费 / 充值总额”；无充值记录时用“消费 / (消费+余额)”兜底。
+  const denominator = recharged > 0 ? recharged : consumed + balanceUsd
+  const usagePercent = denominator > 0 ? Math.round((consumed / denominator) * 10000) / 100 : 0
+  const balanceCents = Math.max(0, Math.round(balanceUsd * 100))
+  const totalCents = Math.max(0, Math.round((recharged > 0 ? recharged : consumed + balanceUsd) * 100))
+  const periodEndMs = parsed.subscriptionCurrentPeriodEnd ? Date.parse(parsed.subscriptionCurrentPeriodEnd) : Number.NaN
+  const resetAt = Number.isNaN(periodEndMs) ? null : parsed.subscriptionCurrentPeriodEnd ?? null
+  const resetInSeconds = Number.isNaN(periodEndMs) ? null : Math.max(0, Math.ceil((periodEndMs - nowMs) / 1000))
+  const extra: Record<string, unknown> = {}
+  if (parsed.membershipTier != null) extra.membershipTier = parsed.membershipTier
+  if (parsed.subscriptionStatus != null) extra.subscriptionStatus = parsed.subscriptionStatus
+  if (parsed.billingInterval != null) extra.billingInterval = parsed.billingInterval
+  if (parsed.subscriptionCurrentPeriodStart != null) extra.subscriptionPeriodStart = parsed.subscriptionCurrentPeriodStart
+  if (resetAt) extra.subscriptionPeriodEnd = resetAt
+  if (Number.isFinite(todayConsumedUsd)) extra.todayConsumedUsd = todayConsumedUsd
+  if (Number.isFinite(totalConsumedUsd)) extra.totalConsumedUsd = totalConsumedUsd
+  if (Number.isFinite(totalRechargedUsd)) extra.totalRechargedUsd = totalRechargedUsd
+  if (parsed.usageCount != null) extra.usageCount = parsed.usageCount
+  if (parsed.rechargeCount != null) extra.rechargeCount = parsed.rechargeCount
+  return [{
+    kind: "MONTHLY",
+    usagePercent,
+    limitValue: null,
+    remainingValue: null,
+    resetAt,
+    resetInSeconds,
+    lastObservedAt: new Date(nowMs).toISOString(),
+    source: "API_PROBE",
+    wallet: { balanceCents, totalCents, monthlyChargeLimitEnabled: false, monthlyChargeLimitCents: 0, monthlyUsedCents: Math.max(0, Math.round(consumed * 100)), currency: "USD" },
+    extra,
+  }]
+}
+
 function retryAfterSeconds(value: string | null): number | null {
   if (!value) return null
   const numeric = Number(value)
@@ -144,22 +219,14 @@ export class OpenDesignGoProvider implements Provider {
       const data = this.readCredentialData(account)
       if (!data?.controlKey) return []
       const apiUrl = normalizeOpenDesignGoApiUrl(data.apiUrl)
-      const resp = await apiFetch(`${apiUrl}/api/v1/wallet/balance`, {
+      const resp = await apiFetch(`${apiUrl}/api/v1/billing/summary`, {
         method: "GET",
         headers: { authorization: `Bearer ${data.controlKey}`, accept: "application/json" },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       const body = await resp.text()
       if (!resp.ok) return []
-      try {
-        const parsed = JSON.parse(body) as { balanceUsd?: number | string; balance?: number | string }
-        const raw = parsed.balanceUsd ?? parsed.balance
-        const balanceUsd = typeof raw === "string" ? Number(raw) : (raw as number | undefined)
-        if (!Number.isFinite(balanceUsd as number)) return []
-        const balanceCents = Math.round((balanceUsd as number) * 100)
-        const usagePercent = balanceCents <= 0 ? 100 : 0
-        return [{ kind: "MONTHLY", usagePercent, limitValue: null, remainingValue: null, resetAt: null, resetInSeconds: null, lastObservedAt: new Date().toISOString(), source: "API_PROBE", wallet: { balanceCents, totalCents: balanceCents, monthlyChargeLimitEnabled: false, monthlyChargeLimitCents: 0, monthlyUsedCents: 0, currency: "USD" } }]
-      } catch { return [] }
+      return parseOpenDesignBillingSummary(body)
     } catch { return [] }
   }
 
