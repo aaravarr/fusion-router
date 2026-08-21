@@ -1537,6 +1537,14 @@ function OpenDesignGoImportDialog({ open, onOpenChange, onCreated }: { open: boo
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [showManual, setShowManual] = useState(false);
+  const [activeTab, setActiveTab] = useState<"config" | "device">("config");
+  const [deviceLoading, setDeviceLoading] = useState(false);
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [deviceUserCode, setDeviceUserCode] = useState<string | null>(null);
+  const [deviceActivationUrl, setDeviceActivationUrl] = useState<string | null>(null);
+  const [deviceStatus, setDeviceStatus] = useState<"idle" | "waiting" | "success">("idle");
+  const [deviceSessionId, setDeviceSessionId] = useState<string | null>(null);
+  const devicePollRef = useRef<number | null>(null);
 
   function reset() {
     setConfigJson("");
@@ -1548,6 +1556,67 @@ function OpenDesignGoImportDialog({ open, onOpenChange, onCreated }: { open: boo
     setError(null);
     setSuccess(false);
     setShowManual(false);
+    if (devicePollRef.current) window.clearTimeout(devicePollRef.current);
+    devicePollRef.current = null;
+    setDeviceLoading(false);
+    setDeviceError(null);
+    setDeviceUserCode(null);
+    setDeviceActivationUrl(null);
+    setDeviceStatus("idle");
+    setDeviceSessionId(null);
+    setActiveTab("config");
+  }
+
+  async function startDeviceLogin() {
+    setDeviceLoading(true);
+    setDeviceError(null);
+    setDeviceStatus("idle");
+    setDeviceUserCode(null);
+    setDeviceActivationUrl(null);
+    try {
+      const response = await adminFetch("/api/admin/accounts/open-design-go/device/start", { method: "POST" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || "创建设备码失败");
+      setDeviceUserCode(payload.userCode);
+      setDeviceActivationUrl(payload.activationUrl || payload.verificationUriComplete);
+      setDeviceSessionId(payload.sessionId);
+      setDeviceStatus("waiting");
+      if (payload.activationUrl) window.open(payload.activationUrl, "_blank", "noopener,noreferrer");
+      const poll = async (id: string, intervalSec: number) => {
+        try {
+          const pollResp = await adminFetch("/api/admin/accounts/open-design-go/device/poll", {
+            method: "POST",
+            body: JSON.stringify({ sessionId: id }),
+          });
+          const pollPayload = await pollResp.json().catch(() => ({}));
+          if (pollPayload.status === "approved") {
+            setDeviceStatus("success");
+            onCreated();
+            window.setTimeout(() => {
+              reset();
+              onOpenChange(false);
+            }, 800);
+            return;
+          }
+          if (pollPayload.status === "denied") throw new Error(pollPayload.message || "授权被拒绝");
+          if (pollPayload.status === "expired") throw new Error("设备码已过期，请重试");
+          if (pollPayload.status === "invalid_secret") throw new Error("设备凭证失效");
+          if (pollPayload.error) throw new Error(pollPayload.error.message || "轮询失败");
+          const waitSec = Math.max(1, Number(pollPayload.pollIntervalSeconds || intervalSec || 2));
+          devicePollRef.current = window.setTimeout(() => void poll(id, waitSec), waitSec * 1000);
+        } catch (cause) {
+          setDeviceError(cause instanceof Error ? cause.message : "轮询失败");
+          setDeviceStatus("idle");
+        }
+      };
+      const interval = Math.max(1, Number(payload.pollIntervalSeconds || payload.interval || 2));
+      devicePollRef.current = window.setTimeout(() => void poll(payload.sessionId, interval), interval * 1000);
+    } catch (cause) {
+      setDeviceError(cause instanceof Error ? cause.message : "启动失败");
+      setDeviceStatus("idle");
+    } finally {
+      setDeviceLoading(false);
+    }
   }
 
   async function onSubmit() {
@@ -1605,11 +1674,16 @@ function OpenDesignGoImportDialog({ open, onOpenChange, onCreated }: { open: boo
       <DialogContent className="max-h-[85dvh] gap-0 overflow-hidden p-0 sm:max-w-lg">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle>导入 Open Design GO</DialogTitle>
-          <DialogDescription>通过 config.json 一键导入，或手动填写凭据。导入后自动验证并写入 Open Design GO 号池。</DialogDescription>
+          <DialogDescription>通过 config.json 一键导入、手动填写或设备码登录。导入后自动验证并写入 Open Design GO 号池。</DialogDescription>
         </DialogHeader>
-        <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">
-          <div className="space-y-2">
-            <Label htmlFor="odg-config-json" className="text-xs font-medium">config.json 全文（推荐）</Label>
+        <div className="flex gap-2 border-b px-5 py-2">
+          <Button variant={activeTab === "config" ? "secondary" : "ghost"} size="sm" className="h-7 text-xs" onClick={() => setActiveTab("config")}>粘贴 config.json</Button>
+          <Button variant={activeTab === "device" ? "secondary" : "ghost"} size="sm" className="h-7 text-xs" onClick={() => setActiveTab("device")}>设备码登录</Button>
+        </div>
+        {activeTab === "config" ? (
+          <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">
+            <div className="space-y-2">
+              <Label htmlFor="odg-config-json" className="text-xs font-medium">config.json 全文（推荐）</Label>
             <Textarea
               id="odg-config-json"
               value={configJson}
@@ -1652,12 +1726,55 @@ function OpenDesignGoImportDialog({ open, onOpenChange, onCreated }: { open: boo
               </div>
             </CollapsibleContent>
           </Collapsible>
-          {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
-          {success ? <div className="rounded-md border border-success/20 bg-success-soft px-3.5 py-2.5 text-xs text-success">导入成功，账号已写入 Open Design GO 号池。</div> : null}
-        </div>
+            {error ? <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3.5 py-2.5 text-xs text-destructive" role="alert">{error}</div> : null}
+            {success ? <div className="rounded-md border border-success/20 bg-success-soft px-3.5 py-2.5 text-xs text-success">导入成功，账号已写入 Open Design GO 号池。</div> : null}
+          </div>
+        ) : (
+          <div className="max-h-[calc(85dvh-160px)] space-y-4 overflow-y-auto px-5 py-6">
+            <div className="space-y-3 text-sm">
+              <p className="text-xs text-muted-foreground">在浏览器中打开授权页，确认设备码后自动完成导入。无需手动复制 config.json。</p>
+              {deviceLoading ? <p className="text-muted-foreground">正在申请设备码…</p> : null}
+              {deviceError ? <p className="text-destructive text-xs">{deviceError}</p> : null}
+              {deviceUserCode ? (
+                <div className="rounded-md border bg-muted/30 p-4">
+                  <p className="text-xs text-muted-foreground">用户码</p>
+                  <p className="mt-1 font-mono text-2xl tracking-[0.2em]">{deviceUserCode}</p>
+                  <div className="mt-3 flex gap-2">
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => copyToClipboard(deviceUserCode)}>复制用户码</Button>
+                    {deviceActivationUrl ? (
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => window.open(deviceActivationUrl, "_blank", "noopener,noreferrer")}>打开授权页</Button>
+                    ) : null}
+                    {deviceActivationUrl ? (
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => copyToClipboard(deviceActivationUrl)}>复制链接</Button>
+                    ) : null}
+                  </div>
+                  {deviceActivationUrl ? (
+                    <a className="mt-2 inline-block text-xs text-info underline break-all" href={deviceActivationUrl} target="_blank" rel="noreferrer">
+                      {deviceActivationUrl}
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
+              {deviceStatus === "waiting" ? <p className="text-muted-foreground text-xs">等待浏览器授权完成…</p> : null}
+              {deviceStatus === "success" ? <p className="text-success text-xs">登录成功，账号已导入。</p> : null}
+              {!deviceUserCode && !deviceLoading ? (
+                <Button onClick={() => void startDeviceLogin()} disabled={deviceLoading} className="w-full h-8 text-xs">获取设备码</Button>
+              ) : null}
+              {deviceUserCode && deviceStatus === "waiting" ? (
+                <p className="text-[11px] text-muted-foreground">已在新窗口打开授权页，请在 open-design.ai 完成登录并确认 userCode。</p>
+              ) : null}
+            </div>
+          </div>
+        )}
         <DialogFooter className="mb-0 border-t bg-[#fafafa] px-5 py-4">
-          <Button variant="outline" onClick={() => { reset(); onOpenChange(false); }} disabled={busy}>取消</Button>
-          <Button onClick={() => void onSubmit()} disabled={busy}>{busy ? "导入中…" : "验证并导入"}</Button>
+          {activeTab === "config" ? (
+            <>
+              <Button variant="outline" onClick={() => { reset(); onOpenChange(false); }} disabled={busy}>取消</Button>
+              <Button onClick={() => void onSubmit()} disabled={busy}>{busy ? "导入中…" : "验证并导入"}</Button>
+            </>
+          ) : (
+            <Button variant="outline" onClick={() => { reset(); onOpenChange(false); }}>关闭</Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
