@@ -38,6 +38,14 @@ yarn-error.log*
 # local runtime data
 /data/
 
+# design mockups & local session artifacts
+/design-mockups/
+/_docs/
+/hijack-report.md
+/site-extract*
+/_research_digest.txt
+/coding-agent-chat-ui-patterns.md
+
 # vercel
 .vercel
 
