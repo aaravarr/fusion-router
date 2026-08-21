@@ -62,10 +62,12 @@ export function AssistantMessage({
   message,
   canRegenerate,
   onRegenerate,
+  onDiscard,
 }: {
   message: ChatMessage
   canRegenerate?: boolean
   onRegenerate?: () => void
+  onDiscard?: () => void
 }) {
   const streaming = message.status === "streaming"
   const toolCalls = message.toolCalls ?? []
@@ -90,8 +92,19 @@ export function AssistantMessage({
           <div className="flex items-center gap-2">
             <span className="size-2 rounded-full bg-[var(--chat-error)]" />
             <span className="text-[13px] font-semibold text-[var(--chat-error)]">连接中断，响应不完整</span>
+            <span className="ml-auto rounded border border-[var(--chat-error-border)] bg-white px-[5px] font-mono text-[11px] text-[var(--chat-label-tertiary)]">ERR_STREAM_ABORT</span>
           </div>
           <p className="mt-1.5 text-[12.5px] leading-[1.6] text-[var(--chat-label-secondary)]">{message.error}</p>
+          <div className="mt-2.5 flex gap-2">
+            {onRegenerate ? (
+              <button type="button" onClick={onRegenerate} className="flex h-[30px] items-center gap-1.5 rounded-lg bg-[var(--chat-accent)] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[var(--chat-accent-hover)]">
+                <RotateCcw className="size-[13px]" />重试
+              </button>
+            ) : null}
+            {onDiscard ? (
+              <button type="button" onClick={onDiscard} className="flex h-[30px] items-center gap-1.5 rounded-lg border border-[var(--chat-border-l1)] bg-white px-3 text-[12.5px] font-semibold text-[var(--chat-label-secondary)] transition-colors hover:bg-[var(--chat-bg-layer-2)]">丢弃并停止</button>
+            ) : null}
+          </div>
         </div>
       ) : null}
       <div className="mt-3.5 flex items-center gap-0.5 opacity-55 transition-opacity group-hover:opacity-100">

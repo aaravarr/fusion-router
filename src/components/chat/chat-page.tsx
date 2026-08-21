@@ -311,6 +311,13 @@ export function ChatPage() {
     setUsage(null)
   }, [currentId])
 
+  const discardError = useCallback((messageId: string) => {
+    setMessages((current) => current.map((message) => message.id === messageId && message.status === "error"
+      ? { ...message, status: "complete" as const, error: undefined }
+      : message))
+    setStatus("ready")
+  }, [])
+
   const deleteSession = useCallback((id: string) => {
     setSessions((current) => current.filter((session) => session.id !== id))
     if (id === currentId) {
@@ -378,7 +385,8 @@ export function ChatPage() {
                     key={message.id}
                     message={message}
                     canRegenerate={message.id === lastAssistantId && message.status !== "streaming"}
-                    onRegenerate={() => void regenerate(message.id)}
+                    onRegenerate={message.id === lastAssistantId ? () => void regenerate(message.id) : undefined}
+                    onDiscard={message.status === "error" ? () => discardError(message.id) : undefined}
                   />
                 ))}
               </div>

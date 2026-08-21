@@ -48,6 +48,12 @@ const navItems = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, logout, isAdmin } = useSession();
+
+  // 聊天页为独立三栏全屏体验（会话侧栏 / 对话 / 运行详情），不再套用控制台导航骨架
+  if (pathname.startsWith("/chat")) {
+    return <div className="h-[100dvh] w-full overflow-hidden">{children}</div>;
+  }
+
   const active = navItems.find((item) => pathname.startsWith(item.href)) ?? navItems[0];
 
   return (
