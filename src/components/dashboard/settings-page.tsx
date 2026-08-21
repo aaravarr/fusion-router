@@ -186,7 +186,7 @@ export function SettingsPage() {
         </Panel>
       ) : null}
       {form ? (
-        <form onSubmit={save} className="space-y-4">
+        <form onSubmit={save} className="space-y-4 pb-28">
           <Panel
             title="上游请求"
             description="单次上游请求的超时上限与切号次数上限；域名镜像路由请在「网络」页配置。"

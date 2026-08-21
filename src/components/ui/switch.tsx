@@ -24,7 +24,7 @@ function Switch({
         if (!disabled) onCheckedChange(!checked)
       }}
       className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:pointer-events-none disabled:opacity-50",
+        "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent p-0 transition-colors duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:pointer-events-none disabled:opacity-50 before:absolute before:-inset-3 before:content-['']",
         checked ? "bg-accent-blue" : "bg-[#d6d6d4]",
         className
       )}

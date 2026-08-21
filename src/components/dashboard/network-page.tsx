@@ -153,15 +153,16 @@ export function NetworkPage() {
           </div>
         </Panel>
       ) : null}
-      <div className="sticky bottom-4 flex items-center justify-between rounded-lg border bg-white/95 p-3 shadow-lg backdrop-blur">
-        <p className="text-xs text-muted-foreground" role="status">
+      <div className="sticky bottom-4 flex flex-col gap-3 rounded-lg border bg-white/95 p-3 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+        <p className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground" role="status">
           {message || "镜像路由保存在持久数据目录和数据库中。"}
         </p>
-        <Button onClick={() => void save()} disabled={saving || loading}>
+        <Button onClick={() => void save()} disabled={saving || loading} className="w-full sm:w-auto shrink-0">
           <Save data-icon="inline-start" />
           {saving ? "正在保存" : "保存镜像路由"}
         </Button>
       </div>
+      <div className="h-6" aria-hidden="true" />
       {editorGroup !== undefined ? (
         <MirrorGroupDialog
           key={editorGroup?.id ?? "new"}
@@ -295,7 +296,7 @@ function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group
   const valid = Boolean(name.trim() && domains.size && mirrors.length);
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden p-0 sm:max-w-[860px]">
+      <DialogContent className="flex max-h-[calc(100dvh-48px)] flex-col overflow-hidden p-0 sm:max-w-[860px]">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle>{group ? "编辑镜像组" : "新增镜像组"}</DialogTitle>
           <DialogDescription>先选定这组账号，再为该组配置多个镜像节点与节点选择规则。保存后即时生效。</DialogDescription>
@@ -360,7 +361,7 @@ function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group
                   <div key={mirror.id} className="grid items-center gap-2 py-1.5 sm:grid-cols-[18px_1.2fr_1.6fr_26px]">
                     <button
                       type="button"
-                      className={cn("mx-auto grid size-[15px] place-items-center rounded-[3px] border-[1.5px] text-white", mirror.enabled ? "border-accent-blue bg-accent-blue" : "border-[#d6d6d4] bg-white")}
+                      className={cn("relative mx-auto grid size-[15px] place-items-center rounded-[3px] border-[1.5px] text-white before:absolute before:-inset-3 before:content-['']", mirror.enabled ? "border-accent-blue bg-accent-blue" : "border-[#d6d6d4] bg-white")}
                       onClick={() => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, enabled: !item.enabled } : item))}
                       aria-label={mirror.enabled ? "停用节点" : "启用节点"}
                     >
