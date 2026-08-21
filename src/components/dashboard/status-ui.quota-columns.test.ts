@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest"
 import { listWindowColumns } from "./status-ui"
 
 describe("listWindowColumns", () => {
-  it("open-design-go 只渲染 MONTHLY 主窗口，无次窗口", () => {
+  it("open-design-go 主列展示余额、次列展示月度周期用量", () => {
     const [primary, secondary] = listWindowColumns("open-design-go")
-    expect(primary).toEqual({ key: "monthly", label: "MONTH", header: "月度窗口" })
-    expect(secondary).toBeNull()
+    expect(primary).toEqual({ key: "balance", label: "BALANCE", header: "余额" })
+    expect(secondary).toEqual({ key: "monthly", label: "MONTH", header: "月" })
   })
 
   it("opencode-go 保持 5H + WEEK 两档", () => {

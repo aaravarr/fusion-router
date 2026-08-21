@@ -15,7 +15,7 @@ export function getPoolQuotaKinds(poolType?: string | null) {
   return POOL_TYPE_META[poolType || "opencode-go"]?.quotaKinds ?? ["fiveHour", "weekly", "monthly"];
 }
 
-export type ListWindowKey = "fiveHour" | "weekly" | "monthly" | "rolling24h";
+export type ListWindowKey = "fiveHour" | "weekly" | "monthly" | "rolling24h" | "balance";
 
 export interface ListWindowColumn {
   key: ListWindowKey;
@@ -33,7 +33,7 @@ export interface ListWindowColumn {
 export function listWindowColumns(poolType?: string | null): [ListWindowColumn | null, ListWindowColumn | null] {
   const type = poolType || "opencode-go";
   if (type === "xai-grok") return [{ key: "rolling24h", label: "24H", header: "滚动 24 小时" }, null];
-  if (type === "open-design-go") return [{ key: "monthly", label: "MONTH", header: "月度窗口" }, null];
+  if (type === "open-design-go") return [{ key: "balance", label: "BALANCE", header: "余额" }, { key: "monthly", label: "MONTH", header: "月" }];
   return [{ key: "fiveHour", label: "5H", header: "5 小时" }, { key: "weekly", label: "WEEK", header: "周" }];
 }
 
@@ -379,4 +379,29 @@ export function QuotaStatus({
 
 function compactNumber(value: number): string {
   return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+/** 钱包余额（美分）转货币展示，如 $0.50。 */
+function formatWalletCents(cents: number | null | undefined, currency?: string | null): string {
+  if (cents == null) return "—";
+  const symbol = currency ? CURRENCY_SYMBOLS[String(currency).toUpperCase()] : undefined;
+  const amount = (Number(cents) / 100).toFixed(2);
+  return symbol ? `${symbol}${amount}` : `${amount} ${currency ?? ""}`.trim();
+}
+
+/**
+ * 账号列表页「余额」单元格：展示钱包余额（来自 MONTHLY 窗口的 wallet.balanceCents）。
+ * open-design-go 等按月计费池的主额度列用它替代百分比窗口；无数据时显示占位。
+ */
+export function WalletBalanceCell({ account }: { account: Account }) {
+  const wallet = getQuota(account, "monthly")?.wallet;
+  if (!wallet) return <span className="font-mono text-[10px] text-muted-foreground">—/待观测</span>;
+  return (
+    <span
+      className="font-mono text-[11px] font-medium tabular-nums text-foreground"
+      title={`总额 ${formatWalletCents(wallet.totalCents, wallet.currency)}`}
+    >
+      {formatWalletCents(wallet.balanceCents, wallet.currency)}
+    </span>
+  );
 }

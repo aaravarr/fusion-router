@@ -39,7 +39,7 @@ import {
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, PaginationBar, StatsStrip, formatDate } from "./page-kit";
 import { QuotaForecastPanel } from "./quota-forecast-panel";
 import { InviteRewardsSection } from "./invite-rewards";
-import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, listWindowColumns, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge } from "./status-ui";
+import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, listWindowColumns, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge, WalletBalanceCell, type ListWindowColumn } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
 import type { Account, QuotaWallet } from "./types";
@@ -658,12 +658,12 @@ export function AccountsPage() {
                         <TableCell>{(() => { const quota = getQuota(account, "customPeriod") ?? getQuota(account, "weekly"); return quota ? <QuotaStatus label="周期" quota={quota} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>; })()}</TableCell>
                       </>
                     ) : (() => {
-                      // 按号池实际 quotaKinds 渲染主/次窗口，open-design-go 只展示 MONTHLY。
+                      // 按号池实际 quotaKinds 渲染主/次窗口；open-design-go 主列显示钱包余额、次列显示月度周期用量。
                       const [primary, secondary] = listWindowColumns(account.poolType);
                       return (
                         <>
-                          <TableCell>{primary ? <QuotaStatus label={primary.label} quota={getQuota(account, primary.key)} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>}</TableCell>
-                          <TableCell>{secondary ? <QuotaStatus label={secondary.label} quota={getQuota(account, secondary.key)} /> : <span className="font-mono text-[10px] text-muted-foreground">—</span>}</TableCell>
+                          <TableCell>{renderListQuotaCell(account, primary)}</TableCell>
+                          <TableCell>{renderListQuotaCell(account, secondary)}</TableCell>
                         </>
                       );
                     })()}
@@ -934,6 +934,13 @@ function WalletCard({ wallet }: { wallet: QuotaWallet }) {
       ) : null}
     </div>
   );
+}
+
+/** 账号列表页主/次额度列渲染：BALANCE 列展示钱包余额，其余窗口交给 QuotaStatus。 */
+function renderListQuotaCell(account: Account, column: ListWindowColumn | null) {
+  if (!column) return <span className="font-mono text-[10px] text-muted-foreground">—</span>;
+  if (column.key === "balance") return <WalletBalanceCell account={account} />;
+  return <QuotaStatus label={column.label} quota={getQuota(account, column.key)} />;
 }
 
 function DetailRow({ label, value, mono, title }: { label: string; value: string; mono?: boolean; title?: string }) {
