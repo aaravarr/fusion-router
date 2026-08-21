@@ -13,7 +13,7 @@ type Row = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
 const nullableString = (value: unknown): string | null => typeof value === "string" ? value : null
 
-function accountFromRow(row: Row): AccountRecord {
+export function accountFromRow(row: Row): AccountRecord {
   return {
     id: String(row.id), ownerUserId: String(row.owner_user_id), name: String(row.name), workspaceId: String(row.workspace_id),
     poolType: (nullableString(row.pool_type) ?? "opencode-go") as PoolType,

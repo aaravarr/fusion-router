@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { ensureMasterKey, getDatabasePath } from "./bootstrap"
 import { initializeSystemSettings } from "./settings"
+import { ensureSharedPoolColumns, migrateLegacyMirrorAndUpstream } from "./migration"
 import { slugifyProviderName } from "./slug"
 
 export type AppDatabase = Database.Database
@@ -346,6 +347,30 @@ CREATE TABLE IF NOT EXISTS media_cache (
   last_used_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS media_cache_used_idx ON media_cache(last_used_at);
+
+CREATE TABLE IF NOT EXISTS user_shared_pools (
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pool_type   TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY(user_id, pool_type)
+);
+CREATE INDEX IF NOT EXISTS user_shared_pools_user_idx ON user_shared_pools(user_id);
+
+CREATE TABLE IF NOT EXISTS user_mirror_groups (
+  id                TEXT PRIMARY KEY,
+  owner_user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name              TEXT NOT NULL,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  domains_json      TEXT NOT NULL,
+  account_ids_json  TEXT NOT NULL,
+  mirrors_json      TEXT NOT NULL,
+  rules_json        TEXT NOT NULL,
+  request_rules_json TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS user_mirror_groups_owner_idx ON user_mirror_groups(owner_user_id, enabled);
 `
 
 export function createDatabase(filename: string): AppDatabase {
@@ -366,7 +391,9 @@ export function createDatabase(filename: string): AppDatabase {
   ensureCustomProviderInterfaceTypesColumn(db)
   ensureCurrentMediaColumns(db)
   ensureCurrentRequestBodyColumns(db)
+  ensureSharedPoolColumns(db)
   db.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
+  migrateLegacyMirrorAndUpstream(db)
   return db
 }
 
@@ -550,7 +577,7 @@ function resetLegacyAccountDomain(db: AppDatabase): void {
   }
 }
 
-const CURRENT_ACCOUNT_SCHEMA_VERSION = 10
+const CURRENT_ACCOUNT_SCHEMA_VERSION = 11
 const globalDatabase = globalThis as typeof globalThis & {
   __opencodeApiDb?: AppDatabase
   __opencodeApiAccountSchemaVersion?: number
@@ -574,7 +601,9 @@ export function getDatabase(): AppDatabase {
     ensureCurrentQuotaColumns(globalDatabase.__opencodeApiDb)
     ensureResponseConversationColumns(globalDatabase.__opencodeApiDb)
     ensureCurrentImportJobColumns(globalDatabase.__opencodeApiDb)
+    ensureSharedPoolColumns(globalDatabase.__opencodeApiDb)
     globalDatabase.__opencodeApiDb.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
+    migrateLegacyMirrorAndUpstream(globalDatabase.__opencodeApiDb)
     globalDatabase.__opencodeApiAccountSchemaVersion = CURRENT_ACCOUNT_SCHEMA_VERSION
   }
   return globalDatabase.__opencodeApiDb

@@ -2,7 +2,6 @@ import type { Provider, QuotaWindow, ProviderCredential, ForwardRequestInput, Fo
 import type { AccountRecord, QuotaKind } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
-import { getSystemSettings, normalizeOfficialOpenCodeUpstreamUrl } from "../settings"
 import { apiFetchWithMirrorContext } from "../api-fetch"
 
 // OpenAI Codex models served by the OpenCode Go upstream.
@@ -13,6 +12,9 @@ import { apiFetchWithMirrorContext } from "../api-fetch"
 // 上游原生支持 /v1/responses 的模型白名单（实测确认，含 muse 家族）。
 // 不在白名单的模型只走 chat/messages；responses 请求则经网关转 chat 兼容链路。
 const OPENCODE_GO_RESPONSES_MODELS = new Set(["gpt-5.6-luna", "muse-spark-1.2-contributor"])
+
+/** OpenCode Go 官方上游地址（原 system_settings.opencode_upstream_base_url 的默认值，现已收敛为常量）。 */
+export const OPENCODE_GO_UPSTREAM_BASE_URL = "https://opencode.ai/zen/go/v1"
 
 const OPENCODE_GO_MODELS = [
   "deepseek-v4-flash",
@@ -188,7 +190,7 @@ export class OpenCodeGoProvider implements Provider {
   }
 
   getUpstreamBaseUrl(_account: AccountRecord): string {
-    return normalizeOfficialOpenCodeUpstreamUrl(getSystemSettings(getDatabase()).upstreamBaseUrl)
+    return OPENCODE_GO_UPSTREAM_BASE_URL
   }
 
   buildForwardTarget(input: ForwardRequestInput, credential: ProviderCredential, _account: AccountRecord): ForwardTarget {
@@ -201,7 +203,7 @@ export class OpenCodeGoProvider implements Provider {
     // messages endpoint uses x-api-key; others use Bearer
     if (input.endpoint === "messages") headers.set("x-api-key", credential.token)
     else headers.set("authorization", `Bearer ${credential.token}`)
-    const baseUrl = normalizeOfficialOpenCodeUpstreamUrl(getSystemSettings(getDatabase()).upstreamBaseUrl)
+    const baseUrl = OPENCODE_GO_UPSTREAM_BASE_URL
     const path = input.endpoint.replace(/^\/+/, "")
     return { url: `${baseUrl}/${path}`, headers, body: input.body }
   }

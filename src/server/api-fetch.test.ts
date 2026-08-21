@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest"
-import { applyMirrorTarget, selectDomainMirror, selectDomainMirrorGroup, selectMirrorGroupTarget } from "./api-fetch"
+import { afterEach, describe, expect, it } from "vitest"
+import { applyMirrorTarget, getSystemFallbackGroups, invalidateMirrorCacheForOwner, resolveMirrorUrlForContext, selectDomainMirror, selectDomainMirrorGroup, selectMirrorGroupTarget } from "./api-fetch"
+import { createDatabase, type AppDatabase } from "./db"
 import type { DomainMirrorConfig, DomainMirrorGroup } from "./settings"
 
 const config: DomainMirrorConfig = {
@@ -119,5 +120,56 @@ describe("request mirror rules (body/header)", () => {
   it("missing requestRules keeps legacy behavior", () => {
     const ctx = { account: { id: "assigned" }, body: { model: "gpt-5.6-luna" }, headers: new Headers() }
     expect(selectDomainMirror(config, ctx)?.id).toBe("b")
+  })
+})
+
+describe("per-user 镜像组解析", () => {
+  function setGlobalDatabase(value: AppDatabase | undefined) {
+    (globalThis as typeof globalThis & { __opencodeApiDb?: AppDatabase }).__opencodeApiDb = value
+  }
+  afterEach(() => setGlobalDatabase(undefined))
+
+  function makeDb() {
+    const db = createDatabase(":memory:")
+    const now = new Date().toISOString()
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("admin-1", "admin", "admin", "Admin", "ADMIN", "ACTIVE", "h", now, now)
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("user-b", "b", "b", "B", "USER", "ACTIVE", "h", now, now)
+    const insertGroup = (owner: string, id: string, domains: string[], url: string) => db.prepare("INSERT INTO user_mirror_groups(id,owner_user_id,name,enabled,domains_json,account_ids_json,mirrors_json,rules_json,request_rules_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run(id, owner, id, 1, JSON.stringify(domains), JSON.stringify([]), JSON.stringify([{ id: "m", name: "M", url, enabled: true }]), JSON.stringify([]), null, now, now)
+    insertGroup("user-b", "g-b", ["api.example.com"], "https://mirror-b.example.com")
+    insertGroup("admin-1", "g-admin", ["api.example.com"], "https://mirror-admin.example.com")
+    return db
+  }
+
+  it("命中该用户自己的镜像组", () => {
+    setGlobalDatabase(makeDb())
+    expect(resolveMirrorUrlForContext("https://api.example.com/v1/models", { ownerUserId: "user-b" }))
+      .toBe("https://mirror-b.example.com/v1/models")
+  })
+
+  it("第 2 级回退：account.ownerUserId 命中 account.owner 的组", () => {
+    setGlobalDatabase(makeDb())
+    expect(resolveMirrorUrlForContext("https://api.example.com/v1/models", { account: { id: "a", ownerUserId: "user-b" } }))
+      .toBe("https://mirror-b.example.com/v1/models")
+  })
+
+  it("第 3 级无主回退：命中首个 ADMIN 的组", () => {
+    setGlobalDatabase(makeDb())
+    expect(resolveMirrorUrlForContext("https://api.example.com/v1/models"))
+      .toBe("https://mirror-admin.example.com/v1/models")
+    expect(getSystemFallbackGroups().map((g) => g.id)).toContain("g-admin")
+  })
+
+  it("invalidateMirrorCacheForOwner 后立即生效", () => {
+    const db = makeDb()
+    setGlobalDatabase(db)
+    expect(resolveMirrorUrlForContext("https://api.example.com/x", { ownerUserId: "user-b" })).toContain("mirror-b")
+    // 更新该用户的组 URL
+    const now = new Date().toISOString()
+    db.prepare("UPDATE user_mirror_groups SET mirrors_json=? WHERE id='g-b'").run(JSON.stringify([{ id: "m", name: "M", url: "https://mirror-b2.example.com", enabled: true }]))
+    invalidateMirrorCacheForOwner("user-b")
+    expect(resolveMirrorUrlForContext("https://api.example.com/x", { ownerUserId: "user-b" })).toContain("mirror-b2")
   })
 })

@@ -589,7 +589,7 @@ export class GatewayService {
             credential = await provider.getCredential(selection.account)
           } catch {
             // Fallback to legacy CredentialProvider (e.g., in-memory test DB).
-            const legacy = await this.credentials.get(apiKey.ownerUserId, selection.account.id)
+            const legacy = await this.credentials.get(selection.account.ownerUserId, selection.account.id)
             credential = { token: legacy.goApiKey, credentialVersion: legacy.credentialVersion }
           }
           const upstreamModel = provider.resolveModel(selection.account, model ?? "")
@@ -675,7 +675,7 @@ export class GatewayService {
           }, credential, selection.account)
           let mirrorBody: unknown = null
 if (target.body) { try { mirrorBody = JSON.parse(new TextDecoder().decode(target.body)) } catch { mirrorBody = null } }
-upstream = await this.fetcher(resolveMirrorUrlForContext(target.url, { account: selection.account, body: mirrorBody, headers: target.headers }), {
+upstream = await this.fetcher(resolveMirrorUrlForContext(target.url, { account: selection.account, ownerUserId: apiKey.ownerUserId, body: mirrorBody, headers: target.headers }), {
             method: request.method,
             headers: target.headers,
             body: target.body,
@@ -683,11 +683,11 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(target.url, { account: 
             signal: AbortSignal.any([request.signal, AbortSignal.timeout(getSystemSettings(this.db).upstreamRequestTimeoutMs)]),
           })
         } else {
-          const credential = await this.credentials.get(apiKey.ownerUserId, selection.account.id)
+          const credential = await this.credentials.get(selection.account.ownerUserId, selection.account.id)
           const path = attemptEndpoint.replace(/^\/+/, "")
           let mirrorBody2: unknown = null
 if (attemptUpstreamBytes) { try { mirrorBody2 = JSON.parse(new TextDecoder().decode(attemptUpstreamBytes)) } catch { mirrorBody2 = null } }
-upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.baseUrl}/${path}`, { account: selection.account, body: mirrorBody2, headers: request.headers }), {
+upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.baseUrl}/${path}`, { account: selection.account, ownerUserId: apiKey.ownerUserId, body: mirrorBody2, headers: request.headers }), {
             method: request.method,
             headers: upstreamHeaders(request, credential.goApiKey, effectiveEndpoint),
             body: attemptUpstreamBytes,

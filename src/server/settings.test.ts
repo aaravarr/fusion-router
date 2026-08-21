@@ -14,6 +14,7 @@ import {
   SYSTEM_SECRET_KEYS,
   updateSystemSettings,
   normalizeDomainMirrorMap,
+  validateDomainMirrorGroups,
 } from "./settings"
 
 let directory: string
@@ -60,27 +61,22 @@ describe("system settings", () => {
   })
   it("initializes safe defaults and validates administrator updates", () => {
     expect(getSystemSettings(db)).toMatchObject({
-      upstreamBaseUrl: "https://opencode.ai/zen/go/v1",
       upstreamRequestTimeoutMs: 120_000,
       maxFailoverAttempts: 12,
     })
 
     const updated = updateSystemSettings({
-      upstreamBaseUrl: "https://gateway.opencode.ai/api/",
       upstreamRequestTimeoutMs: 30_000,
       maxFailoverAttempts: 10,
     }, null, db)
-    expect(updated.upstreamBaseUrl).toBe("https://gateway.opencode.ai/api")
     expect(updated.upstreamRequestTimeoutMs).toBe(30_000)
     expect(updated.maxFailoverAttempts).toBe(10)
     expect(() => updateSystemSettings({ upstreamRequestTimeoutMs: 10 }, null, db)).toThrow(/between/)
     expect(() => updateSystemSettings({ maxFailoverAttempts: 0 }, null, db)).toThrow(/between/)
     expect(() => updateSystemSettings({ maxFailoverAttempts: 33 }, null, db)).toThrow(/between/)
-    expect(() => updateSystemSettings({ upstreamBaseUrl: "https://user:secret@opencode.ai/v1" }, null, db)).toThrow(/embedded credentials/)
-    expect(() => updateSystemSettings({ upstreamBaseUrl: "https://evil-opencode.ai/v1" }, null, db)).toThrow(/official HTTPS/)
   })
 
-  it("stores account-scoped mirror groups with multiple targets and rules", () => {
+  it("validates account-scoped mirror groups with multiple targets and rules", () => {
     const group = {
       id: "xai-group", name: "XAI", enabled: true,
       domains: ["api.x.ai", "accounts.x.ai"], accountIds: ["account-a", "account-b"],
@@ -90,8 +86,8 @@ describe("system settings", () => {
       ],
       rules: [{ id: "prod", pattern: "^account-a$", mirrorId: "primary", enabled: true }],
     }
-    expect(updateSystemSettings({ domainMirrorGroups: [group] }, null, db).domainMirrorGroups).toEqual([{ ...group, requestRules: [] }])
-    expect(() => updateSystemSettings({ domainMirrorGroups: [{ ...group, rules: [{ ...group.rules[0], mirrorId: "missing" }] }] }, null, db)).toThrow(/不存在的镜像/)
+    expect(validateDomainMirrorGroups([group])).toEqual([{ ...group, requestRules: [] }])
+    expect(() => validateDomainMirrorGroups([{ ...group, rules: [{ ...group.rules[0], mirrorId: "missing" }] }])).toThrow(/不存在的镜像/)
   })
 
   it("stores random secrets encrypted and supports explicit rotation", () => {

@@ -1,13 +1,12 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import Link from "next/link";
 import {
+  Info,
   MoreHorizontal,
   Plus,
   RefreshCw,
-  ShieldCheck,
-  UserRound,
+  Settings2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -55,11 +54,23 @@ import {
 import { StatusBadge } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useConfirm } from "@/components/ui/confirm-provider";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+
+const SHARING_POOL_OPTIONS = [
+  { value: "opencode-go", label: "OpenCode Go", desc: "OpenCode Go 池 · 管理员名下 4 个账号 · Google 登录 + Go API Key" },
+  { value: "openai", label: "OpenAI", desc: "OpenAI 池 · 管理员名下 2 个账号 · Codex AT token / OAuth 刷新" },
+  { value: "xai-grok", label: "xAI Grok", desc: "xAI Grok 池 · 管理员名下 5 个账号 · 免费 OAuth，滚动 24h" },
+  { value: "kimi-code", label: "Kimi Code", desc: "Kimi Code 池 · 管理员名下 3 个账号 · 设备码 OAuth，5h + weekly 额度" },
+  { value: "open-design-go", label: "OpenDesign Go", desc: "OpenDesign Go 池 · 管理员名下 1 个账号 · OpenAI 兼容订阅，按月计费" },
+  { value: "custom:*", label: "全部自定义 Provider", desc: "自定义 Provider 池 · 管理员名下 6 个账号 · 自定义 API Key 上游" },
+];
 
 interface UserSummary extends SessionUser {
   accountCount?: number;
   apiKeyCount?: number;
   lastLoginAt?: string | null;
+  sharing?: { enabled: boolean; poolTypes: string[] };
 }
 interface UsersPayload {
   users?: UserSummary[];
@@ -78,6 +89,11 @@ export function UsersPage() {
   const [passwordUser, setPasswordUser] = useState<UserSummary | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
+  const [sharingUser, setSharingUser] = useState<UserSummary | null>(null);
+  // 设计规格：共享池总开关默认关闭
+  const [sharingEnabled, setSharingEnabled] = useState(false);
+  const [sharingPoolTypes, setSharingPoolTypes] = useState<Set<string>>(new Set());
+  const [sharingBusy, setSharingBusy] = useState(false);
   if (!isAdmin)
     return (
       <Panel>
@@ -132,6 +148,31 @@ export function UsersPage() {
     setPasswordBusy(false);
     setPasswordUser(null);
     setNewPassword("");
+  }
+
+  function openSharing(user: UserSummary) {
+    setSharingUser(user);
+    setSharingEnabled(user.sharing?.enabled ?? false);
+    setSharingPoolTypes(new Set(user.sharing?.poolTypes ?? []));
+  }
+
+  // 对话框在关闭态（总开关关）时，保存按钮置灰；开关受控于 sharingEnabled。
+  // 打开对话框时的默认值即当前用户配置，总开关取 enabled ?? false（默认关）。
+
+  async function saveSharing() {
+    if (!sharingUser) return;
+    setSharingBusy(true);
+    const response = await sessionFetch(`/api/admin/users/${sharingUser.id}/sharing`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: sharingEnabled, poolTypes: [...sharingPoolTypes] }),
+    });
+    setSharingBusy(false);
+    if (response.ok) {
+      setSharingUser(null);
+      await resource.refresh();
+    } else {
+      setError((await response.json().catch(() => null))?.error?.message || "保存共享配置失败");
+    }
   }
 
   async function revoke(user: UserSummary) {
@@ -206,59 +247,72 @@ export function UsersPage() {
           <Table className="min-w-[900px]">
             <TableHeader className="bg-[#fafafa]">
               <TableRow>
-                <TableHead className="px-4">用户</TableHead>
+                <TableHead className="px-4" style={{ minWidth: 230 }}>用户名</TableHead>
+                <TableHead>显示名</TableHead>
                 <TableHead>角色</TableHead>
                 <TableHead>状态</TableHead>
-                <TableHead>Provider 账号</TableHead>
-                <TableHead>API 密钥</TableHead>
-                <TableHead>创建时间</TableHead>
-                <TableHead className="w-14" />
+                <TableHead>共享池</TableHead>
+                <TableHead>注册时间</TableHead>
+                <TableHead className="w-40" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.map((user) => (
+              {users.map((user) => {
+                const initial = (user.displayName || user.username || "?").slice(0, 1).toUpperCase();
+                return (
                 <TableRow key={user.id}>
                   <TableCell className="px-4">
-                    <div className="flex items-center gap-3">
-                      <span className="grid size-8 place-items-center rounded-md border bg-[#fafafa]">
-                        <UserRound className="size-4 text-muted-foreground" />
+                    <div className="flex items-center gap-2.5">
+                      <span className="grid size-[26px] shrink-0 place-items-center rounded-md border bg-[#e9e9e6] text-[11.5px] font-bold text-[#3f3f3f]">
+                        {initial}
                       </span>
-                      <div>
-                        <p className="text-sm font-medium">
-                          {user.displayName || user.username}
+                      <div className="min-w-0">
+                        <p className="font-mono text-[12.5px] font-semibold text-[#171717]">
+                          {user.username}
                           {user.id === current.id ? "（你）" : ""}
                         </p>
-                        <p className="font-mono text-[10px] text-muted-foreground">
-                          {user.username}
+                        <p className="truncate font-sans text-[11px] text-muted-foreground" style={{ maxWidth: 220, minWidth: 160 }}>
+                          {user.displayName || user.username}
                         </p>
                       </div>
                     </div>
                   </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {user.displayName || "—"}
+                  </TableCell>
                   <TableCell>
-                    {user.role === "ADMIN" ? (
-                      <span className="inline-flex items-center gap-1 text-xs">
-                        <ShieldCheck className="size-3.5" />
-                        管理员
-                      </span>
-                    ) : (
-                      <span className="text-xs">普通用户</span>
-                    )}
+                    <span className={`inline-flex h-5 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold ${user.role === "ADMIN" ? "border-accent-blue-soft-2 bg-accent-blue-soft text-accent-blue-strong" : "border-border bg-[#f7f7f5] text-muted-foreground"}`}>
+                      {user.role === "ADMIN" ? "ADMIN" : "USER"}
+                    </span>
                   </TableCell>
                   <TableCell>
                     <StatusBadge status={user.status} />
                   </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    <Link href={`/users/${user.id}`} className="underline-offset-4 hover:underline">
-                      {user.accountCount ?? 0} · 查看
-                    </Link>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {user.apiKeyCount ?? 0}
+                  <TableCell className="text-xs">
+                    {user.sharing?.enabled ? (
+                      <span className="inline-flex h-5 items-center rounded-full border border-accent-blue-soft-2 bg-accent-blue-soft px-2 text-[11px] font-semibold text-accent-blue-strong">
+                        已共享 {user.sharing.poolTypes.length} 类
+                      </span>
+                    ) : (
+                      <span className="inline-flex h-5 items-center rounded-full border border-border bg-transparent px-2 text-[11px] text-muted-foreground">
+                        关
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {formatDate(user.createdAt)}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="px-4">
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => openSharing(user)}
+                        className="inline-flex h-[26px] items-center gap-1.5 rounded px-2 text-xs font-medium text-accent-blue transition-colors hover:bg-accent-blue-soft"
+                      >
+                        <Settings2 className="size-3.5" />
+                        配置共享池
+                      </button>
+
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -287,6 +341,9 @@ export function UsersPage() {
                         >
                           重置密码
                         </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => openSharing(user)}>
+                          配置共享池
+                        </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => void revoke(user)}>
                           注销全部会话
                         </DropdownMenuItem>
@@ -311,9 +368,11 @@ export function UsersPage() {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    </div>
                   </TableCell>
                 </TableRow>
-              ))}
+              );
+              })}
             </TableBody>
           </Table>
         )}
@@ -390,6 +449,79 @@ export function UsersPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setPasswordUser(null)} disabled={passwordBusy}>取消</Button>
             <Button type="submit" form="reset-user-password" disabled={passwordBusy || newPassword.length < 6}>{passwordBusy ? "正在重置" : "重置密码"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={Boolean(sharingUser)} onOpenChange={(next) => { if (!next && !sharingBusy) setSharingUser(null); }}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>配置共享池</DialogTitle>
+            <DialogDescription>用户 <span className="font-mono text-foreground">{sharingUser?.username}</span> · 将管理员名下的账号池共享给该用户路由使用。总开关默认关闭，需逐用户开启并勾选池类型。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-3 rounded-md border bg-[#fafafa] p-3.5">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">启用共享池</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">开启后，该用户的请求可在自有账号之外，路由到下方勾选的管理员账号池。</p>
+              </div>
+              <Switch checked={sharingEnabled} onCheckedChange={setSharingEnabled} />
+            </div>
+            <div className="text-xs font-semibold tracking-[0.02em] text-muted-foreground">可共享的池类型</div>
+            {sharingEnabled ? (
+              <div className="space-y-2">
+                {SHARING_POOL_OPTIONS.map((option) => {
+                  const checked = sharingPoolTypes.has(option.value);
+                  return (
+                    <label
+                      key={option.value}
+                      className={`flex cursor-pointer items-start gap-2.5 rounded-md border p-2.5 transition-colors ${checked ? "border-accent-blue bg-accent-blue-soft" : "border-border bg-white hover:border-[#d6d6d4] hover:bg-[#fbfbfa]"}`}
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(v) => setSharingPoolTypes((current) => {
+                          const next = new Set(current);
+                          if (v === true) next.add(option.value); else next.delete(option.value);
+                          return next;
+                        })}
+                        className="mt-0.5"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="text-[13px] font-medium leading-[18px]">{option.label}</span>
+                          <span className="inline-flex items-center rounded-[3px] border bg-[#f7f7f5] px-1.5 font-mono text-[11px] leading-4 text-muted-foreground">{option.value}</span>
+                        </span>
+                        <span className="mt-1 block text-[11.5px] leading-4 text-muted-foreground">{option.desc}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex h-9 items-center rounded-md border bg-[#fafafa] px-3 font-mono text-[11.5px] text-muted-foreground">
+                已配置 {sharingPoolTypes.size}/6 个共享池 · 开启后可编辑
+              </div>
+            )}
+            <div className="flex gap-2 rounded-md border border-accent-blue-soft-2 bg-accent-blue-soft p-3 text-xs leading-5">
+              <Info className="mt-0.5 size-[15px] shrink-0 text-accent-blue" />
+              <span>{sharingEnabled ? <><span className="font-semibold">共享后</span>，该用户的请求可路由到你勾选的账号池；账号凭据与额度管理仍归管理员。</> : "总开关关闭时，该用户请求仅路由其自有账号，勾选明细不生效。"}</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSharingUser(null)} disabled={sharingBusy}>取消</Button>
+            <Button
+              onClick={() => void saveSharing()}
+              disabled={
+                sharingBusy ||
+                !sharingEnabled ||
+                sharingPoolTypes.size === 0 ||
+                // 设计规格：无变更（开关与勾选均与打开前一致）时保存置灰
+                (sharingUser?.sharing?.enabled === sharingEnabled &&
+                  (sharingUser?.sharing?.poolTypes ?? []).length === sharingPoolTypes.size &&
+                  (sharingUser?.sharing?.poolTypes ?? []).every((item) => sharingPoolTypes.has(item)))
+              }
+            >
+              {sharingBusy ? "正在保存" : "保存"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

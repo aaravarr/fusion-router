@@ -3,9 +3,6 @@ import { getDatabase, type AppDatabase } from "./db";
 import { SecretVault } from "./crypto";
 
 export const SYSTEM_SETTING_KEYS = {
-  domainMirrorMap: "domain_mirror_map",
-  domainMirrorGroups: "domain_mirror_groups",
-  upstreamBaseUrl: "opencode_upstream_base_url",
   upstreamRequestTimeoutMs: "upstream_request_timeout_ms",
   maxFailoverAttempts: "max_failover_attempts",
   maintenanceIntervalMs: "maintenance_interval_ms",
@@ -96,9 +93,6 @@ export interface DomainMirrorGroup {
 }
 
 export interface SystemSettings {
-  domainMirrorMap: DomainMirrorMap;
-  domainMirrorGroups: DomainMirrorGroup[];
-  upstreamBaseUrl: string;
   upstreamRequestTimeoutMs: number;
   maxFailoverAttempts: number;
   maintenanceEnabled: boolean;
@@ -110,9 +104,6 @@ export interface SystemSettings {
 }
 
 export interface UpdateSystemSettingsInput {
-  domainMirrorMap?: DomainMirrorMap;
-  domainMirrorGroups?: DomainMirrorGroup[];
-  upstreamBaseUrl?: string;
   upstreamRequestTimeoutMs?: number;
   maxFailoverAttempts?: number;
   maintenanceEnabled?: boolean;
@@ -137,9 +128,6 @@ export interface LogSettings {
 }
 
 const defaults: SystemSettings & LogSettings = {
-  domainMirrorMap: {},
-  domainMirrorGroups: [],
-  upstreamBaseUrl: "https://opencode.ai/zen/go/v1",
   upstreamRequestTimeoutMs: 120_000,
   maxFailoverAttempts: 12,
   maintenanceEnabled: true,
@@ -165,24 +153,6 @@ export function initializeSystemSettings(db: AppDatabase): void {
   );
  const vault = new SecretVault();
  db.transaction(() => {
-   insert.run(
-     SYSTEM_SETTING_KEYS.domainMirrorMap,
-     JSON.stringify(defaults.domainMirrorMap),
-     0,
-     now,
-   );
-   insert.run(
-     SYSTEM_SETTING_KEYS.domainMirrorGroups,
-     JSON.stringify(defaults.domainMirrorGroups),
-     0,
-     now,
-   );
-   insert.run(
-     SYSTEM_SETTING_KEYS.upstreamBaseUrl,
-     JSON.stringify(defaults.upstreamBaseUrl),
-     0,
-     now,
-   );
     insert.run(
       SYSTEM_SETTING_KEYS.upstreamRequestTimeoutMs,
       JSON.stringify(defaults.upstreamRequestTimeoutMs),
@@ -290,13 +260,6 @@ export function getSystemSettings(
   db: AppDatabase = getDatabase(),
 ): SystemSettings {
   return {
-    domainMirrorMap: normalizeDomainMirrorMap(readPublic<unknown>(db, SYSTEM_SETTING_KEYS.domainMirrorMap, defaults.domainMirrorMap)),
-    domainMirrorGroups: normalizeDomainMirrorGroups(readPublic<unknown>(db, SYSTEM_SETTING_KEYS.domainMirrorGroups, defaults.domainMirrorGroups)),
-    upstreamBaseUrl: readPublic(
-      db,
-      SYSTEM_SETTING_KEYS.upstreamBaseUrl,
-      defaults.upstreamBaseUrl,
-    ),
     upstreamRequestTimeoutMs: readPublic(
       db,
       SYSTEM_SETTING_KEYS.upstreamRequestTimeoutMs,
@@ -338,74 +301,6 @@ export function updateSystemSettings(
   db: AppDatabase = getDatabase(),
 ): SystemSettings {
   const entries: [string, string][] = [];
-  if (input.domainMirrorMap !== undefined) {
-    const cleaned: DomainMirrorMap = {}
-    for (const [domain, config] of Object.entries(input.domainMirrorMap)) {
-      const d = domain.trim().toLowerCase()
-      if (!d) continue
-      const ids = new Set<string>()
-      const mirrors = config.mirrors.map((mirror) => {
-        const id = mirror.id.trim()
-        const urlValue = mirror.url.trim().replace(/\/$/, "")
-        if (!id || ids.has(id)) throw new Error(`域名 ${d} 的镜像 ID 为空或重复`)
-        ids.add(id)
-        try {
-          const url = new URL(urlValue.replaceAll("$host", "origin.example.com"))
-          if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol")
-          if (url.username || url.password) throw new Error("credentials")
-        } catch { throw new Error(`域名镜像 ${d}/${mirror.name || id} 的目标地址不是有效 URL`) }
-        return { id, name: mirror.name.trim() || id, url: urlValue, enabled: mirror.enabled !== false }
-      })
-      if (!mirrors.length) continue
-      const accountAssignments = Object.fromEntries(Object.entries(config.accountAssignments ?? {}).filter(([, mirrorId]) => ids.has(mirrorId)))
-      const rules = (config.rules ?? []).map((rule) => {
-        if (!ids.has(rule.mirrorId)) throw new Error(`域名 ${d} 的正则规则引用了不存在的镜像`)
-        try { new RegExp(rule.pattern) } catch { throw new Error(`域名 ${d} 包含无效正则: ${rule.pattern}`) }
-        if (rule.pattern.length > 500 || /\([^)]*[+*][^)]*\)[+*{]/.test(rule.pattern)) throw new Error(`域名 ${d} 包含可能导致性能问题的正则: ${rule.pattern}`)
-        return { id: rule.id.trim(), pattern: rule.pattern, mirrorId: rule.mirrorId, enabled: rule.enabled !== false }
-      })
-      if (rules.some((rule) => !rule.id) || new Set(rules.map((rule) => rule.id)).size !== rules.length) {
-        throw new Error(`域名 ${d} 的规则 ID 为空或重复`)
-      }
-      const requestRules = validateRequestMirrorRuleGroups(config.requestRules ?? [], ids, `域名 ${d}`)
-      cleaned[d] = { mirrors, accountAssignments, rules, requestRules }
-    }
-    entries.push([SYSTEM_SETTING_KEYS.domainMirrorMap, JSON.stringify(cleaned)])
-  }
-  if (input.domainMirrorGroups !== undefined) {
-    const groupIds = new Set<string>()
-    const cleaned = input.domainMirrorGroups.map((group) => {
-      const id = group.id.trim()
-      if (!id || groupIds.has(id)) throw new Error("镜像组 ID 为空或重复")
-      groupIds.add(id)
-      const mirrorIds = new Set<string>()
-      const mirrors = group.mirrors.map((mirror) => {
-        const mirrorId = mirror.id.trim()
-        const urlValue = mirror.url.trim().replace(/\/$/, "")
-        if (!mirrorId || mirrorIds.has(mirrorId)) throw new Error(`镜像组 ${group.name || id} 的节点 ID 为空或重复`)
-        mirrorIds.add(mirrorId)
-        validateMirrorUrl(urlValue, `镜像组 ${group.name || id}/${mirror.name || mirrorId}`)
-        return { id: mirrorId, name: mirror.name.trim() || mirrorId, url: urlValue, enabled: mirror.enabled !== false }
-      })
-      if (!mirrors.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个镜像地址`)
-      const domains = [...new Set(group.domains.map((domain) => domain.trim().toLowerCase()).filter(Boolean))]
-      if (!domains.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个原始域名`)
-      const rules = group.rules.map((rule) => {
-        if (!mirrorIds.has(rule.mirrorId)) throw new Error(`镜像组 ${group.name || id} 的规则引用了不存在的镜像`)
-        validateMirrorPattern(rule.pattern, `镜像组 ${group.name || id}`)
-        return { id: rule.id.trim(), pattern: rule.pattern, mirrorId: rule.mirrorId, enabled: rule.enabled !== false }
-      })
-      if (rules.some((rule) => !rule.id) || new Set(rules.map((rule) => rule.id)).size !== rules.length) throw new Error(`镜像组 ${group.name || id} 的规则 ID 为空或重复`)
-      const requestRules = validateRequestMirrorRuleGroups(group.requestRules ?? [], mirrorIds, `镜像组 ${group.name || id}`)
-      return { id, name: group.name.trim() || id, enabled: group.enabled !== false, domains, accountIds: [...new Set(group.accountIds.filter(Boolean))], mirrors, rules, requestRules }
-    })
-    entries.push([SYSTEM_SETTING_KEYS.domainMirrorGroups, JSON.stringify(cleaned)])
-  }
-  if (input.upstreamBaseUrl !== undefined)
-    entries.push([
-      SYSTEM_SETTING_KEYS.upstreamBaseUrl,
-      JSON.stringify(normalizeOfficialOpenCodeUpstreamUrl(input.upstreamBaseUrl)),
-    ]);
   if (input.upstreamRequestTimeoutMs !== undefined) {
     entries.push([
       SYSTEM_SETTING_KEYS.upstreamRequestTimeoutMs,
@@ -499,7 +394,7 @@ export function updateSystemSettings(
   return getSystemSettings(db);
 }
 
-function validateMirrorUrl(value: string, label: string): void {
+export function validateMirrorUrl(value: string, label: string): void {
   try {
     const url = new URL(value.replaceAll("$host", "origin.example.com"))
     if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol")
@@ -509,9 +404,39 @@ function validateMirrorUrl(value: string, label: string): void {
   }
 }
 
-function validateMirrorPattern(pattern: string, label: string): void {
+export function validateMirrorPattern(pattern: string, label: string): void {
   try { new RegExp(pattern) } catch { throw new Error(`${label} 包含无效正则: ${pattern}`) }
   if (pattern.length > 500 || /\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) throw new Error(`${label} 包含可能导致性能问题的正则: ${pattern}`)
+}
+
+/** 保存校验：完整校验一组镜像组（供 /api/network PUT 复用）。 */
+export function validateDomainMirrorGroups(input: DomainMirrorGroup[]): DomainMirrorGroup[] {
+  const groupIds = new Set<string>()
+  return input.map((group) => {
+    const id = group.id.trim()
+    if (!id || groupIds.has(id)) throw new Error("镜像组 ID 为空或重复")
+    groupIds.add(id)
+    const mirrorIds = new Set<string>()
+    const mirrors = group.mirrors.map((mirror) => {
+      const mirrorId = mirror.id.trim()
+      const urlValue = mirror.url.trim().replace(/\/$/, "")
+      if (!mirrorId || mirrorIds.has(mirrorId)) throw new Error(`镜像组 ${group.name || id} 的节点 ID 为空或重复`)
+      mirrorIds.add(mirrorId)
+      validateMirrorUrl(urlValue, `镜像组 ${group.name || id}/${mirror.name || mirrorId}`)
+      return { id: mirrorId, name: mirror.name.trim() || mirrorId, url: urlValue, enabled: mirror.enabled !== false }
+    })
+    if (!mirrors.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个镜像地址`)
+    const domains = [...new Set(group.domains.map((domain) => domain.trim().toLowerCase()).filter(Boolean))]
+    if (!domains.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个原始域名`)
+    const rules = group.rules.map((rule) => {
+      if (!mirrorIds.has(rule.mirrorId)) throw new Error(`镜像组 ${group.name || id} 的规则引用了不存在的镜像`)
+      validateMirrorPattern(rule.pattern, `镜像组 ${group.name || id}`)
+      return { id: rule.id.trim(), pattern: rule.pattern, mirrorId: rule.mirrorId, enabled: rule.enabled !== false }
+    })
+    if (rules.some((rule) => !rule.id) || new Set(rules.map((rule) => rule.id)).size !== rules.length) throw new Error(`镜像组 ${group.name || id} 的规则 ID 为空或重复`)
+    const requestRules = validateRequestMirrorRuleGroups(group.requestRules ?? [], mirrorIds, `镜像组 ${group.name || id}`)
+    return { id, name: group.name.trim() || id, enabled: group.enabled !== false, domains, accountIds: [...new Set(group.accountIds.filter(Boolean))], mirrors, rules, requestRules }
+  })
 }
 
 export function normalizeDomainMirrorMap(value: unknown): DomainMirrorMap {
@@ -733,25 +658,6 @@ function readPublic<T>(db: AppDatabase, key: string, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-function parseOfficialOpenCodeUrl(value: string): URL {
-  const url = new URL(value);
-  if (url.username || url.password)
-    throw new Error("URLs containing embedded credentials are not supported");
-  const officialHost =
-    url.hostname === "opencode.ai" || url.hostname.endsWith(".opencode.ai");
-  if (url.protocol !== "https:" || !officialHost || url.port) {
-    throw new Error("Only official HTTPS opencode.ai endpoints are allowed");
-  }
-  if (url.search || url.hash)
-    throw new Error("Endpoint URLs cannot contain query strings or fragments");
-  return url;
-}
-
-export function normalizeOfficialOpenCodeUpstreamUrl(value: string): string {
-  const url = parseOfficialOpenCodeUrl(value);
-  return url.toString().replace(/\/$/, "");
 }
 
 function integerInRange(
