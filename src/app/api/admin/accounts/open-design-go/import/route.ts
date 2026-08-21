@@ -52,6 +52,7 @@ const bodySchema = z.object({
 interface AmrUser {
   id?: string
   email?: string
+  name?: string
   plan?: string
 }
 interface AmrProfile {
@@ -69,6 +70,7 @@ function extractFromConfigJson(configJson: unknown): {
   controlKey?: string
   apiUrl?: string
   email?: string
+  userName?: string
   plan?: string
   userId?: string
   workspaceId?: string
@@ -96,9 +98,10 @@ function extractFromConfigJson(configJson: unknown): {
   const workspaceId = typeof (profile as Record<string, unknown>).workspaceId === "string" ? String((profile as Record<string, unknown>).workspaceId).trim() : typeof (profile as Record<string, unknown>).workspace_id === "string" ? String((profile as Record<string, unknown>).workspace_id).trim() : typeof (profile as Record<string, unknown>)["x-vela-workspace-id"] === "string" ? String((profile as Record<string, unknown>)["x-vela-workspace-id"]).trim() : undefined
   const user = profile.user as AmrUser | undefined
   const email = user?.email?.trim()
+  const userName = user?.name?.trim()
   const plan = user?.plan?.trim()
   const userId = user?.id?.trim()
-  return { runtimeKey, linkUrl, controlKey, apiUrl, email, plan, userId, workspaceId }
+  return { runtimeKey, linkUrl, controlKey, apiUrl, email, userName, plan, userId, workspaceId }
 }
 
 export async function POST(request: Request) {
@@ -118,6 +121,7 @@ export async function POST(request: Request) {
   let name: string | undefined = parsed.data.name?.trim() || undefined
   let workspaceId: string | undefined = parsed.data.workspaceId?.trim() || undefined
   let email: string | undefined
+  let userName: string | undefined
   let plan: string | undefined
   let userId: string | undefined
 
@@ -143,10 +147,10 @@ export async function POST(request: Request) {
     controlKey = controlKey || extracted.controlKey
     apiUrl = apiUrl || extracted.apiUrl
     email = extracted.email
+    userName = extracted.userName
     plan = extracted.plan
     userId = extracted.userId
     workspaceId = workspaceId || extracted.workspaceId
-    if (!name && email) name = email
   }
 
   linkUrl = linkUrl?.trim() || DEFAULT_LINK_URL
@@ -210,7 +214,7 @@ export async function POST(request: Request) {
   const credRepo = new ProviderCredentialRepository(user.id, db)
   const externalId = createHash("sha256").update(`open-design-go:${controlKey ?? runtimeKey}:${runtimeKey}:${workspaceId ?? ""}`).digest("hex").slice(0, 24)
 
-  const accountName = name?.trim() || email || "Open Design GO"
+  const accountName = name?.trim() || email || userName || "Open Design GO"
   const account = accountRepo.createProviderAccount({
     name: accountName,
     poolType: "open-design-go",

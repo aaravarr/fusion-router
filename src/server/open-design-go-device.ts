@@ -216,7 +216,7 @@ export async function pollOpenDesignGoDeviceSession(ownerUserId: string, session
     const accountRepo = new AccountRepository(ownerUserId, db)
     const credRepo = new ProviderCredentialRepository(ownerUserId, db)
     const externalId = createHash("sha256").update(`open-design-go:${controlKey ?? runtimeKey}:${runtimeKey}:${workspaceId ?? ""}`).digest("hex").slice(0, 24)
-    const accountName = name || email || "Open Design GO"
+    const accountName = email || name || "Open Design GO"
     const account = accountRepo.createProviderAccount({
       name: accountName,
       poolType: "open-design-go",

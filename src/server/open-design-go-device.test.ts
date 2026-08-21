@@ -100,6 +100,7 @@ describe("open-design-go device flow", () => {
     expect(result.status).toBe("approved")
     if (result.status === "approved") {
       expect(result.account.poolType).toBe("open-design-go")
+      expect(result.account.name).toBe("user@example.com")
       expect(result.account.email).toBe("user@example.com")
       expect(result.workspaceId).toBe("ir54ivb6ypgpv4y442txczu4")
     }
@@ -111,6 +112,7 @@ describe("open-design-go device flow", () => {
     const accounts = repo.list()
     expect(accounts.length).toBe(1)
     expect(accounts[0].poolType).toBe("open-design-go")
+    expect(accounts[0].name).toBe("user@example.com")
     const cred = credRepo.get(accounts[0].id)
     expect(cred?.runtimeKey).toBe("rk-approved")
     expect(cred?.controlKey).toBe("ck-approved")
@@ -119,6 +121,53 @@ describe("open-design-go device flow", () => {
     // 会话已清理
     const { _getSessionForTest } = await import("./open-design-go-device")
     expect(_getSessionForTest(started.sessionId)).toBeUndefined()
+  })
+
+  it("poll approved 命名优先级：email > user.name > 默认", async () => {
+    let approvedUser: Record<string, unknown> | undefined
+    let seq = 0
+    apiFetchSpy.mockImplementation(async (url: string) => {
+      if (url.includes("/device-authorizations") && !url.includes("/token")) {
+        return new Response(JSON.stringify({
+          deviceId: "dev-name", userCode: "NAME", deviceSecret: "sec-name", activationUrl: "https://open-design.ai/activate", pollIntervalSeconds: 1, expiresAt: new Date(Date.now()+900000).toISOString()
+        }), { status: 201 }) as unknown as Response
+      }
+      if (url.includes("/token")) {
+        seq++
+        const payload: Record<string, unknown> = { status: "approved", controlKey: `ck-name-${seq}`, runtimeKey: `rk-name-${seq}` }
+        if (approvedUser) payload.user = approvedUser
+        return new Response(JSON.stringify(payload), { status: 200 }) as unknown as Response
+      }
+      if (url.includes("/wallet/balance")) {
+        return new Response(JSON.stringify({}), { status: 200 }) as unknown as Response
+      }
+      return new Response("not found", { status: 404 }) as unknown as Response
+    })
+    const { AccountRepository } = await import("./repository")
+    const repo = new AccountRepository("owner", db)
+
+    // email 优先于 user.name
+    approvedUser = { id: "u1", email: "e@x.com", name: "显示名" }
+    let started = await startOpenDesignGoDeviceSession("owner")
+    let result = await pollOpenDesignGoDeviceSession("owner", started.sessionId)
+    expect(result.status).toBe("approved")
+    if (result.status === "approved") expect(result.account.name).toBe("e@x.com")
+
+    // 无 email 时回退 user.name
+    approvedUser = { id: "u2", name: "显示名" }
+    started = await startOpenDesignGoDeviceSession("owner")
+    result = await pollOpenDesignGoDeviceSession("owner", started.sessionId)
+    expect(result.status).toBe("approved")
+    if (result.status === "approved") expect(result.account.name).toBe("显示名")
+
+    // 都无时使用默认
+    approvedUser = { id: "u3" }
+    started = await startOpenDesignGoDeviceSession("owner")
+    result = await pollOpenDesignGoDeviceSession("owner", started.sessionId)
+    expect(result.status).toBe("approved")
+    if (result.status === "approved") expect(result.account.name).toBe("Open Design GO")
+
+    expect(repo.list().length).toBe(3)
   })
 
   it("poll denied 返回 denied", async () => {
