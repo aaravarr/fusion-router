@@ -47,7 +47,7 @@ export function LoginForm() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "登录失败"); }
     finally { setBusy(false); }
   }
-  return <AuthShell eyebrow="SIGN IN" title="登录控制台" description="使用管理员为你创建的本地账号登录。会话保存在安全的 HttpOnly Cookie 中。">
+  return <AuthShell eyebrow="SIGN IN" title="登录控制台" description="使用本地账号登录，登录后进入管理控制台。">
     {githubEnabled ? (
       <div className="mb-5 space-y-3">
         <Button variant="outline" className="h-10 w-full" onClick={githubLogin}>

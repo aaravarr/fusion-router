@@ -244,7 +244,8 @@ export function UsersPage() {
             description="初始化管理员后会显示在这里。"
           />
         ) : (
-          <Table className="min-w-[900px]">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[900px]">
             <TableHeader className="bg-[#fafafa]">
               <TableRow>
                 <TableHead className="px-4" style={{ minWidth: 230 }}>用户名</TableHead>
@@ -375,6 +376,7 @@ export function UsersPage() {
               })}
             </TableBody>
           </Table>
+            </div>
         )}
       </Panel>
       <Dialog open={open} onOpenChange={setOpen}>

@@ -182,7 +182,8 @@ export function RequestsPage() {
         ) : !items.length ? (
           <EmptyState title="暂无请求记录" description="没有匹配当前过滤条件的请求，尝试调整搜索或过滤。" />
         ) : (
-          <Table className="min-w-[1360px]">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[1360px]">
             <TableHeader className="bg-[#fafafa]">
               <TableRow>
                 <TableHead className="px-4 text-xs text-muted-foreground">时间</TableHead>
@@ -245,6 +246,7 @@ export function RequestsPage() {
               ))}
             </TableBody>
           </Table>
+            </div>
         )}
 
         {total > 0 ? (

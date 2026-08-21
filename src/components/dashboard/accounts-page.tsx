@@ -604,7 +604,8 @@ export function AccountsPage() {
           />
         ) : null}
         {!resource.loading && !resource.error && total ? (
-          <Table className={showMonthly ? "min-w-[1244px]" : "min-w-[1124px]"}>
+          <div className="overflow-x-auto">
+            <Table className={showMonthly ? "min-w-[1244px]" : "min-w-[1124px]"}>
             <TableHeader className="bg-[#fafafa]">
               <TableRow className="hover:bg-[#fafafa]">
                 <TableHead className="w-11 px-4">
@@ -637,9 +638,9 @@ export function AccountsPage() {
                         aria-label={`选择账号 ${account.name || account.email || account.id}`}
                       />
                     </TableCell>
-                    <TableCell className="px-4 py-3">
-                      <Button type="button" variant="link" className="group h-auto max-w-[210px] justify-start p-0 text-left no-underline" onClick={() => setSelected(account)}>
-                        <span className="flex items-center gap-1.5 truncate text-sm font-medium group-hover:underline group-hover:underline-offset-4">
+                    <TableCell className="max-w-[200px] px-4 py-3">
+                      <Button type="button" variant="link" className="group h-auto max-w-[180px] justify-start p-0 text-left no-underline sm:max-w-[210px]" onClick={() => setSelected(account)}>
+                        <span className="flex max-w-full items-center gap-1.5 truncate text-sm font-medium group-hover:underline group-hover:underline-offset-4">
                           {account.name || account.email || "未命名账号"}
                           <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                         </span>
@@ -701,6 +702,7 @@ export function AccountsPage() {
               })}
             </TableBody>
           </Table>
+            </div>
         ) : null}
         {!resource.loading && !resource.error && total > 0 ? (
           <PaginationBar

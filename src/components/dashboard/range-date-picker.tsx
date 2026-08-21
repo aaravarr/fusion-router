@@ -136,7 +136,7 @@ export function RangeDatePicker({ startDate, endDate, onChange, highlighted = fa
           aria-expanded={open}
           aria-label="选择时间范围"
           className={cn(
-            "gap-1.5 font-normal",
+            "w-full justify-between gap-1.5 font-normal sm:w-auto",
             highlighted && "border-primary bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
           )}
         >

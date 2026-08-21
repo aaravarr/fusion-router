@@ -147,7 +147,7 @@ export function StatsStrip({
     danger: "text-destructive",
   } as const
   return (
-    <div className={`dashboard-surface grid overflow-hidden rounded-lg bg-white sm:grid-cols-2 xl:grid-cols-4 ${className}`}>
+    <div className={`dashboard-surface grid grid-cols-2 overflow-hidden rounded-lg bg-white xl:grid-cols-4 ${className}`}>
       {items.map((item) => (
         <div key={item.label} className="min-w-0 border-b border-r border-border/70 px-4 py-3 last:border-b-0 sm:border-b xl:border-b-0">
           <p className="font-mono text-[10px] tracking-[0.08em] text-muted-foreground">{item.label}</p>

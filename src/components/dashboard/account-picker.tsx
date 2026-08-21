@@ -61,7 +61,7 @@ export function AccountPicker({ accounts, value, onChange }: AccountPickerProps)
           size="sm"
           aria-expanded={open}
           aria-label="筛选账号"
-          className="w-48 justify-between gap-2 font-normal"
+          className="w-full justify-between gap-2 font-normal sm:w-48"
         >
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <UsersRound className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />

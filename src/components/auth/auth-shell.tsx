@@ -15,7 +15,7 @@ export function AuthShell({ title, description, children, eyebrow }: { title: st
         </div>
         <p className="font-mono text-xs text-muted-foreground">SELF-HOSTED · TENANT ISOLATED</p>
       </section>
-      <section className="flex min-h-[100dvh] items-center px-6 py-12 sm:px-12">
+      <section className="flex min-h-[100dvh] items-start px-6 pt-16 pb-12 sm:items-center sm:px-12 sm:py-12">
         <div className="mx-auto w-full max-w-sm">
           <div className="mb-10 lg:hidden"><Brand /></div>
           <p className="mb-3 font-mono text-[10px] font-medium tracking-[.12em] text-muted-foreground">{eyebrow}</p>

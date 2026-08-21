@@ -93,7 +93,7 @@ export function OverviewPage() {
 
       {!resource.error ? (
         <div className="space-y-4">
-          <section className="dashboard-surface grid overflow-hidden rounded-lg bg-white sm:grid-cols-2 xl:grid-cols-4">
+          <section className="dashboard-surface grid grid-cols-2 overflow-hidden rounded-lg bg-white xl:grid-cols-4">
             <Metric icon={UsersRound} label="账号总数" value={data?.counts?.totalAccounts ?? data?.stats?.totalAccounts} note="已录入账号" />
             <Metric icon={CheckCircle2} label="当前可路由" value={data?.counts?.readyAccounts ?? data?.stats?.availableAccounts} note="可立即承载请求" tone="success" />
             <Metric icon={Clock3} label="额度冷却中" value={data?.counts?.quotaBlocked ?? data?.stats?.coolingAccounts} note="等待窗口恢复" />
@@ -150,7 +150,7 @@ export function OverviewPage() {
                     <Link key={request.id} href="/requests" className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3 hover:bg-[#fafafa] sm:px-5">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium">{request.model || "未记录模型"}</p>
-                        <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{request.id}</p>
+                        <p className="mt-1 max-w-[160px] truncate font-mono text-[11px] text-muted-foreground sm:max-w-[200px]">{request.id}</p>
                       </div>
                       <div className="text-right">
                         <StatusBadge status={String(request.status || "unknown")} />

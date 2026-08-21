@@ -183,7 +183,7 @@ export function UsagePage() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Select value={granularity} onValueChange={(value) => setGranularity(value as Granularity)} disabled={customRangeActive}>
-              <SelectTrigger size="sm" className="w-32">
+              <SelectTrigger size="sm" className="w-full sm:w-32">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -199,8 +199,8 @@ export function UsagePage() {
         }
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="inline-flex items-center rounded-lg border bg-card p-0.5">
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="inline-flex w-full items-center rounded-lg border bg-card p-0.5 sm:w-auto">
           {rangeOrder.map((key) => (
             <Button
               key={key}
@@ -215,17 +215,17 @@ export function UsagePage() {
             </Button>
           ))}
         </div>
-        <RangeDatePicker
+        <div className="w-full sm:w-auto"><RangeDatePicker
           startDate={customRange?.start ?? null}
           endDate={customRange?.end ?? null}
           highlighted={customRangeActive}
           onChange={(next) => setCustomRange(next.start || next.end ? next : null)}
-        />
+        /></div>
         <span className="text-xs text-muted-foreground">
           粒度：{granLabels[effectiveGranularity]}
         </span>
         <Select value={poolType} onValueChange={(value) => setPoolType(value)}>
-          <SelectTrigger size="sm" className="w-32">
+          <SelectTrigger size="sm" className="w-full sm:w-32">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -235,7 +235,7 @@ export function UsagePage() {
           </SelectContent>
         </Select>
         <Select value={model} onValueChange={(value) => setModel(value)}>
-          <SelectTrigger size="sm" className="w-40">
+          <SelectTrigger size="sm" className="w-full sm:w-40">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -245,7 +245,7 @@ export function UsagePage() {
             ))}
           </SelectContent>
         </Select>
-        <AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} />
+        <div className="w-full sm:w-auto"><AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} /></div>
       </div>
 
       {resource.error ? (
@@ -260,7 +260,11 @@ export function UsagePage() {
         <div className="space-y-4">
           <KpiRow summary={data.summary} />
 
-          {resource.error ? null : (
+          {resource.error ? null : !data.byTime.length && !data.byModel.length && !data.byAccount.length && !data.byKey.length && !data.summary.totalTokens ? (
+            <Panel>
+              <EmptyState title="暂无用量数据" description="当前筛选条件下没有可用统计，尝试调整时间范围或筛选条件后刷新。" />
+            </Panel>
+          ) : (
             <>
               <Panel title="Token 趋势" description="按时间分桶展示 Token 分段与请求数。">
                 {data.byTime.length ? (
