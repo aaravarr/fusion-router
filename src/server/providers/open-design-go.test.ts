@@ -261,3 +261,158 @@ describe("open-design-go buildForwardTarget", () => {
     db.close()
   })
 })
+
+
+describe("open-design-go linkUrl 默认值", () => {
+  it("缺 linkUrl 时回退 https://amr-link.open-design.ai/v1", () => {
+    expect(normalizeOpenDesignGoBaseUrl(undefined as unknown as string)).toBe("https://amr-link.open-design.ai/v1")
+    expect(normalizeOpenDesignGoBaseUrl(null as unknown as string)).toBe("https://amr-link.open-design.ai/v1")
+    expect(normalizeOpenDesignGoBaseUrl("")).toBe("https://amr-link.open-design.ai/v1")
+    expect(normalizeOpenDesignGoBaseUrl("   ")).toBe("https://amr-link.open-design.ai/v1")
+  })
+  it("getUpstreamBaseUrl 缺 linkUrl 时回退默认值", () => {
+    expect(normalizeOpenDesignGoBaseUrl(undefined as unknown as string)).toBe("https://amr-link.open-design.ai/v1")
+  })
+})
+
+describe("open-design-go 遥测头仿真", () => {
+  it("buildForwardTarget 始终带 X-AMR-Client-Source: vela 且生成 Run/Session Id", async () => {
+    const provider = new OpenDesignGoProvider()
+    ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+      runtimeKey: "rk-123",
+      linkUrl: "https://amr-link.open-design.ai",
+      controlKey: "ck-123",
+      workspaceId: "ws-999",
+    })
+    const fakeAccount = { id: "test-vela", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+    const cred = { token: "rk-123", credentialVersion: 1 }
+    const target1 = provider.buildForwardTarget(
+      { method: "POST", endpoint: "chat", model: "deepseek-v4-flash", upstreamModel: "deepseek-v4-flash", body: new TextEncoder().encode("{}") as unknown as Uint8Array<ArrayBuffer>, headers: new Headers(), signal: new AbortController().signal },
+      cred,
+      fakeAccount,
+    )
+    expect(target1.headers.get("X-AMR-Client-Source")).toBe("vela")
+    expect(target1.headers.get("x-vela-workspace-id")).toBe("ws-999")
+    expect(target1.headers.get("X-Open-Design-Workspace-Id")).toBe("ws-999")
+    expect(target1.headers.get("X-Open-Design-Run-Id")).toMatch(/^[0-9a-f-]{36}$/i)
+    expect(target1.headers.get("X-Open-Design-Session-Id")).toMatch(/^[0-9a-f-]{36}$/i)
+    const runId1 = target1.headers.get("X-Open-Design-Run-Id")
+    const sessionId1 = target1.headers.get("X-Open-Design-Session-Id")
+    const target2 = provider.buildForwardTarget(
+      { method: "POST", endpoint: "chat", model: "deepseek-v4-flash", upstreamModel: "deepseek-v4-flash", body: null, headers: new Headers(), signal: new AbortController().signal },
+      cred,
+      fakeAccount,
+    )
+    expect(target2.headers.get("X-Open-Design-Run-Id")).not.toBe(runId1)
+    expect(target2.headers.get("X-Open-Design-Session-Id")).not.toBe(sessionId1)
+    expect(target2.url).toBe("https://amr-link.open-design.ai/v1/chat/completions")
+  })
+  it("无 workspaceId 时不带 workspace 头但仍带 vela 与 uuid", async () => {
+    const provider = new OpenDesignGoProvider()
+    ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+      runtimeKey: "rk-456",
+      linkUrl: "https://example.com/v1",
+      controlKey: "ck-456",
+    })
+    const fakeAccount = { id: "test2", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+    const cred = { token: "rk-456", credentialVersion: 1 }
+    const target = provider.buildForwardTarget(
+      { method: "POST", endpoint: "chat", model: "glm-5.2", upstreamModel: "glm-5.2", body: null, headers: new Headers(), signal: new AbortController().signal },
+      cred,
+      fakeAccount,
+    )
+    expect(target.headers.get("X-AMR-Client-Source")).toBe("vela")
+    expect(target.headers.get("x-vela-workspace-id")).toBeNull()
+    expect(target.headers.get("X-Open-Design-Workspace-Id")).toBeNull()
+    expect(target.headers.get("X-Open-Design-Run-Id")).toBeTruthy()
+  })
+})
+
+describe("open-design-go 凭据 workspaceId", () => {
+  it("加密往返携带 workspaceId", () => {
+    const vault = new SecretVault(encryptionKey)
+    const data = { runtimeKey: "rk-1", linkUrl: "https://amr-link.open-design.ai", controlKey: "ck-1", workspaceId: "ws-abc" }
+    const cipher = vault.encrypt(JSON.stringify(data))
+    expect(JSON.parse(vault.decrypt(cipher))).toEqual(data)
+  })
+  it("ProviderCredentialRepository 存取 workspaceId", () => {
+    const db = createDatabase(":memory:")
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run("owner3", "owner3", "owner3", "Owner", "USER", "hash", new Date().toISOString(), new Date().toISOString())
+    const repo = new AccountRepository("owner3", db, new SecretVault(encryptionKey))
+    const credRepo = new ProviderCredentialRepository("owner3", db, new SecretVault(encryptionKey))
+    const account = repo.createProviderAccount({ name: "ws-test", poolType: "open-design-go", externalId: "ext-ws" })
+    credRepo.upsert({ accountId: account.id, poolType: "open-design-go", credentialData: { runtimeKey: "rk", linkUrl: "https://amr-link.open-design.ai", controlKey: "ck", workspaceId: "ws-777", email: "a@b.com" } })
+    expect(credRepo.get(account.id)?.workspaceId).toBe("ws-777")
+    db.close()
+  })
+})
+
+describe("open-design-go 双通道模型拉取与 isAccountReady 放宽", () => {
+  it("缺 controlKey 但有 runtimeKey 时回退到 linkBase/models", async () => {
+    const { vi } = await import("vitest")
+    const apiFetchModule = await import("../api-fetch")
+    let calledUrl: string | null = null
+    let calledAuth: string | null = null
+    const spy = vi.spyOn(apiFetchModule, "apiFetch").mockImplementation(async (url: string, init?: RequestInit) => {
+      calledUrl = url
+      const headers = init?.headers as Record<string, string> | Headers | undefined
+      if (headers instanceof Headers) calledAuth = headers.get("authorization")
+      else if (headers && typeof headers === "object") calledAuth = (headers as Record<string, string>).authorization ?? null
+      return new Response(JSON.stringify({ data: [{ id: "deepseek-v4-flash" }, { id: "glm-5.2" }] }), { status: 200, headers: { "content-type": "application/json" } })
+    })
+    try {
+      const provider = new OpenDesignGoProvider()
+      ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+        runtimeKey: "rk-only",
+        linkUrl: "https://amr-link.open-design.ai",
+      })
+      const fakeAccount = { id: "dual", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+      const models = await provider.fetchRemoteModels(fakeAccount)
+      expect(models).toEqual(["deepseek-v4-flash", "glm-5.2"])
+      expect(calledUrl).toBe("https://amr-link.open-design.ai/v1/models")
+      expect(calledAuth).toBe("Bearer rk-only")
+    } finally {
+      spy.mockRestore()
+    }
+  })
+  it("有 controlKey 时优先走控制面", async () => {
+    const { vi } = await import("vitest")
+    const apiFetchModule = await import("../api-fetch")
+    let calledUrl: string | null = null
+    const spy = vi.spyOn(apiFetchModule, "apiFetch").mockImplementation(async (url: string) => {
+      calledUrl = url
+      return new Response(JSON.stringify({ data: [{ id: "kimi-k2.6" }] }), { status: 200 })
+    })
+    try {
+      const provider = new OpenDesignGoProvider()
+      ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+        runtimeKey: "rk",
+        linkUrl: "https://amr-link.open-design.ai",
+        controlKey: "ck-priority",
+        apiUrl: "https://amr-api.open-design.ai",
+      })
+      const fakeAccount = { id: "dual2", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+      const models = await provider.fetchRemoteModels(fakeAccount)
+      expect(calledUrl).toBe("https://amr-api.open-design.ai/api/v1/models")
+      expect(models).toEqual(["kimi-k2.6"])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+  it("isAccountReady 仅需 runtimeKey，controlKey可选", async () => {
+    const provider = new OpenDesignGoProvider()
+    const fakeReady = { id: "ready", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+    ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+      runtimeKey: "rk-only",
+      linkUrl: "https://amr-link.open-design.ai",
+    })
+    expect(provider.isAccountReady(fakeReady)).toBe(true)
+    const fakeNotReady = { id: "notready", adminState: "ENABLED", authState: "VALID" } as unknown as import("../types").AccountRecord
+    ;(provider as unknown as { readCredentialData: () => unknown }).readCredentialData = () => ({
+      runtimeKey: "",
+      linkUrl: "https://amr-link.open-design.ai",
+    } as unknown as ReturnType<typeof provider["readCredentialData"]>)
+    expect(provider.isAccountReady(fakeNotReady)).toBe(false)
+  })
+})

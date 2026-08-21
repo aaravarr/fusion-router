@@ -8,10 +8,17 @@ import { apiFetch } from "@/server/api-fetch"
 export const runtime = "nodejs"
 
 const DEFAULT_API_URL = "https://amr-api.open-design.ai"
+const DEFAULT_LINK_URL = "https://amr-link.open-design.ai"
 
 function normalizeApiUrl(apiUrl?: string | null): string {
   const raw = (apiUrl?.trim() || DEFAULT_API_URL).replace(/\/+$/, "")
   return raw || DEFAULT_API_URL
+}
+
+function normalizeLinkUrl(linkUrl?: string | null): string {
+  const raw = (linkUrl?.trim() || DEFAULT_LINK_URL).replace(/\/+$/, "")
+  const trimmed = raw || DEFAULT_LINK_URL
+  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`
 }
 
 function parseModels(body: string): string[] {
@@ -39,6 +46,7 @@ const bodySchema = z.object({
   controlKey: z.string().optional(),
   apiUrl: z.string().optional(),
   name: z.string().optional(),
+  workspaceId: z.string().optional(),
 })
 
 interface AmrUser {
@@ -51,6 +59,7 @@ interface AmrProfile {
   runtimeKey?: string
   apiUrl?: string
   linkUrl?: string
+  workspaceId?: string
   user?: AmrUser
 }
 
@@ -62,10 +71,10 @@ function extractFromConfigJson(configJson: unknown): {
   email?: string
   plan?: string
   userId?: string
+  workspaceId?: string
 } | null {
   if (!configJson || typeof configJson !== "object") return null
   const obj = configJson as Record<string, unknown>
-  // 结构 {profiles:{prod:{controlKey,runtimeKey,apiUrl,linkUrl,user:{id,email,plan}}}}
   const profiles = (obj.profiles as Record<string, unknown> | undefined) ?? (obj.profile as Record<string, unknown> | undefined)
   let profile: Record<string, unknown> | null = null
   if (profiles && typeof profiles === "object") {
@@ -76,8 +85,7 @@ function extractFromConfigJson(configJson: unknown): {
       if (first && typeof first === "object") profile = first as Record<string, unknown>
     }
   }
-  // 兼容 configJson 本身就是 profile
-  if (!profile && ("runtimeKey" in obj || "controlKey" in obj)) {
+  if (!profile && ("runtimeKey" in obj || "controlKey" in obj || "workspaceId" in obj)) {
     profile = obj
   }
   if (!profile) return null
@@ -85,11 +93,12 @@ function extractFromConfigJson(configJson: unknown): {
   const linkUrl = typeof profile.linkUrl === "string" ? profile.linkUrl.trim() : typeof (profile as Record<string, unknown>).link_url === "string" ? String((profile as Record<string, unknown>).link_url).trim() : undefined
   const controlKey = typeof profile.controlKey === "string" ? profile.controlKey.trim() : typeof (profile as Record<string, unknown>).control_key === "string" ? String((profile as Record<string, unknown>).control_key).trim() : undefined
   const apiUrl = typeof profile.apiUrl === "string" ? profile.apiUrl.trim() : typeof (profile as Record<string, unknown>).api_url === "string" ? String((profile as Record<string, unknown>).api_url).trim() : undefined
+  const workspaceId = typeof (profile as Record<string, unknown>).workspaceId === "string" ? String((profile as Record<string, unknown>).workspaceId).trim() : typeof (profile as Record<string, unknown>).workspace_id === "string" ? String((profile as Record<string, unknown>).workspace_id).trim() : typeof (profile as Record<string, unknown>)["x-vela-workspace-id"] === "string" ? String((profile as Record<string, unknown>)["x-vela-workspace-id"]).trim() : undefined
   const user = profile.user as AmrUser | undefined
   const email = user?.email?.trim()
   const plan = user?.plan?.trim()
   const userId = user?.id?.trim()
-  return { runtimeKey, linkUrl, controlKey, apiUrl, email, plan, userId }
+  return { runtimeKey, linkUrl, controlKey, apiUrl, email, plan, userId, workspaceId }
 }
 
 export async function POST(request: Request) {
@@ -107,6 +116,7 @@ export async function POST(request: Request) {
   let controlKey: string | undefined = parsed.data.controlKey?.trim() || undefined
   let apiUrl: string | undefined = parsed.data.apiUrl?.trim() || undefined
   let name: string | undefined = parsed.data.name?.trim() || undefined
+  let workspaceId: string | undefined = parsed.data.workspaceId?.trim() || undefined
   let email: string | undefined
   let plan: string | undefined
   let userId: string | undefined
@@ -128,7 +138,6 @@ export async function POST(request: Request) {
     if (!extracted) {
       return Response.json({ error: { type: "validation_error", message: "configJson 中未找到有效的 profile（需包含 profiles.prod 或首个 profile）" } }, { status: 400 })
     }
-    // configJson 优先，但若 body 直接传了则覆盖
     runtimeKey = runtimeKey || extracted.runtimeKey
     linkUrl = linkUrl || extracted.linkUrl
     controlKey = controlKey || extracted.controlKey
@@ -136,48 +145,78 @@ export async function POST(request: Request) {
     email = extracted.email
     plan = extracted.plan
     userId = extracted.userId
-    // 若未传 name，用 email 兜底
+    workspaceId = workspaceId || extracted.workspaceId
     if (!name && email) name = email
   }
 
-  if (!runtimeKey || !linkUrl || !controlKey) {
+  // linkUrl 缺省回退 DEFAULT_LINK_URL；controlKey 可选（双通道）
+  linkUrl = linkUrl?.trim() || DEFAULT_LINK_URL
+  if (!runtimeKey) {
     return Response.json(
-      { error: { type: "validation_error", message: "缺少必要字段：runtimeKey、linkUrl、controlKey（或提供 configJson）" } },
+      { error: { type: "validation_error", message: "缺少必要字段：runtimeKey（或提供 configJson）" } },
       { status: 400 },
     )
   }
 
   const normalizedApiUrl = normalizeApiUrl(apiUrl)
-  // 先实测验证 controlKey：调 /api/v1/models 确认有效，无效直接拒绝。
-  // 注意：业务失败一律不用 401，必须用 400/422，否则前端 sessionFetch 会跳登录。
+  const normalizedLinkUrl = normalizeLinkUrl(linkUrl)
+  // 校验：优先用 controlKey 打控制面，缺 controlKey 则回退用 runtimeKey 打 linkBase
   let models: string[] = []
-  try {
-    const resp = await apiFetch(`${normalizedApiUrl}/api/v1/models`, {
-      method: "GET",
-      headers: { authorization: `Bearer ${controlKey}`, accept: "application/json" },
-      signal: AbortSignal.timeout(10000),
-    })
-    const text = await resp.text()
-    if (!resp.ok) throw new Error(`Open Design GO /api/v1/models 拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
-    models = parseModels(text)
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause)
-    if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired|forbidden/i.test(message)) {
+  let validateVia: "controlKey" | "runtimeKey" = "controlKey"
+  if (controlKey) {
+    try {
+      const resp = await apiFetch(`${normalizedApiUrl}/api/v1/models`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${controlKey}`, accept: "application/json" },
+        signal: AbortSignal.timeout(10000),
+      })
+      const text = await resp.text()
+      if (!resp.ok) throw new Error(`Open Design GO /api/v1/models 拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
+      models = parseModels(text)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired|forbidden/i.test(message)) {
+        return Response.json(
+          { error: { type: "open_design_go_invalid", message: `Open Design GO 凭据验证失败：${message}` } },
+          { status: 400 },
+        )
+      }
       return Response.json(
-        { error: { type: "open_design_go_invalid", message: `Open Design GO 凭据验证失败：${message}` } },
-        { status: 400 },
+        { error: { type: "open_design_go_unreachable", message: `Open Design GO 上游暂时不可达：${message}` } },
+        { status: 502 },
       )
     }
-    return Response.json(
-      { error: { type: "open_design_go_unreachable", message: `Open Design GO 上游暂时不可达：${message}` } },
-      { status: 502 },
-    )
+  } else {
+    // 回退通道：用 runtimeKey 验 linkBase/models
+    validateVia = "runtimeKey"
+    try {
+      const resp = await apiFetch(`${normalizedLinkUrl}/models`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${runtimeKey}`, accept: "application/json" },
+        signal: AbortSignal.timeout(10000),
+      })
+      const text = await resp.text()
+      if (!resp.ok) throw new Error(`Open Design GO /models 回退拉取失败（HTTP ${resp.status}）: ${text.slice(0, 200)}`)
+      models = parseModels(text)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (/\b(401|403)\b/.test(message) || /invalid|unauthorized|expired|forbidden/i.test(message)) {
+        return Response.json(
+          { error: { type: "open_design_go_invalid", message: `Open Design GO 凭据验证失败（回退通道）：${message}` } },
+          { status: 400 },
+        )
+      }
+      return Response.json(
+        { error: { type: "open_design_go_unreachable", message: `Open Design GO 上游暂时不可达（回退通道）：${message}` } },
+        { status: 502 },
+      )
+    }
   }
 
   const db = getDatabase()
   const accountRepo = new AccountRepository(user.id, db)
   const credRepo = new ProviderCredentialRepository(user.id, db)
-  const externalId = createHash("sha256").update(`open-design-go:${controlKey}:${runtimeKey}`).digest("hex").slice(0, 24)
+  const externalId = createHash("sha256").update(`open-design-go:${controlKey ?? runtimeKey}:${runtimeKey}:${workspaceId ?? ""}`).digest("hex").slice(0, 24)
 
   const accountName = name?.trim() || email || "Open Design GO"
   const account = accountRepo.createProviderAccount({
@@ -189,13 +228,15 @@ export async function POST(request: Request) {
 
   const credentialData: Record<string, string> = {
     runtimeKey,
-    linkUrl,
-    controlKey,
+    linkUrl: normalizedLinkUrl,
     apiUrl: normalizedApiUrl,
   }
+  if (controlKey) credentialData.controlKey = controlKey
   if (email) credentialData.email = email
   if (plan) credentialData.plan = plan
   if (userId) credentialData.userId = userId
+  if (workspaceId) credentialData.workspaceId = workspaceId
+  // 兼容旧字段：linkUrl 已规整
 
   credRepo.upsert({ accountId: account.id, poolType: "open-design-go", credentialData })
 
@@ -212,5 +253,6 @@ export async function POST(request: Request) {
       poolType: account.poolType,
     },
     models,
+    validatedVia: validateVia,
   })
 }
