@@ -10,7 +10,7 @@ export function MockPreview() {
       <div className="container">
         <Reveal className="section-head">
           <h2>管理台，账号池尽在掌握</h2>
-          <p>账号运行状态一目了然。</p>
+          <p>健康度、额度、并发上限与请求日志集中一处，多账号运行状态一目了然。</p>
         </Reveal>
 
         <Reveal className="mock-scroll">
