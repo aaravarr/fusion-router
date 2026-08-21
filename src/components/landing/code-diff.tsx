@@ -35,7 +35,7 @@ export function CodeDiff() {
               </div>
               <div className="code-line add">
                 <span className="mark">+</span>
-                <span className="cx">BASE_URL = "http://fusion.local:8000/v1"</span>
+                <span className="cx">BASE_URL = "http://fusion.local:13600/v1"</span>
               </div>
             </div>
           </div>

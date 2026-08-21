@@ -15,11 +15,9 @@ export function Cta() {
             <span className="cta-mono">SELF-HOSTED · OPENAI &amp; ANTHROPIC COMPATIBLE</span>
           </div>
           <div className="cta-term">
-            <span className="p">$</span> docker run -d -p 13600:13600 fusion-router
+            <span className="p">$</span> git clone https://github.com/aaravarr/fusion-router.git
             <br />
-            <span className="p"># 或</span>
-            <br />
-            <span className="p">$</span> cd ~/fusion-router && bash deploy.sh
+            <span className="p">$</span> cd fusion-router && bash deploy.sh
           </div>
         </Reveal>
       </div>
