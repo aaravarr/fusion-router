@@ -315,7 +315,7 @@ export function QuotaStatus({
           aria-valuemax={Math.max(100, used ?? 100)}
           aria-valuenow={used ?? undefined}
         >
-          <div className={`h-full rounded-full ${used != null && used >= 100 ? "bg-warning" : "bg-foreground/70"}`} style={{ width: `${Math.min(100, used ?? 0)}%` }} />
+          <div className={`h-full rounded-full ${used != null && used >= 100 ? "bg-warning" : "bg-primary"}`} style={{ width: `${Math.min(100, used ?? 0)}%` }} />
         </div>
         {!isBalance && usedTokens != null && limitTokens != null ? (
           <p className="mt-2 font-mono text-[10px] text-muted-foreground">
@@ -352,7 +352,7 @@ export function QuotaStatus({
         aria-valuemax={Math.max(100, used ?? 100)}
         aria-valuenow={used ?? undefined}
       >
-        <div className={`h-full rounded-full ${used != null && used >= 100 ? "bg-warning" : "bg-foreground/70"}`} style={{ width: `${Math.min(100, used ?? 0)}%` }} />
+        <div className={`h-full rounded-full ${used != null && used >= 100 ? "bg-warning" : "bg-primary"}`} style={{ width: `${Math.min(100, used ?? 0)}%` }} />
       </div>
       {usedTokens != null && limitTokens != null ? (
         <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={`${usedTokens} / ${limitTokens} tokens`}>

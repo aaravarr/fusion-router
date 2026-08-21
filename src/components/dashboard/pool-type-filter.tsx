@@ -107,7 +107,7 @@ export function PoolTypeFilterBar({
                   className={cn(
                     "h-8 shrink-0 rounded-full px-3 text-xs whitespace-nowrap",
                     active
-                      ? "border-foreground bg-foreground text-background"
+                      ? "border-primary bg-primary text-primary-foreground"
                       : "border-border bg-white text-muted-foreground hover:border-foreground/20 hover:text-foreground",
                   )}
                 >
@@ -116,7 +116,7 @@ export function PoolTypeFilterBar({
                     <span
                       className={cn(
                         "font-mono text-[10px] tabular-nums",
-                        active ? "text-background/75" : "text-muted-foreground",
+                        active ? "text-primary-foreground/75" : "text-muted-foreground",
                       )}
                     >
                       {count}

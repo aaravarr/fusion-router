@@ -151,11 +151,11 @@ function NavItem({
     <Link
       href={item.href}
       className={`group flex min-h-9 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors ${
-        active ? "bg-[#171717] text-white" : "text-[#4d4d4d] hover:bg-[#f5f5f5] hover:text-[#171717]"
+        active ? "bg-primary text-primary-foreground" : "text-[#4d4d4d] hover:bg-[#f5f5f5] hover:text-[#171717]"
       }`}
       aria-current={active ? "page" : undefined}
     >
-      <Icon className={`size-4 ${active ? "text-white" : "text-[#888] group-hover:text-[#171717]"}`} strokeWidth={1.75} aria-hidden="true" />
+      <Icon className={`size-4 ${active ? "text-primary-foreground" : "text-[#888] group-hover:text-[#171717]"}`} strokeWidth={1.75} aria-hidden="true" />
       <span>{item.label}</span>
     </Link>
   );

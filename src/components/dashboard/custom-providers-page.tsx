@@ -390,7 +390,7 @@ function EditorSection({ title, description, children }: { title: string; descri
 }
 
 function OptionCard({ checked, onChange, title, description }: { checked: boolean; onChange: (value: boolean) => void; title: string; description: string }) {
-  return <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 transition-colors ${checked ? "border-foreground/20 bg-foreground/[0.03]" : "bg-background hover:bg-muted/30"}`}>
+  return <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 transition-colors ${checked ? "border-accent-blue bg-accent-blue-soft" : "bg-background hover:bg-muted/30"}`}>
     <Checkbox className="mt-0.5" checked={checked} onCheckedChange={(value) => onChange(value === true)} />
     <span><span className="block text-sm font-medium">{title}</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">{description}</span></span>
   </label>;
