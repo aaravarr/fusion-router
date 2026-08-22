@@ -40,13 +40,17 @@ function PanelInner({
   const hasUsage = totalTokens > 0
   return (
     <>
-      <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-[var(--chat-border-l1)] px-4 max-md:h-14">
-        <span className="text-[13.5px] font-semibold">运行详情</span>
-        <button type="button" onClick={onClose} aria-label="关闭" className="flex size-11 items-center justify-center rounded-xl text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)] hover:text-[var(--chat-label-primary)] md:size-[26px] md:rounded-lg"><X className="size-5 md:size-4" /></button>
+      <div className="flex h-[52px] shrink-0 items-center justify-between bg-[var(--chat-bg-detail)] px-4 max-md:h-14">
+        <span className="text-[13px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">运行详情</span>
+        <button type="button" onClick={onClose} aria-label="关闭" className="flex size-11 items-center justify-center rounded-xl text-[var(--chat-label-tertiary)] hover:bg-white hover:text-[var(--chat-label-primary)] md:size-[26px] md:rounded-lg"><X className="size-5 md:size-4" strokeWidth={1.5} /></button>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
-        <section>
-          <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[.05em] text-[var(--chat-label-tertiary)]">工具调用</div>
+      <div className="flex gap-1 px-3 pb-2.5 pt-0 bg-[var(--chat-bg-detail)]">
+        <button type="button" className="flex-1 h-7 rounded-[8px] bg-[var(--chat-bg-card)] text-xs font-semibold text-[var(--chat-label-primary)] shadow-[var(--chat-shadow-card)]">工具</button>
+        <button type="button" className="flex-1 h-7 rounded-[8px] text-xs font-medium text-[var(--chat-label-tertiary)]">上下文</button>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto bg-[var(--chat-bg-detail)] p-[14px] pt-2">
+        <section className="rounded-[12px] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-card)]">
+          <div className="mb-2 text-[12px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">工具调用</div>
           {total ? (
             <>
               <div className="grid grid-cols-4 gap-1.5">
@@ -57,8 +61,8 @@ function PanelInner({
               </div>
               <ul className="mt-3 flex flex-col">
                 {toolCalls.map((call) => (
-                  <li key={call.id} className="flex items-center gap-2 rounded-lg px-2 py-[7px] hover:bg-[var(--chat-bg-layer-1)]">
-                    <ToolVariantIcon variant={call.variant} className="size-3.5 text-[var(--chat-label-secondary)]" />
+                  <li key={call.id} className="flex items-center gap-2 rounded-lg px-2 py-[7px] hover:bg-[var(--chat-bg-subtle)]">
+                    <ToolVariantIcon variant={call.variant} className="size-[14px] text-[var(--chat-label-secondary)]" />
                     <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--chat-label-primary)]">{call.name}</span>
                     <span className="font-mono text-[11px] text-[var(--chat-label-caption)]">{call.state === "running" ? "运行中" : formatDuration(call.startedAt, call.completedAt)}</span>
                     <StateIcon state={call.state} />
@@ -67,19 +71,19 @@ function PanelInner({
               </ul>
             </>
           ) : (
-            <div className="rounded-lg border border-[var(--chat-border-l1)] bg-[var(--chat-bg-layer-1)] px-3 py-3 text-xs text-[var(--chat-label-tertiary)]">本轮暂无工具调用</div>
+            <div className="rounded-lg bg-[var(--chat-bg-subtle)] px-3 py-3 text-xs text-[var(--chat-label-tertiary)]">本轮暂无工具调用</div>
           )}
         </section>
 
-        <section>
-          <div className="mb-2.5 text-[11px] font-semibold uppercase tracking-[.05em] text-[var(--chat-label-tertiary)]">上下文</div>
+        <section className="rounded-[12px] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-card)]">
+          <div className="mb-2 text-[12px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">上下文</div>
           {hasUsage ? (
             <>
               <div className="mb-2 flex items-baseline justify-between">
                 <span className="text-xl font-bold tracking-[-.02em]">{formatTokens(totalTokens)}<span className="ml-1 text-xs font-medium text-[var(--chat-label-tertiary)]">tokens</span></span>
                 <span className="font-mono text-[11.5px] text-[var(--chat-label-tertiary)]">输入 {formatTokens(usage?.inputTokens)} · 输出 {formatTokens(usage?.outputTokens)}</span>
               </div>
-              <div className="flex h-2 overflow-hidden rounded bg-[var(--chat-bg-layer-2)]">
+              <div className="flex h-1.5 overflow-hidden rounded-full bg-[var(--chat-bg-subtle)]">
                 <span className="h-full bg-[#94A3B8]" style={{ width: usage?.inputTokens ? Math.min(100, (usage.inputTokens / totalTokens) * 100) + "%" : "0%" }} />
                 <span className="h-full bg-[var(--chat-accent)]" style={{ width: usage?.outputTokens ? Math.min(100, (usage.outputTokens / totalTokens) * 100) + "%" : "0%" }} />
               </div>
@@ -89,7 +93,7 @@ function PanelInner({
               </div>
             </>
           ) : (
-            <div className="rounded-lg border border-[var(--chat-border-l1)] bg-[var(--chat-bg-layer-1)] px-3 py-3 text-xs text-[var(--chat-label-tertiary)]">完成一轮生成后显示 token 用量分解</div>
+            <div className="rounded-lg bg-[var(--chat-bg-subtle)] px-3 py-3 text-xs text-[var(--chat-label-tertiary)]">完成一轮生成后显示 token 用量分解</div>
           )}
         </section>
       </div>
@@ -111,14 +115,14 @@ export function DetailsPanel({
   if (!open) return null
   return (
     <>
-      {/* Desktop side panel */}
-      <aside className="hidden min-h-0 w-[min(360px,26vw)] min-w-[300px] flex-col border-l border-[var(--chat-border-l1)] bg-white md:flex">
+      {/* Desktop side panel — v3 无竖线，底色区分 */}
+      <aside className="hidden min-h-0 w-[340px] shrink-0 flex-col bg-[var(--chat-bg-detail)] md:flex">
         <PanelInner onClose={onClose} toolCalls={toolCalls} usage={usage} />
       </aside>
       {/* Mobile drawer/overlay from right */}
       <div className="fixed inset-0 z-40 flex justify-end md:hidden" role="dialog" aria-modal="true" aria-label="运行详情">
         <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={onClose} aria-hidden="true" />
-        <aside className="relative flex w-[88vw] max-w-[360px] flex-col bg-white shadow-xl">
+        <aside className="relative flex w-[88vw] max-w-[360px] flex-col bg-[var(--chat-bg-detail)] shadow-xl">
           <PanelInner onClose={onClose} toolCalls={toolCalls} usage={usage} />
         </aside>
       </div>
@@ -129,7 +133,7 @@ export function DetailsPanel({
 function StatBlock({ num, label, tone }: { num: string; label: string; tone?: "ok" | "run" | "err" }) {
   const color = tone === "ok" ? "text-[var(--chat-success)]" : tone === "run" ? "text-[var(--chat-accent)]" : tone === "err" ? "text-[var(--chat-error)]" : "text-[var(--chat-label-primary)]"
   return (
-    <div className="rounded-lg border border-[var(--chat-border-l1)] bg-[var(--chat-bg-layer-1)] px-[9px] py-1.5">
+    <div className="rounded-lg bg-[var(--chat-bg-subtle)] px-[9px] py-1.5">
       <div className={"font-mono text-sm font-bold tracking-[-.01em] " + color}>{num}</div>
       <div className="mt-0.5 text-[10.5px] text-[var(--chat-label-tertiary)]">{label}</div>
     </div>
@@ -137,8 +141,8 @@ function StatBlock({ num, label, tone }: { num: string; label: string; tone?: "o
 }
 
 function StateIcon({ state }: { state: ChatToolCall["state"] }) {
-  if (state === "ok") return <span className="chat-state-dot ok" />
-  if (state === "error") return <span className="chat-state-dot error" />
-  if (state === "stopped") return <span className="chat-state-dot warn" />
-  return <span className="chat-state-dot running" />
+  if (state === "ok") return <span className="size-[7px] shrink-0 rounded-full bg-[var(--chat-success)]" />
+  if (state === "error") return <span className="size-[7px] shrink-0 rounded-full bg-[var(--chat-error)]" />
+  if (state === "stopped") return <span className="size-[7px] shrink-0 rounded-full bg-[var(--chat-warn)]" />
+  return <span className="size-[7px] shrink-0 rounded-full bg-[var(--chat-accent)] animate-[chat-pulse-dot_1.4s_ease-in-out_infinite]" />
 }

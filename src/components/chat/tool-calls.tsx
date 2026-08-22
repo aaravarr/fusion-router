@@ -14,8 +14,8 @@ function formatDuration(startedAt?: number, completedAt?: number): string {
 }
 
 function stateDot(state: ChatToolCall["state"]) {
-  if (state === "ok") return <Check className="size-3.5 text-[var(--chat-success)]" strokeWidth={2.4} />
-  if (state === "error") return <X className="size-3.5 text-[var(--chat-error)]" strokeWidth={2.4} />
+  if (state === "ok") return <Check className="size-[14px] text-[var(--chat-success)]" strokeWidth={2.2} />
+  if (state === "error") return <X className="size-[14px] text-[var(--chat-error)]" strokeWidth={2.2} />
   if (state === "stopped") return <span className="chat-state-dot warn" />
   return <span className="chat-spinner" />
 }
@@ -25,19 +25,19 @@ export function ToolCard({ call }: { call: ChatToolCall }) {
   const [open, setOpen] = useState(true)
   const time = formatDuration(call.startedAt, call.completedAt)
   return (
-    <div className="mt-3.5 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l1)] bg-white">
-      <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full min-h-9 items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--chat-bg-layer-1)]">
-        <ToolVariantIcon variant={call.variant} className="size-3.5 shrink-0 text-[var(--chat-label-secondary)]" />
+    <div className="mt-4 overflow-hidden rounded-[12px] bg-white shadow-[var(--chat-shadow-card)]">
+      <button type="button" onClick={() => setOpen((value) => !value)} className="flex min-h-9 w-full items-center gap-2 px-[14px] py-1.5 text-left hover:bg-[var(--chat-bg-subtle)] transition-colors duration-[120ms]">
+        <ToolVariantIcon variant={call.variant} className="size-[14px] shrink-0 text-[var(--chat-label-secondary)]" />
         <span className="font-mono text-[12.5px] font-semibold text-[var(--chat-label-primary)]">{call.name}</span>
         <span className="size-[3px] rounded-full bg-[var(--chat-border-l3)]" />
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--chat-label-tertiary)]">{call.summary}</span>
         {time ? <span className="font-mono text-[11px] text-[var(--chat-label-caption)]">{call.state === "running" ? "运行中" : time}</span> : null}
         {stateDot(call.state)}
-        <ChevronRight className="size-3.5 text-[var(--chat-label-caption)] transition-transform" style={{ transform: open ? "rotate(90deg)" : undefined }} />
+        <ChevronRight className="size-[14px] shrink-0 text-[var(--chat-label-caption)] transition-transform" strokeWidth={1.5} style={{ transform: open ? "rotate(90deg)" : undefined }} />
       </button>
       <div className="chat-disclose" data-open={open}>
         <div className="chat-disclose-inner">
-          <div className="border-t border-[var(--chat-border-l1)]">
+          <div className="">
             {call.renderIntent === "diff" && call.diffHunks ? <DiffBody hunks={call.diffHunks} /> : null}
             {call.renderIntent === "read" && call.readLines ? <ReadBody lines={call.readLines} /> : null}
             {call.renderIntent === "io" ? <IoBody call={call} /> : null}
@@ -70,9 +70,16 @@ function IoBody({ call }: { call: ChatToolCall }) {
         </div>
       ) : null}
       {output || error ? (
-        <div className={`grid grid-cols-[max-content_1fr] gap-3 bg-white px-3 py-2.5 ${error ? "" : (hasArgs ? "border-t border-[var(--chat-border-l1)]" : "")}`}>
-          <span className={`font-mono text-[11px] font-semibold tracking-[.06em] ${error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-tertiary)]"}`}>{error ? "ERR" : "OUT"}</span>
-          <pre className={`min-w-0 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed ${error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-secondary)]"}`}>{error ?? output}</pre>
+        <div className={"grid grid-cols-[max-content_1fr] gap-3 bg-white px-3 py-2.5 "}>
+          <span className={"font-mono text-[11px] font-semibold tracking-[.06em] " + (error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-tertiary)]")}>{error ? "ERR" : "OUT"}</span>
+          <div className="min-w-0">
+            <pre className={"whitespace-pre-wrap break-all font-mono text-xs leading-relaxed " + (error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-secondary)]")}>{error ?? output}</pre>
+            {!error && output ? (
+              <a href="#" onClick={(e) => { e.preventDefault(); const el = e.currentTarget.previousElementSibling as HTMLElement; if (el) { el.style.whiteSpace = el.style.whiteSpace === "pre-wrap" ? "pre" : "pre-wrap" } }} className="mt-[10px] inline-flex items-center gap-1 text-xs font-medium text-[var(--chat-accent)] hover:underline">
+                查看完整内容 <ChevronRight className="size-3" />
+              </a>
+            ) : null}
+          </div>
         </div>
       ) : null}
       {!hasArgs && !output && !error ? (
@@ -139,17 +146,18 @@ export function ToolGroup({ calls }: { calls: ChatToolCall[] }) {
   if (failed) statusParts.push(`${failed} 个失败`)
   if (ok && !running && !failed) statusParts.push(`${ok} 个完成`)
   return (
-    <div className="mt-3.5 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l1)] bg-white">
-      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full h-9 items-center gap-2 bg-[var(--chat-bg-layer-1)] px-3 hover:bg-[var(--chat-bg-layer-2)]">
-        <ToolVariantIcon variant="other" className="size-3.5 text-[var(--chat-label-secondary)]" />
-        <span className="text-[12.5px] font-semibold text-[var(--chat-label-primary)]">{calls.length} 个工具</span>
-        {running ? <><span className="chat-state-dot running" /><span className="text-[11.5px] text-[var(--chat-label-tertiary)]">{running} 个运行中</span></> : null}
-        {failed ? <><span className="size-[3px] rounded-full bg-[var(--chat-border-l3)]" /><span className="chat-state-dot error" /><span className="text-[11.5px] text-[var(--chat-label-tertiary)]">{failed} 个失败</span></> : null}
-        <ChevronRight className="ml-auto size-3.5 text-[var(--chat-label-caption)] transition-transform" style={{ transform: open ? "rotate(90deg)" : undefined }} />
+    <div className="mt-4 overflow-hidden rounded-[12px] bg-[#F7F8FA] shadow-[var(--chat-shadow-card)]">
+      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex h-10 w-full items-center gap-2.5 bg-[#F7F8FA] px-[14px] hover:bg-[#EDEEF1] transition-colors duration-[120ms]">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="size-4 shrink-0 text-[var(--chat-label-secondary)]"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        <span className="text-[13px] font-semibold text-[var(--chat-label-primary)]">{calls.length} 个工具调用</span>
+        <span className="text-xs text-[var(--chat-label-tertiary)]">{running ? running + " 个运行中" : ok + " 个完成"}{failed ? " · " + failed + " 个失败" : ""}</span>
+        {running ? <span className="size-[3px] rounded-full bg-[var(--chat-border-l3)]" /> : null}
+        {running ? <span className="font-mono text-[11px] text-[var(--chat-label-caption)]">{running} 运行中</span> : null}
+        <ChevronRight className="ml-auto size-[14px] text-[var(--chat-label-caption)] transition-transform" strokeWidth={1.5} style={{ transform: open ? "rotate(90deg)" : undefined }} />
       </button>
       <div className="chat-disclose" data-open={open}>
         <div className="chat-disclose-inner">
-          <div className="border-t border-[var(--chat-border-l1)]">
+          <div className="flex flex-col gap-px bg-[#FAFAF9]">
             {calls.map((call, index) => <ToolRow key={call.id} call={call} last={index === calls.length - 1} />)}
           </div>
         </div>
@@ -161,25 +169,33 @@ export function ToolGroup({ calls }: { calls: ChatToolCall[] }) {
 function ToolRow({ call, last }: { call: ChatToolCall; last: boolean }) {
   const [open, setOpen] = useState(false)
   const time = formatDuration(call.startedAt, call.completedAt)
+  const isError = call.state === "error"
+  const isRunning = call.state === "running"
   return (
-    <div className={last ? "" : "border-b border-[var(--chat-border-l1)]"}>
+    <div className="">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         data-state={call.state}
-        className="chat-tool-row relative flex min-h-8 w-full items-center gap-2 overflow-hidden px-3 py-1.5 text-left transition-colors hover:bg-[var(--chat-bg-layer-1)]"
+        className="chat-tool-row relative flex min-h-[38px] w-full items-center gap-2.5 overflow-hidden bg-[var(--chat-bg-card)] px-[14px] py-2 text-left transition-colors hover:bg-[var(--chat-bg-subtle)]"
       >
-        <ToolVariantIcon variant={call.variant} className="size-3.5 shrink-0 text-[var(--chat-label-secondary)]" />
+        <ToolVariantIcon variant={call.variant} className="size-[14px] shrink-0 text-[var(--chat-label-secondary)]" />
         <span className="shrink-0 font-mono text-[12.5px] font-medium text-[var(--chat-label-primary)]">{call.name}</span>
         <span className="size-[3px] shrink-0 rounded-full bg-[var(--chat-border-l3)]" />
-        <span className={`min-w-0 flex-1 truncate font-mono text-xs ${call.state === "error" ? "text-[var(--chat-error)]" : "text-[var(--chat-label-tertiary)]"}`}>{call.error ?? call.summary}</span>
-        <span className="shrink-0 font-mono text-[11px] text-[var(--chat-label-caption)]">{call.state === "running" ? "运行中" : time}</span>
-        {stateDot(call.state)}
-        <ChevronRight className="size-3.5 shrink-0 text-[var(--chat-label-caption)] transition-transform" style={{ transform: open ? "rotate(90deg)" : undefined }} />
+        {isError ? (
+          <span className="inline-flex max-w-fit items-center gap-1.5 truncate rounded-full bg-[var(--chat-error-soft)] px-2 py-[2px] font-mono text-xs font-medium text-[var(--chat-error)]"><span className="size-[6px] shrink-0 rounded-full bg-[var(--chat-error)]" />{call.error ?? call.summary}</span>
+        ) : isRunning ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--chat-label-tertiary)]">{call.summary}</span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--chat-label-tertiary)]">{call.summary}</span>
+        )}
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-[var(--chat-label-caption)]">{call.state === "running" ? "· " + time : time}</span>
+        {isRunning ? <span className="chat-spinner" /> : stateDot(call.state)}
+        <ChevronRight className="size-3 shrink-0 text-[var(--chat-label-caption)] transition-transform" strokeWidth={1.5} style={{ transform: open ? "rotate(90deg)" : undefined }} />
       </button>
       <div className="chat-disclose" data-open={open}>
         <div className="chat-disclose-inner">
-          <div className="border-t border-[var(--chat-border-l1)]">
+          <div className="bg-white">
             {call.renderIntent === "io" ? <IoBody call={call} /> : call.renderIntent === "read" && call.readLines ? <ReadBody lines={call.readLines} /> : call.renderIntent === "diff" && call.diffHunks ? <DiffBody hunks={call.diffHunks} /> : null}
           </div>
         </div>

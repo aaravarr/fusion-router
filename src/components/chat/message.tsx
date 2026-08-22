@@ -26,7 +26,7 @@ export interface ChatMessage {
 export function UserBubble({ content }: { content: string }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[70%] rounded-[22px_22px_6px_22px] bg-[var(--chat-bubble-bg)] px-[15px] py-[9px] text-[14.5px] leading-[1.62] text-[var(--chat-label-primary)]">
+      <div className="max-w-[68%] rounded-[16px_16px_6px_16px] bg-[#E8EFFC] px-4 py-[10px] text-[14px] leading-[1.65] font-medium text-[#1E40AF] shadow-[0_1px_2px_rgba(16,24,40,.04)]">
         <p className="whitespace-pre-wrap">{content}</p>
       </div>
     </div>
@@ -35,21 +35,21 @@ export function UserBubble({ content }: { content: string }) {
 
 export function ReasoningBlock({ text, streaming, label }: { text?: string; streaming: boolean; label?: string }) {
   const [open, setOpen] = useState(false)
-  const teaser = text ? text.replace(/\s+/g, " ").slice(0, 48) : ""
+  const teaser = text ? text.replace(/\s+/g, " ").slice(0, 64) : ""
   return (
-    <div className="mb-3.5 mt-0.5 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l1)] bg-[var(--chat-bg-layer-1)]">
-      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full items-center gap-2 px-3 py-[7px] text-left hover:bg-[var(--chat-bg-layer-2)]">
-        <Sparkles className="size-3.5 text-[var(--chat-label-tertiary)]" />
+    <div className="mb-4 mt-0.5 overflow-hidden rounded-[12px] bg-[var(--chat-bg-subtle)]">
+      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full items-center gap-2.5 px-[14px] py-[10px] text-left hover:bg-[#F3F4F5] transition-colors duration-[120ms]">
+        <Sparkles className="size-4 shrink-0 text-[var(--chat-label-tertiary)]" strokeWidth={1.5} />
         <span className="flex items-center gap-[7px] text-[12.5px] font-semibold text-[var(--chat-label-secondary)]">
           {streaming ? "正在思考" : "已思考"}
-          {label ? <span className="rounded border border-[var(--chat-border-l1)] bg-white px-[5px] font-mono text-[10.5px] font-medium leading-4 text-[var(--chat-label-tertiary)]">{label}</span> : null}
+          {label ? <span className="rounded-[6px] bg-[var(--chat-bg-card)] px-[6px] font-mono text-[10px] font-medium leading-[18px] text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-card)]">{label}</span> : null}
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-[var(--chat-label-tertiary)]">{teaser}</span>
-        <ChevronRight className="size-3.5 text-[var(--chat-label-caption)] transition-transform" style={{ transform: open ? "rotate(90deg)" : undefined }} />
+        <ChevronRight className="size-[14px] shrink-0 text-[var(--chat-label-caption)] transition-transform" strokeWidth={1.5} style={{ transform: open ? "rotate(90deg)" : undefined }} />
       </button>
       <div className="chat-disclose" data-open={open}>
         <div className="chat-disclose-inner">
-          <div className="border-t border-[var(--chat-border-l1)] px-3 pb-3 text-[12.5px] leading-[1.7] text-[var(--chat-label-secondary)]">
+          <div className="bg-[var(--chat-bg-card)] px-[14px] pb-[14px] pt-3 text-[12.5px] leading-[1.70] text-[var(--chat-label-secondary)]">
             <p className="mt-2 whitespace-pre-wrap">{text ?? (streaming ? "思考中…" : "（无思考内容）")}</p>
           </div>
         </div>
@@ -88,34 +88,36 @@ export function AssistantMessage({
         <ToolCard call={toolCalls[0]} />
       ) : null}
       {message.status === "error" && message.error ? (
-        <div className="mt-3.5 rounded-[var(--chat-r-12)] border border-[var(--chat-error-border)] bg-[var(--chat-error-soft)] px-3.5 py-3">
-          <div className="flex items-center gap-2">
-            <span className="size-2 rounded-full bg-[var(--chat-error)]" />
-            <span className="text-[13px] font-semibold text-[var(--chat-error)]">连接中断，响应不完整</span>
-            <span className="ml-auto rounded border border-[var(--chat-error-border)] bg-white px-[5px] font-mono text-[11px] text-[var(--chat-label-tertiary)]">ERR_STREAM_ABORT</span>
-          </div>
-          <p className="mt-1.5 text-[12.5px] leading-[1.6] text-[var(--chat-label-secondary)]">{message.error}</p>
-          <div className="mt-2.5 flex gap-2">
-            {onRegenerate ? (
-              <button type="button" onClick={onRegenerate} className="flex h-[30px] items-center gap-1.5 rounded-lg bg-[var(--chat-accent)] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[var(--chat-accent-hover)]">
-                <RotateCcw className="size-[13px]" />重试
-              </button>
-            ) : null}
-            {onDiscard ? (
-              <button type="button" onClick={onDiscard} className="flex h-[30px] items-center gap-1.5 rounded-lg border border-[var(--chat-border-l1)] bg-white px-3 text-[12.5px] font-semibold text-[var(--chat-label-secondary)] transition-colors hover:bg-[var(--chat-bg-layer-2)]">丢弃并停止</button>
+        <div className="mt-4 flex items-start gap-2.5 rounded-[12px] bg-[var(--chat-error-soft)] px-4 py-[14px]">
+          <span className="mt-[1px] size-2 shrink-0 rounded-full bg-[var(--chat-error)]" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-semibold text-[var(--chat-error)]">连接中断，响应不完整</span>
+              <span className="ml-auto rounded-full bg-white px-[6px] py-[1px] font-mono text-[11px] text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-card)]">ERR_STREAM_ABORT</span>
+            </div>
+            <p className="mt-1 text-[12.5px] leading-[1.65] text-[#991B1B]">{message.error}</p>
+            <div className="mt-2.5 flex gap-2">
+              {onRegenerate ? (
+                <button type="button" onClick={onRegenerate} className="flex h-[30px] items-center gap-1.5 rounded-[8px] bg-[var(--chat-accent)] px-[13px] text-[12.5px] font-semibold text-white transition-colors hover:bg-[var(--chat-accent-hover)]">
+                  <RotateCcw className="size-[13px]" strokeWidth={1.5} />重试
+                </button>
+              ) : null}
+              {onDiscard ? (
+                <button type="button" onClick={onDiscard} className="flex h-[30px] items-center gap-1.5 rounded-[8px] bg-[var(--chat-bg-card)] px-[13px] text-[12.5px] font-semibold text-[var(--chat-label-secondary)] shadow-[var(--chat-shadow-card)] transition-colors hover:shadow-[0_2px_8px_rgba(16,24,40,.06)]">丢弃并停止</button>
             ) : null}
           </div>
         </div>
+        </div>
       ) : null}
-      <div className="mt-3.5 flex items-center gap-0.5 opacity-55 transition-opacity group-hover:opacity-100">
+      <div className="mt-4 flex items-center gap-0.5 opacity-55 transition-opacity group-hover:opacity-100">
         {message.content ? (
-          <button type="button" onClick={() => void copyToClipboard(message.content)} className="flex h-[26px] items-center gap-1.5 rounded-md px-2 text-xs text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)] hover:text-[var(--chat-label-primary)]">
-            <Copy className="size-[13px]" />复制
+          <button type="button" onClick={() => void copyToClipboard(message.content)} className="flex h-[26px] items-center gap-1.5 rounded-md px-2 text-xs text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-subtle)] hover:text-[var(--chat-label-primary)]">
+            <Copy className="size-[13px]" strokeWidth={1.5} />复制
           </button>
         ) : null}
         {canRegenerate && onRegenerate ? (
-          <button type="button" onClick={onRegenerate} className="flex h-[26px] items-center gap-1.5 rounded-md px-2 text-xs text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)] hover:text-[var(--chat-label-primary)]">
-            <RotateCcw className="size-[13px]" />重新生成
+          <button type="button" onClick={onRegenerate} className="flex h-[26px] items-center gap-1.5 rounded-md px-2 text-xs text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-subtle)] hover:text-[var(--chat-label-primary)]">
+            <RotateCcw className="size-[13px]" strokeWidth={1.5} />重新生成
           </button>
         ) : null}
         {message.model ? <span className="ml-auto px-1 font-mono text-[11px] text-[var(--chat-label-tertiary)]">{message.model}</span> : null}

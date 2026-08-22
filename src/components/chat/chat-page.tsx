@@ -358,7 +358,7 @@ export function ChatPage() {
   }, [messages])
 
   return (
-    <div className="flex h-full min-h-0 w-full bg-white">
+    <div className="flex h-full min-h-0 w-full bg-[var(--chat-bg-page)]">
       <SessionSidebar
         sessions={sessions}
         currentId={currentId}
@@ -370,8 +370,8 @@ export function ChatPage() {
         mobileOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-[52px] shrink-0 items-center justify-between gap-2 border-b border-[var(--chat-border-l1)] px-3 md:gap-3 md:px-5 max-md:h-14">
+      <main className="flex min-w-0 flex-1 flex-col bg-[var(--chat-bg-main)]">
+        <header className="flex h-[52px] shrink-0 items-center justify-between gap-2 bg-[var(--chat-bg-main)] px-3 md:gap-3 md:px-5 max-md:h-14">
           <div className="flex min-w-0 items-center gap-1.5 md:gap-2">
             <button type="button" onClick={() => setSidebarOpen(true)} aria-label="打开会话列表" className="flex size-11 shrink-0 items-center justify-center rounded-xl text-[var(--chat-label-primary)] hover:bg-[var(--chat-bg-layer-2)] md:hidden">
               <Menu className="size-5" />
@@ -383,8 +383,8 @@ export function ChatPage() {
             <span className="max-w-[60vw] truncate text-sm font-semibold text-[var(--chat-label-primary)] md:max-w-[340px]">{sessionTitle}</span>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <span className="hidden h-7 items-center gap-1.5 rounded-full border border-[var(--chat-border-l1)] bg-white px-2.5 text-xs font-medium text-[var(--chat-label-secondary)] md:flex"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
-            <span className="flex h-7 items-center gap-1 rounded-full border border-[var(--chat-border-l1)] bg-white px-2 text-[11px] font-medium text-[var(--chat-label-secondary)] md:hidden"><span className="size-[6px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools}</span>
+            <span className="hidden h-7 items-center gap-1.5 rounded-full bg-[var(--chat-bg-subtle)] px-2.5 text-xs font-medium text-[var(--chat-label-secondary)] md:flex"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
+            <span className="flex h-7 items-center gap-1 rounded-full bg-[var(--chat-bg-subtle)] px-2 text-[11px] font-medium text-[var(--chat-label-secondary)] md:hidden"><span className="size-[6px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools}</span>
             <button type="button" onClick={() => setDetailsOpen((value) => !value)} aria-label="详情" className={"flex size-11 items-center justify-center rounded-xl md:size-7 md:rounded-lg " + (detailsOpen ? "bg-[var(--chat-accent-soft)] text-[var(--chat-accent)]" : "text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)]")}>
               {detailsOpen ? <PanelRightClose className="size-5 md:size-4" /> : <PanelRightOpen className="size-5 md:size-4" />}
             </button>
@@ -398,10 +398,10 @@ export function ChatPage() {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[748px] px-3 pb-8 pt-4 md:px-6 md:pt-6">
+        <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--chat-bg-main)]">
+          <div className="mx-auto w-full max-w-[740px] px-6 pb-8 pt-5">
             {!messages.length ? <EmptyState onPick={(text) => submit(text, true)} disabled={!model} /> : (
-              <div className="flex flex-col gap-7">
+              <div className="flex flex-col gap-6">
                 {messages.map((message) => message.role === "user" ? (
                   <UserBubble key={message.id} content={message.content} />
                 ) : (
@@ -447,15 +447,15 @@ const EMPTY_PROMPTS = [
 function EmptyState({ onPick, disabled }: { onPick: (text: string) => void; disabled: boolean }) {
   return (
     <div className="flex flex-col items-center px-1 pb-1 pt-2 text-center">
-      <span className="mb-4 grid size-12 place-items-center rounded-[14px] bg-[var(--chat-bubble-bg)]"><FusionMark className="size-6" /></span>
-      <h2 className="text-[17px] font-bold tracking-[-.01em]">今天想做什么？</h2>
-      <p className="mb-5 mt-1.5 max-w-[380px] text-[12.5px] leading-[1.55] text-[var(--chat-label-tertiary)]">Fusion Router 聚合多个模型池，统一 OpenAI 与 Anthropic 兼容出口。选择一个任务开始。</p>
-      <div className="grid w-full grid-cols-2 gap-2.5">
+      <span className="mb-4 grid size-12 place-items-center rounded-[14px] bg-[#18181B] text-white"><FusionMark className="size-6 [&_path]:stroke-white [&_circle]:fill-white" /></span>
+      <h2 className="text-[17px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">今天想做什么？</h2>
+      <p className="mb-5 mt-1.5 max-w-[380px] text-[12.5px] leading-[1.6] text-[var(--chat-label-tertiary)]">Fusion Router 聚合多个模型池，统一 OpenAI 与 Anthropic 兼容出口。选择一个任务开始。</p>
+      <div className="grid w-full grid-cols-2 gap-3">
         {EMPTY_PROMPTS.map((prompt) => (
-          <button key={prompt.title} type="button" disabled={disabled} onClick={() => onPick(prompt.desc)} className="rounded-xl border border-[var(--chat-border-l1)] bg-white px-[13px] py-3 text-left text-[12.5px] leading-[1.45] text-[var(--chat-label-secondary)] transition-[border-color,background] hover:border-[var(--chat-accent)] hover:bg-[var(--chat-accent-soft)] disabled:opacity-50">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mb-2 size-3.5 text-[var(--chat-label-caption)]"><path d={prompt.icon} /></svg>
-            <span className="block text-[12.5px] font-semibold text-[var(--chat-label-primary)]">{prompt.title}</span>
-            {prompt.desc}
+          <button key={prompt.title} type="button" disabled={disabled} onClick={() => onPick(prompt.desc)} className="rounded-[12px] bg-[var(--chat-bg-card)] p-4 text-left shadow-[var(--chat-shadow-card)] transition-[box-shadow,transform] duration-120 hover:shadow-[0_2px_8px_rgba(16,24,40,.06)] hover:translate-y-[-1px] disabled:opacity-50">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="mb-2 size-[14px] text-[var(--chat-label-caption)]"><path d={prompt.icon} /></svg>
+            <span className="block text-[13px] font-semibold text-[var(--chat-label-primary)]">{prompt.title}</span>
+            <span className="text-[12.5px] leading-[1.5] text-[var(--chat-label-secondary)]">{prompt.desc}</span>
           </button>
         ))}
       </div>
