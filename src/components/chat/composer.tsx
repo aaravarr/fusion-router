@@ -197,7 +197,7 @@ export function Composer(props: {
                   setRouteOpen((v) => !v)
                   setModelOpen(false)
                 }}
-                className="flex h-7 items-center gap-1.5 rounded-full border border-[var(--chat-border-l1)] bg-white px-2.5 text-xs font-medium text-[var(--chat-label-secondary)] transition-colors hover:border-[var(--chat-border-l2)] hover:bg-[var(--chat-bg-layer-1)]"
+                className="flex h-7 items-center gap-1.5 rounded-lg border-0 bg-transparent px-2 text-xs font-medium text-[var(--chat-label-secondary)] transition-colors hover:bg-black/5"
               >
                 <ShieldCheck className="size-3.5 shrink-0 text-[var(--chat-label-tertiary)]" />
                 <span className="whitespace-nowrap">
@@ -205,7 +205,7 @@ export function Composer(props: {
                 </span>
                 <ChevronDown
                   className={cn(
-                    "size-3 shrink-0 text-[var(--chat-label-tertiary)] transition-transform duration-120",
+                    "size-[13px] shrink-0 text-[var(--chat-label-tertiary)] transition-transform duration-120",
                     routeOpen && "rotate-180",
                   )}
                 />
@@ -218,7 +218,7 @@ export function Composer(props: {
                   setModelOpen((v) => !v)
                   setRouteOpen(false)
                 }}
-                className="flex h-7 items-center gap-[7px] rounded-full border border-[var(--chat-border-l1)] bg-white py-0 pl-[9px] pr-1 transition-colors hover:border-[var(--chat-border-l2)] hover:bg-[var(--chat-bg-layer-1)] md:h-[30px]"
+                className="flex h-7 items-center gap-[7px] rounded-lg border-0 bg-transparent py-0 pl-2 pr-1.5 transition-colors hover:bg-black/5"
               >
                 <span className="size-2 shrink-0 rounded-full bg-[var(--chat-accent)]" />
                 <span className="max-w-[120px] truncate text-[12.5px] font-medium leading-none text-[var(--chat-label-primary)] md:max-w-[160px]">
@@ -295,8 +295,8 @@ export function Composer(props: {
               />
               <span className="kbd-chip shrink-0">⌘K</span>
             </div>
-            <div className="grid max-h-[min(60vh,360px)] grid-cols-1 border-t border-[var(--chat-border-l1)] md:max-h-[360px] md:grid-cols-[150px_1fr]">
-              <div className="overflow-y-auto p-1.5">
+            <div className="grid max-h-[min(60vh,360px)] grid-cols-1 overflow-hidden border-t border-[var(--chat-border-l1)] md:max-h-[360px] md:grid-cols-[150px_1fr]">
+              <div className="overflow-y-auto p-1.5 pb-2 min-h-0 max-h-[360px]">
                 <div className="sticky top-0 bg-white px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[.04em] text-[var(--chat-label-tertiary)]">
                   Provider
                 </div>
@@ -312,7 +312,7 @@ export function Composer(props: {
                   </div>
                 ))}
               </div>
-              <div className="overflow-y-auto border-l border-[var(--chat-border-l1)] p-1.5">
+              <div className="overflow-y-auto border-l border-[var(--chat-border-l1)] p-1.5 pb-2 min-h-0 max-h-[360px]">
                 <div className="sticky top-0 bg-white px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[.04em] text-[var(--chat-label-tertiary)]">
                   模型
                 </div>
