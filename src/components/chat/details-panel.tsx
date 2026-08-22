@@ -44,11 +44,11 @@ function PanelInner({
         <span className="text-[13px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">运行详情</span>
         <button type="button" onClick={onClose} aria-label="关闭" className="flex size-11 items-center justify-center rounded-xl text-[var(--chat-label-tertiary)] hover:bg-white hover:text-[var(--chat-label-primary)] md:size-[26px] md:rounded-lg"><X className="size-5 md:size-4" strokeWidth={1.5} /></button>
       </div>
-      <div className="flex gap-1 px-3 pb-2.5 pt-0 bg-[var(--chat-bg-detail)]">
+      <div className="flex gap-1 px-3 pb-3 pt-3 bg-[var(--chat-bg-detail)]">
         <button type="button" className="flex-1 h-7 rounded-[8px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] text-xs font-semibold text-[var(--chat-label-primary)] shadow-[var(--chat-shadow-xs)]">工具</button>
         <button type="button" className="flex-1 h-7 rounded-[8px] border border-transparent text-xs font-medium text-[var(--chat-label-secondary)] hover:bg-white/60 hover:border-[#E7EAEE]">上下文</button>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto bg-[var(--chat-bg-detail)] p-[14px] pt-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[var(--chat-bg-detail)] p-[14px] pt-3">
         <section className="rounded-[8px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-xs)]">
           <div className="mb-2 text-[12px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">工具调用</div>
           {total ? (
@@ -71,7 +71,13 @@ function PanelInner({
               </ul>
             </>
           ) : (
-            <div className="rounded-lg bg-[var(--chat-bg-subtle)] px-3 py-3 text-xs text-[var(--chat-label-tertiary)]">本轮暂无工具调用</div>
+            <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[#E7EAEE] bg-[var(--chat-bg-subtle)] px-4 py-8 text-center">
+              <span className="grid size-8 place-items-center rounded-full bg-white text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-xs)]">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="size-4"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              </span>
+              <p className="text-xs font-medium text-[var(--chat-label-secondary)]">本轮暂无工具调用</p>
+              <p className="text-[11px] leading-[1.5] text-[var(--chat-label-tertiary)]">运行一轮后展示工具调用与上下文</p>
+            </div>
           )}
         </section>
 
@@ -92,7 +98,13 @@ function PanelInner({
               </div>
             </>
           ) : (
-            <div className="rounded-lg bg-[var(--chat-bg-subtle)] px-3 py-3 text-xs text-[var(--chat-label-tertiary)]">完成一轮生成后显示 token 用量分解</div>
+            <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[#E7EAEE] bg-[var(--chat-bg-subtle)] px-4 py-8 text-center">
+              <span className="grid size-8 place-items-center rounded-full bg-white text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-xs)]">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="size-4"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+              </span>
+              <p className="text-xs font-medium text-[var(--chat-label-secondary)]">暂无上下文数据</p>
+              <p className="text-[11px] leading-[1.5] text-[var(--chat-label-tertiary)]">完成一轮生成后显示 token 用量分解</p>
+            </div>
           )}
         </section>
       </div>
@@ -142,7 +154,7 @@ function StatBlock({ num, label, tone }: { num: string; label: string; tone?: "o
           : "text-[var(--chat-label-primary)]"
         : "text-[var(--chat-label-primary)]"
   return (
-    <div className="rounded-lg bg-[var(--chat-bg-subtle)] px-[9px] py-1.5">
+    <div className="rounded-lg border border-[#E7EAEE] bg-[var(--chat-bg-subtle)] px-[9px] py-1.5">
       <div className={"font-mono text-sm font-bold tracking-[-.01em] " + color}>{num}</div>
       <div className="mt-0.5 text-[10.5px] text-[var(--chat-label-tertiary)]">{label}</div>
     </div>

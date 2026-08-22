@@ -57,7 +57,7 @@ function IoBody({ call }: { call: ChatToolCall }) {
   return (
     <div>
       {hasArgs ? (
-        <div className="grid grid-cols-[max-content_1fr] gap-3 border-t border-[#E7EAEE] bg-[#F3F5F8] px-3 py-2.5">
+        <div className="grid grid-cols-[max-content_1fr] gap-3 border-t border-[#F0F2F5] bg-[#F3F5F8] px-3 py-2.5">
           <span className="font-mono text-[11px] font-semibold tracking-[.06em] text-[var(--chat-label-tertiary)]">IN</span>
           <div className="min-w-0 space-y-1.5">
             {entries.map(([key, value]) => (
@@ -70,7 +70,7 @@ function IoBody({ call }: { call: ChatToolCall }) {
         </div>
       ) : null}
       {output || error ? (
-        <div className={"grid grid-cols-[max-content_1fr] gap-3 border-t bg-white px-3 py-2.5 " + (hasArgs ? "border-[#E7EAEE]" : "border-transparent")}>
+        <div className={"grid grid-cols-[max-content_1fr] gap-3 border-t bg-white px-3 py-2.5 " + (hasArgs ? "border-[#F0F2F5]" : "border-transparent")}>
           <span className={"font-mono text-[11px] font-semibold tracking-[.06em] " + (error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-tertiary)]")}>{error ? "ERR" : "OUT"}</span>
           <div className="min-w-0">
             <pre className={"whitespace-pre-wrap break-all font-mono text-xs leading-relaxed " + (error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-secondary)]")}>{error ?? output}</pre>
@@ -97,10 +97,10 @@ function stringify(value: unknown): string {
 function ReadBody({ lines }: { lines: string[] }) {
   const shown = lines.slice(0, 24)
   return (
-    <div className="border-t border-[#E7EAEE] bg-white py-1.5 font-mono text-[13px] leading-[1.65]">
+    <div className="border-t border-[#F0F2F5] bg-white py-1.5 font-mono text-[13px] leading-[1.65]">
       {shown.map((line, index) => (
         <div key={index} className="flex w-full hover:bg-[#F3F5F8]">
-          <span className="w-11 shrink-0 select-none border-r border-[#E7EAEE] pr-2.5 text-right text-[var(--chat-label-caption)]">{index + 1}</span>
+          <span className="w-11 shrink-0 select-none border-r border-[#F0F2F5] pr-2.5 text-right text-[var(--chat-label-caption)]">{index + 1}</span>
           <span className="whitespace-pre px-4 text-[var(--chat-label-secondary)]">{stripGutter(line)}</span>
         </div>
       ))}
@@ -118,13 +118,13 @@ function stripGutter(line: string): string {
 
 function DiffBody({ hunks }: { hunks: DiffHunk[] }) {
   return (
-    <div className="border-t border-[#E7EAEE] bg-white font-mono text-[13px] leading-[1.65]">
+    <div className="border-t border-[#F0F2F5] bg-white font-mono text-[13px] leading-[1.65]">
       {hunks.map((hunk, index) => (
         <div key={index}>
-          <div className="border-b border-[#E7EAEE] bg-[#F3F5F8] px-4 py-1 text-[11px] text-[var(--chat-label-caption)]">{hunk.header}</div>
+          <div className="border-b border-[#F0F2F5] bg-[#F3F5F8] px-4 py-1 text-[11px] text-[var(--chat-label-caption)]">{hunk.header}</div>
           {hunk.rows.map((row, rowIndex) => (
             <div key={rowIndex} className={`flex w-full ${row.type === "add" ? "bg-[var(--chat-success-soft)]" : row.type === "del" ? "bg-[var(--chat-error-soft)]" : ""}`}>
-              <span className="w-11 shrink-0 select-none border-r border-[#E7EAEE] pr-2.5 text-right text-[var(--chat-label-caption)]">{row.newLine ?? row.oldLine ?? ""}</span>
+              <span className="w-11 shrink-0 select-none border-r border-[#F0F2F5] pr-2.5 text-right text-[var(--chat-label-caption)]">{row.newLine ?? row.oldLine ?? ""}</span>
               <span className={`w-[18px] shrink-0 text-center ${row.type === "add" ? "text-[var(--chat-success)]" : row.type === "del" ? "text-[var(--chat-error)]" : "text-[var(--chat-label-caption)]"}`}>{row.type === "add" ? "+" : row.type === "del" ? "−" : " "}</span>
               <span className={`whitespace-pre px-4 ${row.type === "ctx" ? "text-[var(--chat-label-secondary)]" : "text-[var(--chat-label-primary)]"}`}>{row.text}</span>
             </div>
@@ -157,7 +157,7 @@ export function ToolGroup({ calls }: { calls: ChatToolCall[] }) {
       </button>
       <div className="chat-disclose" data-open={open}>
         <div className="chat-disclose-inner">
-          <div className="flex flex-col gap-px bg-[#E7EAEE]">
+          <div className="flex flex-col gap-px bg-[#F0F2F5]">
             {calls.map((call, index) => <ToolRow key={call.id} call={call} last={index === calls.length - 1} />)}
           </div>
         </div>
@@ -172,7 +172,7 @@ function ToolRow({ call, last }: { call: ChatToolCall; last: boolean }) {
   const isError = call.state === "error"
   const isRunning = call.state === "running"
   return (
-    <div className="border-t border-[#E7EAEE] first:border-t-0">
+    <div className="border-t border-[#F0F2F5] first:border-t-0">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}

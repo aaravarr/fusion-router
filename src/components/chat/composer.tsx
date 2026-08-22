@@ -175,7 +175,7 @@ export function Composer(props: {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={model ? "询问 " + model : "正在加载模型…"}
+              placeholder={model ? "询问 " + model : "输入消息…"}
               disabled={!model}
               className="block max-h-[160px] min-h-[24px] w-full resize-none border-none bg-transparent font-sans text-[15px] leading-[1.5] outline-none placeholder:font-sans placeholder:text-[#B5B5B5] md:max-h-[25vh]"
               style={{ overflowY: "hidden" }}
@@ -267,7 +267,7 @@ export function Composer(props: {
             </div>
           </div>
         </div>
-        <div className="mt-[10px] hidden items-center gap-1.5 px-2 font-mono text-[11px] text-[var(--chat-label-caption)] md:flex">
+        <div className="mt-[14px] hidden items-center gap-1.5 px-2 font-mono text-[11px] text-[var(--chat-label-caption)] md:flex">
           <span className="inline-flex items-center gap-1"><span className="kbd-chip">Enter</span> 发送</span>
           <span className="text-[var(--chat-border-l3)]">·</span>
           <span className="inline-flex items-center gap-1"><span className="kbd-chip">⇧+Enter</span> 换行</span>

@@ -784,6 +784,7 @@ html { scroll-behavior: smooth; }
   --chat-line: #E9EDF3;
   --chat-line-card: #E7EAEE;
   --chat-line-strong: #E7EAEE;
+  --chat-line-subtle: #F0F2F5;
   /* 兼容旧变量：用实线替代原来的 rgba(.06/.04) */
   --chat-bg-base: var(--chat-bg-page);
   --chat-bg-layer-1: var(--chat-bg-subtle);

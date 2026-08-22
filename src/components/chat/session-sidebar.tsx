@@ -82,8 +82,8 @@ function SidebarInner({
           <p className="mt-3 px-2 text-xs text-[var(--chat-label-tertiary)]">暂无会话，点击「新对话」开始</p>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-between border-t border-[#E9EDF3] px-4 py-2.5 text-[11.5px] text-[var(--chat-label-tertiary)]">
-        <span className="font-mono text-[11px] text-[var(--chat-label-caption)]">v0.9.1</span>
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-[#E9EDF3] px-4 py-3 text-[11.5px] text-[var(--chat-label-tertiary)]">
+        <span className="font-mono text-[11px] text-[#A1A1AA]">v0.9.1</span>
         <span className="flex items-center gap-1.5 text-[11px] text-[var(--chat-label-tertiary)]"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" /> 网关在线 · {totalPools} 池</span>
       </div>
     </>

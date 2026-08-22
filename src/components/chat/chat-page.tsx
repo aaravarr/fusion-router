@@ -377,14 +377,14 @@ export function ChatPage() {
               <Menu className="size-5" />
             </button>
             <span className="hidden text-[12.5px] text-[var(--chat-label-tertiary)] md:inline">工作区</span>
-            <span className="hidden text-xs text-[var(--chat-border-l3)] md:inline">/</span>
+            <span className="hidden text-xs text-[#C0C4CC] md:inline">/</span>
             <span className="hidden text-[12.5px] text-[var(--chat-label-tertiary)] md:inline">聊天</span>
-            <span className="hidden text-xs text-[var(--chat-border-l3)] md:inline">/</span>
+            <span className="hidden text-xs text-[#C0C4CC] md:inline">/</span>
             <span className="max-w-[60vw] truncate text-[13.5px] font-medium text-[#3F3F46] md:max-w-[340px]">{sessionTitle}</span>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <span className="hidden h-7 items-center gap-1.5 rounded-full bg-[var(--chat-bg-subtle)] px-2.5 text-xs font-medium text-[var(--chat-label-secondary)] md:flex"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
-            <span className="flex h-7 items-center gap-1 rounded-full bg-[var(--chat-bg-subtle)] px-2 text-[11px] font-medium text-[var(--chat-label-secondary)] md:hidden"><span className="size-[6px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools}</span>
+            <span className="hidden h-7 items-center gap-1.5 rounded-full bg-[var(--chat-bg-subtle)] px-3 text-xs font-medium text-[var(--chat-label-secondary)] md:flex"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
+            <span className="flex h-7 items-center gap-1 rounded-full bg-[var(--chat-bg-subtle)] px-2.5 text-[11px] font-medium text-[var(--chat-label-secondary)] md:hidden"><span className="size-[6px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools}</span>
             <button type="button" onClick={() => setDetailsOpen((value) => !value)} aria-label="详情" className={"flex size-11 items-center justify-center rounded-xl md:size-7 md:rounded-lg " + (detailsOpen ? "bg-[var(--chat-accent-soft)] text-[var(--chat-accent)]" : "text-[var(--chat-label-tertiary)] hover:bg-[var(--chat-bg-layer-2)]")}>
               {detailsOpen ? <PanelRightClose className="size-5 md:size-4" /> : <PanelRightOpen className="size-5 md:size-4" />}
             </button>
@@ -399,7 +399,7 @@ export function ChatPage() {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--chat-bg-main)]">
-          <div className="mx-auto w-full max-w-[740px] px-6 pb-8 pt-5">
+          <div className="mx-auto flex w-full max-w-[740px] min-h-[56vh] flex-col justify-center px-6 pb-6 pt-6">
             {!messages.length ? <EmptyState onPick={(text) => submit(text, true)} disabled={!model} /> : (
               <div className="flex flex-col gap-[var(--chat-turn-gap)]">
                 {messages.map((message) => message.role === "user" ? (
@@ -446,7 +446,7 @@ const EMPTY_PROMPTS = [
 
 function EmptyState({ onPick, disabled }: { onPick: (text: string) => void; disabled: boolean }) {
   return (
-    <div className="flex flex-col items-center px-1 pb-1 pt-2 text-center">
+    <div className="flex flex-col items-center px-1 py-8 text-center">
       <span className="mb-4 grid size-12 place-items-center rounded-[14px] bg-[#18181B] text-white"><FusionMark className="size-6 [&_path]:stroke-white [&_circle]:fill-white" /></span>
       <h2 className="text-[17px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">今天想做什么？</h2>
       <p className="mb-5 mt-1.5 max-w-[380px] text-[12.5px] leading-[1.6] text-[var(--chat-label-tertiary)]">Fusion Router 聚合多个模型池，统一 OpenAI 与 Anthropic 兼容出口。选择一个任务开始。</p>
