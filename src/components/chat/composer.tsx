@@ -136,7 +136,7 @@ export function Composer(props: {
   const onlineCount = compatiblePools.reduce((sum, pool) => sum + pool.readyAccounts, 0)
 
   return (
-    <div className="relative flex-none px-3 pb-[calc(12px+env(safe-area-inset-bottom))] pt-2 md:px-6 md:pb-3">
+    <div className="relative flex-none px-3 pb-[calc(16px+env(safe-area-inset-bottom))] pt-2 md:px-6 md:pb-4">
       <div className="relative mx-auto w-full max-w-[780px] max-md:max-w-none">
         {queuedCount > 0 ? (
           <div className="mb-3 flex items-center gap-2 rounded-[var(--chat-r-12)] border border-[var(--chat-warn-border)] bg-[var(--chat-warn-soft)] px-3 py-2 text-[12.5px] text-[var(--chat-label-secondary)]">
@@ -267,7 +267,7 @@ export function Composer(props: {
             </div>
           </div>
         </div>
-        <div className="mt-[14px] hidden items-center gap-1.5 px-2 font-mono text-[11px] text-[var(--chat-label-caption)] md:flex">
+        <div className="mt-[14px] mb-[16px] hidden items-center gap-1.5 px-2 font-mono text-[11px] text-[var(--chat-label-caption)] md:flex">
           <span className="inline-flex items-center gap-1"><span className="kbd-chip">Enter</span> 发送</span>
           <span className="text-[var(--chat-border-l3)]">·</span>
           <span className="inline-flex items-center gap-1"><span className="kbd-chip">⇧+Enter</span> 换行</span>
