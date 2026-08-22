@@ -283,20 +283,22 @@ export function Composer(props: {
         {modelOpen ? (
           <div
             ref={popRef}
-            className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l2)] bg-white shadow-[var(--chat-shadow-lv3)] md:left-0 md:right-0"
+            className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 flex max-h-[min(60vh,380px)] flex-col overflow-hidden rounded-[var(--chat-r-12)] border border-[var(--chat-border-l2)] bg-white shadow-[var(--chat-shadow-lv3)] md:left-0 md:right-0 md:max-h-[380px]"
           >
-            <div className="mx-3 mb-1.5 mt-2.5 flex h-[34px] items-center gap-2 rounded-lg border border-[var(--chat-border-l1)] bg-white px-2.5 text-[var(--chat-label-tertiary)]">
-              <Search className="size-3.5 shrink-0" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索模型"
-                className="w-full border-none bg-transparent text-[13px] outline-none placeholder:text-[var(--chat-label-caption)]"
-              />
-              <span className="kbd-chip shrink-0">⌘K</span>
+            <div className="flex-none border-b border-[var(--chat-border-l1)] bg-white px-3 py-2.5">
+              <div className="flex h-[34px] items-center gap-2 rounded-lg border border-[var(--chat-border-l1)] bg-white px-2.5 text-[var(--chat-label-tertiary)]">
+                <Search className="size-3.5 shrink-0" />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="搜索模型"
+                  className="w-full border-none bg-transparent text-[13px] outline-none placeholder:text-[var(--chat-label-caption)]"
+                />
+                <span className="kbd-chip shrink-0">⌘K</span>
+              </div>
             </div>
-            <div className="grid max-h-[min(60vh,360px)] grid-cols-1 overflow-hidden border-t border-[var(--chat-border-l1)] md:max-h-[360px] md:grid-cols-[150px_1fr]">
-              <div className="overflow-y-auto p-1.5 pb-2 min-h-0 max-h-[360px]">
+            <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[150px_1fr]">
+              <div className="min-h-0 overflow-y-auto p-1.5 pb-3">
                 <div className="sticky top-0 bg-white px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[.04em] text-[var(--chat-label-tertiary)]">
                   Provider
                 </div>
@@ -312,7 +314,7 @@ export function Composer(props: {
                   </div>
                 ))}
               </div>
-              <div className="overflow-y-auto border-l border-[var(--chat-border-l1)] p-1.5 pb-2 min-h-0 max-h-[360px]">
+              <div className="min-h-0 overflow-y-auto border-l border-[var(--chat-border-l1)] p-1.5 pb-3">
                 <div className="sticky top-0 bg-white px-2 pb-1 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[.04em] text-[var(--chat-label-tertiary)]">
                   模型
                 </div>
@@ -370,7 +372,7 @@ export function Composer(props: {
                 </div>
               </div>
             </div>
-            <div className="border-t border-[var(--chat-border-l1)] bg-[var(--chat-bg-layer-1)] px-3 py-[9px] text-[11px] text-[var(--chat-label-tertiary)]">
+            <div className="flex-none border-t border-[var(--chat-border-l1)] bg-[var(--chat-bg-layer-1)] px-3 py-[9px] text-[11px] text-[var(--chat-label-tertiary)]">
               {groups.length} 个 provider · {options?.models.length ?? 0} 个模型 · 不支持工具的模型会禁用 tool_calls 渲染
             </div>
           </div>
