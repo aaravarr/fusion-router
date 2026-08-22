@@ -9,7 +9,6 @@ import {
   CircleGauge,
   KeyRound,
   ListTree,
-  MessageSquareText,
   Menu,
   Network,
   Route,
@@ -28,11 +27,22 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { FusionMark } from "@/components/chat/icons";
 import { useSession } from "./admin-context";
 
+function FusionMark(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" aria-hidden="true" {...props}>
+      <path d="M32 8.5 L52.4 20.3 L52.4 43.7 L32 55.5 L11.6 43.7 L11.6 20.3 Z" stroke="#2563EB" strokeWidth="6" strokeLinejoin="round" />
+      <path d="M32 32 L32 8.5 M32 32 L52.4 43.7 M32 32 L11.6 43.7" stroke="#2563EB" strokeWidth="6" strokeLinecap="round" />
+      <circle cx="32" cy="32" r="7" fill="#2563EB" />
+      <circle cx="32" cy="8.5" r="4.5" fill="#2563EB" />
+      <circle cx="52.4" cy="43.7" r="4.5" fill="#2563EB" />
+      <circle cx="11.6" cy="43.7" r="4.5" fill="#2563EB" />
+    </svg>
+  );
+}
+
 const navItems = [
-  { href: "/chat", label: "聊天", description: "模型对话与调度", icon: MessageSquareText },
   { href: "/overview", label: "总览", description: "账号池健康与恢复", icon: CircleGauge },
   { href: "/usage", label: "用量看板", description: "Token 与请求趋势", icon: BarChart3 },
   { href: "/accounts", label: "账号池", description: "订阅、额度与令牌", icon: UsersRound },
@@ -50,11 +60,6 @@ const navItems = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, logout, isAdmin } = useSession();
-
-  // 聊天页为独立三栏全屏体验（会话侧栏 / 对话 / 运行详情），不再套用控制台导航骨架
-  if (pathname.startsWith("/chat")) {
-    return <div className="h-[100dvh] w-full overflow-hidden">{children}</div>;
-  }
 
   const active = navItems.find((item) => pathname.startsWith(item.href)) ?? navItems[0];
 
@@ -99,9 +104,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main id="main-content" className={pathname.startsWith("/chat")
-          ? "h-[calc(100dvh-3.5rem)] min-h-0 w-full overflow-hidden"
-          : "mx-auto w-full max-w-[1480px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8"}>
+        <main id="main-content" className="mx-auto w-full max-w-[1480px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           {children}
         </main>
       </div>
