@@ -46,7 +46,7 @@ function PanelInner({
       </div>
       <div className="flex gap-1 px-3 pb-2.5 pt-0 bg-[var(--chat-bg-detail)]">
         <button type="button" className="flex-1 h-7 rounded-[8px] bg-[var(--chat-bg-card)] text-xs font-semibold text-[var(--chat-label-primary)] shadow-[var(--chat-shadow-card)]">工具</button>
-        <button type="button" className="flex-1 h-7 rounded-[8px] text-xs font-medium text-[var(--chat-label-tertiary)]">上下文</button>
+        <button type="button" className="flex-1 h-7 rounded-[8px] text-xs font-medium text-[var(--chat-label-secondary)]">上下文</button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto bg-[var(--chat-bg-detail)] p-[14px] pt-2">
         <section className="rounded-[12px] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-card)]">
@@ -83,13 +83,12 @@ function PanelInner({
                 <span className="text-xl font-bold tracking-[-.02em]">{formatTokens(totalTokens)}<span className="ml-1 text-xs font-medium text-[var(--chat-label-tertiary)]">tokens</span></span>
                 <span className="font-mono text-[11.5px] text-[var(--chat-label-tertiary)]">输入 {formatTokens(usage?.inputTokens)} · 输出 {formatTokens(usage?.outputTokens)}</span>
               </div>
-              <div className="flex h-1.5 overflow-hidden rounded-full bg-[var(--chat-bg-subtle)]">
-                <span className="h-full bg-[#94A3B8]" style={{ width: usage?.inputTokens ? Math.min(100, (usage.inputTokens / totalTokens) * 100) + "%" : "0%" }} />
-                <span className="h-full bg-[var(--chat-accent)]" style={{ width: usage?.outputTokens ? Math.min(100, (usage.outputTokens / totalTokens) * 100) + "%" : "0%" }} />
+              <div className="flex h-1.5 overflow-hidden rounded-full bg-[#F1F5F9]">
+                <span className="h-full bg-[#BFDBFE]" style={{ width: usage?.totalTokens ? Math.min(100, (totalTokens / Math.max(4096, totalTokens)) * 100) + "%" : "0%" }} />
               </div>
               <div className="mt-3 flex flex-col gap-2">
-                <div className="flex items-center gap-2 text-xs text-[var(--chat-label-secondary)]"><span className="size-[9px] rounded-[2.5px] bg-[#94A3B8]" />输入 token<span className="ml-auto font-mono text-[11.5px] text-[var(--chat-label-tertiary)]">{formatTokens(usage?.inputTokens)}</span></div>
-                <div className="flex items-center gap-2 text-xs text-[var(--chat-label-secondary)]"><span className="size-[9px] rounded-[2.5px] bg-[var(--chat-accent)]" />输出 token<span className="ml-auto font-mono text-[11.5px] text-[var(--chat-label-tertiary)]">{formatTokens(usage?.outputTokens)}</span></div>
+                <div className="flex items-center gap-2 text-xs text-[var(--chat-label-secondary)]"><span className="size-[9px] rounded-[2.5px] bg-[#BFDBFE]" />总量<span className="ml-auto font-mono text-[11.5px] text-[var(--chat-label-tertiary)]">{formatTokens(totalTokens)}</span></div>
+                <div className="flex items-center gap-2 text-xs text-[var(--chat-label-tertiary)]">输入 {formatTokens(usage?.inputTokens)} · 输出 {formatTokens(usage?.outputTokens)}</div>
               </div>
             </>
           ) : (
@@ -131,7 +130,17 @@ export function DetailsPanel({
 }
 
 function StatBlock({ num, label, tone }: { num: string; label: string; tone?: "ok" | "run" | "err" }) {
-  const color = tone === "ok" ? "text-[var(--chat-success)]" : tone === "run" ? "text-[var(--chat-accent)]" : tone === "err" ? "text-[var(--chat-error)]" : "text-[var(--chat-label-primary)]"
+  const isActive = num !== "0"
+  const color =
+    tone === "err"
+      ? isActive
+        ? "text-[var(--chat-error)]"
+        : "text-[var(--chat-label-primary)]"
+      : tone === "run"
+        ? isActive
+          ? "text-[var(--chat-accent)]"
+          : "text-[var(--chat-label-primary)]"
+        : "text-[var(--chat-label-primary)]"
   return (
     <div className="rounded-lg bg-[var(--chat-bg-subtle)] px-[9px] py-1.5">
       <div className={"font-mono text-sm font-bold tracking-[-.01em] " + color}>{num}</div>

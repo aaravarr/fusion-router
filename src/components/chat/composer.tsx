@@ -156,7 +156,7 @@ export function Composer(props: {
               <b className="text-[var(--chat-warn)]">排队中 {queuedCount} 条</b>，上一条仍在生成
             </span>
             <span className="flex-1" />
-            <span className="whitespace-nowrap rounded-md border border-[var(--chat-warn-border)] bg-white px-[7px] py-[2px] font-mono text-[11px] font-semibold text-[var(--chat-warn)]">
+            <span className="whitespace-nowrap rounded-md bg-[var(--chat-warn-soft)] px-[7px] py-[2px] font-mono text-[11px] font-semibold text-[var(--chat-warn)]">
               Enter = 排队 · ⌘+Enter = 立即发送
             </span>
           </div>
@@ -224,7 +224,7 @@ export function Composer(props: {
                 <span className="max-w-[120px] truncate text-[12.5px] font-medium leading-none text-[var(--chat-label-primary)] md:max-w-[160px]">
                   {model || "选择模型"}
                 </span>
-                <span className="shrink-0 rounded-[6px] bg-[var(--chat-bg-card)] px-[6px] font-mono text-[10px] font-medium leading-[18px] text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-card)]">
+                <span className="shrink-0 rounded-[6px] bg-[var(--chat-bg-subtle)] px-[6px] font-mono text-[10px] font-medium leading-[18px] text-[var(--chat-label-tertiary)]">
                   {reasoning}
                 </span>
                 <ChevronDown
@@ -249,7 +249,7 @@ export function Composer(props: {
                   onClick={() => submit(true)}
                   disabled={!model || !draft.trim()}
                   aria-label="发送"
-                  className="flex size-[34px] shrink-0 items-center justify-center rounded-full bg-[var(--chat-accent)] text-white transition-[background,transform] duration-120 hover:bg-[var(--chat-accent-hover)] active:scale-[.94] disabled:opacity-40"
+                  className="flex size-[34px] shrink-0 items-center justify-center rounded-full bg-[#E8EFFC] text-[var(--chat-accent)] transition-[background,transform] duration-120 hover:bg-[#DBEAFE] active:scale-[.94] disabled:opacity-40"
                 >
                   <svg
                     viewBox="0 0 24 24"
@@ -267,18 +267,12 @@ export function Composer(props: {
             </div>
           </div>
         </div>
-        <div className="mt-[10px] hidden items-center gap-2 px-2 font-mono text-[11px] text-[var(--chat-label-caption)] md:flex">
-          <span>
-            <span className="kbd-chip">Enter</span> 发送
-          </span>
+        <div className="mt-[10px] hidden items-center gap-1.5 px-2 font-mono text-[11px] text-[var(--chat-label-caption)] md:flex">
+          <span className="inline-flex items-center gap-1"><span className="kbd-chip">Enter</span> 发送</span>
           <span className="text-[var(--chat-border-l3)]">·</span>
-          <span>
-            <span className="kbd-chip">Shift+Enter</span> 换行
-          </span>
+          <span className="inline-flex items-center gap-1"><span className="kbd-chip">⇧+Enter</span> 换行</span>
           <span className="text-[var(--chat-border-l3)]">·</span>
-          <span>
-            路由：{routeLabel} · {compatiblePools.length}/{compatiblePools.length} 池在线
-          </span>
+          <span>路由：{routeLabel}</span>
         </div>
         {modelOpen ? (
           <div

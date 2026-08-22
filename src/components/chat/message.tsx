@@ -26,7 +26,7 @@ export interface ChatMessage {
 export function UserBubble({ content }: { content: string }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[68%] rounded-[16px_16px_6px_16px] bg-[#E8EFFC] px-4 py-[10px] text-[14px] leading-[1.65] font-medium text-[#1E40AF] shadow-[0_1px_2px_rgba(16,24,40,.04)]">
+      <div className="max-w-[68%] rounded-[16px_16px_6px_16px] bg-[var(--chat-bubble-bg)] px-4 py-[10px] text-[14px] leading-[1.65] font-medium text-[var(--chat-bubble-ink)] shadow-[0_1px_2px_rgba(16,24,40,.04)]">
         <p className="whitespace-pre-wrap">{content}</p>
       </div>
     </div>
@@ -42,7 +42,7 @@ export function ReasoningBlock({ text, streaming, label }: { text?: string; stre
         <Sparkles className="size-4 shrink-0 text-[var(--chat-label-tertiary)]" strokeWidth={1.5} />
         <span className="flex items-center gap-[7px] text-[12.5px] font-semibold text-[var(--chat-label-secondary)]">
           {streaming ? "正在思考" : "已思考"}
-          {label ? <span className="rounded-[6px] bg-[var(--chat-bg-card)] px-[6px] font-mono text-[10px] font-medium leading-[18px] text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-card)]">{label}</span> : null}
+          {label ? <span className="inline-flex items-center gap-1 rounded-[6px] bg-[var(--chat-bg-subtle)] px-[6px] font-mono text-[10px] font-medium leading-[18px] text-[var(--chat-label-tertiary)]">{label}</span> : null}
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-[var(--chat-label-tertiary)]">{teaser}</span>
         <ChevronRight className="size-[14px] shrink-0 text-[var(--chat-label-caption)] transition-transform" strokeWidth={1.5} style={{ transform: open ? "rotate(90deg)" : undefined }} />
@@ -88,17 +88,16 @@ export function AssistantMessage({
         <ToolCard call={toolCalls[0]} />
       ) : null}
       {message.status === "error" && message.error ? (
-        <div className="mt-4 flex items-start gap-2.5 rounded-[12px] bg-[var(--chat-error-soft)] px-4 py-[14px]">
-          <span className="mt-[1px] size-2 shrink-0 rounded-full bg-[var(--chat-error)]" />
+        <div className="mt-4 flex items-start gap-2.5 rounded-[12px] border border-[#FEE2E2] bg-[#FDF5F5] px-4 py-[14px] md:bg-white md:border-[var(--chat-border-l1)] md:border-l-[3px] md:border-l-[#FECACA] md:shadow-[var(--chat-shadow-card)]">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold text-[var(--chat-error)]">连接中断，响应不完整</span>
-              <span className="ml-auto rounded-full bg-white px-[6px] py-[1px] font-mono text-[11px] text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-card)]">ERR_STREAM_ABORT</span>
+              <span className="text-[13px] font-medium text-[var(--chat-label-primary)]">连接中断，响应不完整</span>
+              <span className="ml-auto font-mono text-[10px] leading-none tracking-[.02em] text-[var(--chat-label-caption)]">ERR_STREAM_ABORT</span>
             </div>
             <p className="mt-1 text-[12.5px] leading-[1.65] text-[#991B1B]">{message.error}</p>
             <div className="mt-2.5 flex gap-2">
               {onRegenerate ? (
-                <button type="button" onClick={onRegenerate} className="flex h-[30px] items-center gap-1.5 rounded-[8px] bg-[var(--chat-accent)] px-[13px] text-[12.5px] font-semibold text-white transition-colors hover:bg-[var(--chat-accent-hover)]">
+                <button type="button" onClick={onRegenerate} className="flex h-[30px] items-center gap-1.5 rounded-[8px] border border-[var(--chat-accent)] bg-white px-[13px] text-[12.5px] font-semibold text-[var(--chat-accent)] transition-colors hover:bg-[var(--chat-accent-soft)]">
                   <RotateCcw className="size-[13px]" strokeWidth={1.5} />重试
                 </button>
               ) : null}
@@ -125,4 +124,3 @@ export function AssistantMessage({
     </div>
   )
 }
-

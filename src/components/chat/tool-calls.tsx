@@ -75,7 +75,7 @@ function IoBody({ call }: { call: ChatToolCall }) {
           <div className="min-w-0">
             <pre className={"whitespace-pre-wrap break-all font-mono text-xs leading-relaxed " + (error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-secondary)]")}>{error ?? output}</pre>
             {!error && output ? (
-              <a href="#" onClick={(e) => { e.preventDefault(); const el = e.currentTarget.previousElementSibling as HTMLElement; if (el) { el.style.whiteSpace = el.style.whiteSpace === "pre-wrap" ? "pre" : "pre-wrap" } }} className="mt-[10px] inline-flex items-center gap-1 text-xs font-medium text-[var(--chat-accent)] hover:underline">
+              <a href="#" onClick={(e) => { e.preventDefault(); const el = e.currentTarget.previousElementSibling as HTMLElement; if (el) { el.style.whiteSpace = el.style.whiteSpace === "pre-wrap" ? "pre" : "pre-wrap" } }} className="mt-[10px] inline-flex items-center gap-1 border-0 text-xs font-medium text-[var(--chat-accent)] hover:underline">
                 查看完整内容 <ChevronRight className="size-3" />
               </a>
             ) : null}
@@ -177,7 +177,7 @@ function ToolRow({ call, last }: { call: ChatToolCall; last: boolean }) {
         type="button"
         onClick={() => setOpen((value) => !value)}
         data-state={call.state}
-        className="chat-tool-row relative flex min-h-[38px] w-full items-center gap-2.5 overflow-hidden bg-[var(--chat-bg-card)] px-[14px] py-2 text-left transition-colors hover:bg-[var(--chat-bg-subtle)]"
+        className={"chat-tool-row relative flex min-h-[38px] w-full items-center gap-2.5 overflow-hidden px-[14px] py-2 text-left transition-colors " + (isRunning ? "bg-[#F9F9F8] hover:bg-[#F9F9F8]" : "bg-[var(--chat-bg-card)] hover:bg-[var(--chat-bg-subtle)]")}
       >
         <ToolVariantIcon variant={call.variant} className="size-[14px] shrink-0 text-[var(--chat-label-secondary)]" />
         <span className="shrink-0 font-mono text-[12.5px] font-medium text-[var(--chat-label-primary)]">{call.name}</span>
@@ -190,7 +190,12 @@ function ToolRow({ call, last }: { call: ChatToolCall; last: boolean }) {
           <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--chat-label-tertiary)]">{call.summary}</span>
         )}
         <span className="ml-auto shrink-0 font-mono text-[11px] text-[var(--chat-label-caption)]">{call.state === "running" ? "· " + time : time}</span>
-        {isRunning ? <span className="chat-spinner" /> : stateDot(call.state)}
+        {isRunning ? (
+          <>
+            <span className="chat-spinner" />
+            <span className="size-[7px] shrink-0 rounded-full bg-[var(--chat-accent)] animate-[chat-pulse-dot_1.4s_ease-in-out_infinite]" />
+          </>
+        ) : stateDot(call.state)}
         <ChevronRight className="size-3 shrink-0 text-[var(--chat-label-caption)] transition-transform" strokeWidth={1.5} style={{ transform: open ? "rotate(90deg)" : undefined }} />
       </button>
       <div className="chat-disclose" data-open={open}>
@@ -203,4 +208,3 @@ function ToolRow({ call, last }: { call: ChatToolCall; last: boolean }) {
     </div>
   )
 }
-

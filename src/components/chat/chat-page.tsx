@@ -380,7 +380,7 @@ export function ChatPage() {
             <span className="hidden text-xs text-[var(--chat-border-l3)] md:inline">/</span>
             <span className="hidden text-[12.5px] text-[var(--chat-label-tertiary)] md:inline">聊天</span>
             <span className="hidden text-xs text-[var(--chat-border-l3)] md:inline">/</span>
-            <span className="max-w-[60vw] truncate text-sm font-semibold text-[var(--chat-label-primary)] md:max-w-[340px]">{sessionTitle}</span>
+            <span className="max-w-[60vw] truncate text-[13.5px] font-medium text-[#3F3F46] md:max-w-[340px]">{sessionTitle}</span>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <span className="hidden h-7 items-center gap-1.5 rounded-full bg-[var(--chat-bg-subtle)] px-2.5 text-xs font-medium text-[var(--chat-label-secondary)] md:flex"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" />{onlineCount}/{totalPools} 池在线</span>
