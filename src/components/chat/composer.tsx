@@ -163,8 +163,8 @@ export function Composer(props: {
         ) : null}
         <div
           className={cn(
-            "rounded-[16px] bg-white shadow-[var(--chat-shadow-card)] transition-[box-shadow] duration-120 ease-[cubic-bezier(.16,1,.3,1)]",
-            "focus-within:shadow-[0_0_0_3px_var(--chat-accent-soft),var(--chat-shadow-card)]",
+            "rounded-[36px] border border-[#E9EDF3] bg-white shadow-[var(--chat-shadow-md)] transition-[border-color,box-shadow] duration-120 ease-[cubic-bezier(.16,1,.3,1)]",
+            "focus-within:border-[#2563EB] focus-within:shadow-[var(--chat-shadow-md),0_0_0_3px_var(--chat-accent-soft)]",
           )}
         >
           {/* 输入区：min-height 44, padding 12/16/4, textarea 14.5/1.6 单行起步自适应 max 160 / 25vh */}
@@ -177,7 +177,7 @@ export function Composer(props: {
               onKeyDown={onKeyDown}
               placeholder={model ? "询问 " + model : "正在加载模型…"}
               disabled={!model}
-              className="block max-h-[160px] min-h-[24px] w-full resize-none border-none bg-transparent font-sans text-[14.5px] leading-[1.6] outline-none placeholder:font-sans placeholder:text-[var(--chat-label-caption)] md:max-h-[25vh]"
+              className="block max-h-[160px] min-h-[24px] w-full resize-none border-none bg-transparent font-sans text-[15px] leading-[1.5] outline-none placeholder:font-sans placeholder:text-[#B5B5B5] md:max-h-[25vh]"
               style={{ overflowY: "hidden" }}
             />
           </div>
@@ -277,10 +277,10 @@ export function Composer(props: {
         {modelOpen ? (
           <div
             ref={popRef}
-            className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 flex max-h-[min(60vh,380px)] flex-col overflow-hidden rounded-[12px] bg-white shadow-[var(--chat-shadow-pop)] md:left-0 md:right-0 md:max-h-[380px]"
+            className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 flex max-h-[min(60vh,380px)] flex-col overflow-hidden rounded-[12px] border border-[#E7EAEE] bg-white shadow-[var(--chat-shadow-sm)] md:left-0 md:right-0 md:max-h-[380px]"
           >
             <div className="flex-none bg-white px-3 py-2.5">
-              <div className="flex h-[34px] items-center gap-2 rounded-[10px] bg-[var(--chat-bg-subtle)] px-2.5 text-[var(--chat-label-tertiary)]">
+              <div className="flex h-[34px] items-center gap-2 rounded-[10px] border border-[#E7EAEE] bg-[var(--chat-bg-subtle)] px-2.5 text-[var(--chat-label-tertiary)]">
                 <Search className="size-3.5 shrink-0" />
                 <input
                   value={query}
@@ -374,7 +374,7 @@ export function Composer(props: {
         {routeOpen ? (
           <div
             ref={popRef}
-            className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 overflow-hidden rounded-[12px] bg-white shadow-[var(--chat-shadow-pop)]"
+            className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-30 overflow-hidden rounded-[12px] border border-[#E7EAEE] bg-white shadow-[var(--chat-shadow-sm)]"
           >
             <div className="p-2">
               <RouteItem

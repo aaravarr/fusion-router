@@ -47,10 +47,10 @@ function SidebarInner({
         ) : null}
       </div>
       <div className="flex shrink-0 flex-col gap-2.5 px-3 pb-1.5">
-        <button type="button" onClick={onNew} className="flex h-11 items-center justify-center gap-[7px] rounded-[12px] bg-[#18181B] text-[13px] font-semibold text-white shadow-[var(--chat-shadow-card)] transition-[background,transform] duration-[120ms] hover:bg-[#27272A] active:scale-[.98] md:h-[36px]">
+        <button type="button" onClick={onNew} className="flex h-11 items-center justify-center gap-[7px] rounded-[12px] bg-[#18181B] text-[13px] font-semibold text-white shadow-[var(--chat-shadow-xs)] transition-[background,transform] duration-[120ms] hover:bg-[#27272A] active:scale-[.98] md:h-[36px]">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="size-[14px]"><path d="M12 5v14M5 12h14"/></svg>新对话
         </button>
-        <label className="flex h-11 items-center gap-2 rounded-[10px] bg-[var(--chat-bg-card)] px-[10px] text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-card)] md:h-[34px]">
+        <label className="flex h-11 items-center gap-2 rounded-[10px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] px-[10px] text-[var(--chat-label-tertiary)] shadow-[var(--chat-shadow-xs)] md:h-[34px]">
           <Search className="size-[14px] shrink-0 text-[var(--chat-label-caption)]" strokeWidth={1.5} />
           <input type="text" placeholder="搜索会话…" className="w-full border-none bg-transparent font-sans text-[13px] outline-none placeholder:text-[var(--chat-label-caption)]" />
           <span className="hidden shrink-0 rounded-[4px] bg-[var(--chat-bg-subtle)] px-[5px] py-[2px] font-mono text-[10px] text-[var(--chat-label-caption)] md:inline">⌘K</span>
@@ -82,7 +82,7 @@ function SidebarInner({
           <p className="mt-3 px-2 text-xs text-[var(--chat-label-tertiary)]">暂无会话，点击「新对话」开始</p>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-between border-t border-[var(--chat-border-l2)] px-4 py-2.5 text-[11.5px] text-[var(--chat-label-tertiary)]">
+      <div className="flex shrink-0 items-center justify-between border-t border-[#E9EDF3] px-4 py-2.5 text-[11.5px] text-[var(--chat-label-tertiary)]">
         <span className="font-mono text-[11px] text-[var(--chat-label-caption)]">v0.9.1</span>
         <span className="flex items-center gap-1.5 text-[11px] text-[var(--chat-label-tertiary)]"><span className="size-[7px] rounded-full bg-[var(--chat-success)]" /> 网关在线 · {totalPools} 池</span>
       </div>
@@ -121,8 +121,8 @@ export function SessionSidebar({
   }
   return (
     <>
-      {/* Desktop static 272px — v3 无竖线，用底色阶区分 */}
-      <aside className="hidden min-h-0 w-[272px] shrink-0 flex-col bg-[var(--chat-bg-sidebar)] md:flex">
+      {/* Desktop static 272px — §1 hairline分隔：淡到刚好看清结构 */}
+      <aside className="hidden min-h-0 w-[272px] shrink-0 flex-col border-r border-[#E9EDF3] bg-[var(--chat-bg-sidebar)] md:flex">
         <SidebarInner sessions={sessions} currentId={currentId} onlineCount={onlineCount} totalPools={totalPools} onNew={onNew} onSelect={onSelect} onDelete={onDelete} />
       </aside>
       {/* Mobile drawer */}

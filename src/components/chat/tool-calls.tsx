@@ -20,13 +20,13 @@ function stateDot(state: ChatToolCall["state"]) {
   return <span className="chat-spinner" />
 }
 
-/** 单个工具卡（ioCard IN/OUT 或 read/diff 专用排版） */
+/** 单个工具卡（ioCard IN/OUT 或 read/diff 专用排版） — §7.3：#FAFBFC + #E7EAEE + 8px + hairline双保险 */
 export function ToolCard({ call }: { call: ChatToolCall }) {
   const [open, setOpen] = useState(true)
   const time = formatDuration(call.startedAt, call.completedAt)
   return (
-    <div className="mt-4 overflow-hidden rounded-[12px] bg-white shadow-[var(--chat-shadow-card)]">
-      <button type="button" onClick={() => setOpen((value) => !value)} className="flex min-h-9 w-full items-center gap-2 px-[14px] py-1.5 text-left hover:bg-[var(--chat-bg-subtle)] transition-colors duration-[120ms]">
+    <div className="mt-4 overflow-hidden rounded-[8px] border border-[#E7EAEE] bg-[#FAFBFC] shadow-[var(--chat-shadow-xs)]">
+      <button type="button" onClick={() => setOpen((value) => !value)} className="flex min-h-[30px] w-full items-center gap-2 px-[11px] py-1.5 text-left hover:bg-[#F3F5F8] transition-colors duration-[120ms]">
         <ToolVariantIcon variant={call.variant} className="size-[14px] shrink-0 text-[var(--chat-label-secondary)]" />
         <span className="font-mono text-[12.5px] font-semibold text-[var(--chat-label-primary)]">{call.name}</span>
         <span className="size-[3px] rounded-full bg-[var(--chat-border-l3)]" />
@@ -57,7 +57,7 @@ function IoBody({ call }: { call: ChatToolCall }) {
   return (
     <div>
       {hasArgs ? (
-        <div className="grid grid-cols-[max-content_1fr] gap-3 bg-[#F8FAFC] px-3 py-2.5">
+        <div className="grid grid-cols-[max-content_1fr] gap-3 border-t border-[#E7EAEE] bg-[#F3F5F8] px-3 py-2.5">
           <span className="font-mono text-[11px] font-semibold tracking-[.06em] text-[var(--chat-label-tertiary)]">IN</span>
           <div className="min-w-0 space-y-1.5">
             {entries.map(([key, value]) => (
@@ -70,7 +70,7 @@ function IoBody({ call }: { call: ChatToolCall }) {
         </div>
       ) : null}
       {output || error ? (
-        <div className={"grid grid-cols-[max-content_1fr] gap-3 bg-white px-3 py-2.5 "}>
+        <div className={"grid grid-cols-[max-content_1fr] gap-3 border-t bg-white px-3 py-2.5 " + (hasArgs ? "border-[#E7EAEE]" : "border-transparent")}>
           <span className={"font-mono text-[11px] font-semibold tracking-[.06em] " + (error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-tertiary)]")}>{error ? "ERR" : "OUT"}</span>
           <div className="min-w-0">
             <pre className={"whitespace-pre-wrap break-all font-mono text-xs leading-relaxed " + (error ? "text-[var(--chat-error)]" : "text-[var(--chat-label-secondary)]")}>{error ?? output}</pre>
@@ -97,10 +97,10 @@ function stringify(value: unknown): string {
 function ReadBody({ lines }: { lines: string[] }) {
   const shown = lines.slice(0, 24)
   return (
-    <div className="py-1.5 font-mono text-xs leading-[1.65]">
+    <div className="border-t border-[#E7EAEE] bg-white py-1.5 font-mono text-[13px] leading-[1.65]">
       {shown.map((line, index) => (
-        <div key={index} className="flex w-full hover:bg-[var(--chat-bg-layer-1)]">
-          <span className="w-11 shrink-0 select-none border-r border-[var(--chat-border-l1)] pr-2.5 text-right text-[var(--chat-label-caption)]">{index + 1}</span>
+        <div key={index} className="flex w-full hover:bg-[#F3F5F8]">
+          <span className="w-11 shrink-0 select-none border-r border-[#E7EAEE] pr-2.5 text-right text-[var(--chat-label-caption)]">{index + 1}</span>
           <span className="whitespace-pre px-4 text-[var(--chat-label-secondary)]">{stripGutter(line)}</span>
         </div>
       ))}
@@ -118,13 +118,13 @@ function stripGutter(line: string): string {
 
 function DiffBody({ hunks }: { hunks: DiffHunk[] }) {
   return (
-    <div className="font-mono text-xs leading-[1.65]">
+    <div className="border-t border-[#E7EAEE] bg-white font-mono text-[13px] leading-[1.65]">
       {hunks.map((hunk, index) => (
         <div key={index}>
-          <div className="border-b border-[var(--chat-border-l1)] bg-[var(--chat-bg-layer-1)] px-4 py-1 text-[11px] text-[var(--chat-label-caption)]">{hunk.header}</div>
+          <div className="border-b border-[#E7EAEE] bg-[#F3F5F8] px-4 py-1 text-[11px] text-[var(--chat-label-caption)]">{hunk.header}</div>
           {hunk.rows.map((row, rowIndex) => (
             <div key={rowIndex} className={`flex w-full ${row.type === "add" ? "bg-[var(--chat-success-soft)]" : row.type === "del" ? "bg-[var(--chat-error-soft)]" : ""}`}>
-              <span className="w-11 shrink-0 select-none border-r border-[var(--chat-border-l1)] pr-2.5 text-right text-[var(--chat-label-caption)]">{row.newLine ?? row.oldLine ?? ""}</span>
+              <span className="w-11 shrink-0 select-none border-r border-[#E7EAEE] pr-2.5 text-right text-[var(--chat-label-caption)]">{row.newLine ?? row.oldLine ?? ""}</span>
               <span className={`w-[18px] shrink-0 text-center ${row.type === "add" ? "text-[var(--chat-success)]" : row.type === "del" ? "text-[var(--chat-error)]" : "text-[var(--chat-label-caption)]"}`}>{row.type === "add" ? "+" : row.type === "del" ? "−" : " "}</span>
               <span className={`whitespace-pre px-4 ${row.type === "ctx" ? "text-[var(--chat-label-secondary)]" : "text-[var(--chat-label-primary)]"}`}>{row.text}</span>
             </div>
@@ -146,8 +146,8 @@ export function ToolGroup({ calls }: { calls: ChatToolCall[] }) {
   if (failed) statusParts.push(`${failed} 个失败`)
   if (ok && !running && !failed) statusParts.push(`${ok} 个完成`)
   return (
-    <div className="mt-4 overflow-hidden rounded-[12px] bg-[#F7F8FA] shadow-[var(--chat-shadow-card)]">
-      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex h-10 w-full items-center gap-2.5 bg-[#F7F8FA] px-[14px] hover:bg-[#EDEEF1] transition-colors duration-[120ms]">
+    <div className="mt-4 overflow-hidden rounded-[8px] border border-[#E7EAEE] bg-[#FAFBFC] shadow-[var(--chat-shadow-xs)]">
+      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex h-10 w-full items-center gap-2.5 bg-[#FAFBFC] px-[11px] hover:bg-[#F3F5F8] transition-colors duration-[120ms]">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="size-4 shrink-0 text-[var(--chat-label-secondary)]"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         <span className="text-[13px] font-semibold text-[var(--chat-label-primary)]">{calls.length} 个工具调用</span>
         <span className="text-xs text-[var(--chat-label-tertiary)]">{running ? running + " 个运行中" : ok + " 个完成"}{failed ? " · " + failed + " 个失败" : ""}</span>
@@ -157,7 +157,7 @@ export function ToolGroup({ calls }: { calls: ChatToolCall[] }) {
       </button>
       <div className="chat-disclose" data-open={open}>
         <div className="chat-disclose-inner">
-          <div className="flex flex-col gap-px bg-[#FAFAF9]">
+          <div className="flex flex-col gap-px bg-[#E7EAEE]">
             {calls.map((call, index) => <ToolRow key={call.id} call={call} last={index === calls.length - 1} />)}
           </div>
         </div>
@@ -172,12 +172,12 @@ function ToolRow({ call, last }: { call: ChatToolCall; last: boolean }) {
   const isError = call.state === "error"
   const isRunning = call.state === "running"
   return (
-    <div className="">
+    <div className="border-t border-[#E7EAEE] first:border-t-0">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         data-state={call.state}
-        className={"chat-tool-row relative flex min-h-[38px] w-full items-center gap-2.5 overflow-hidden px-[14px] py-2 text-left transition-colors " + (isRunning ? "bg-[#F9F9F8] hover:bg-[#F9F9F8]" : "bg-[var(--chat-bg-card)] hover:bg-[var(--chat-bg-subtle)]")}
+        className={"chat-tool-row relative flex min-h-[38px] w-full items-center gap-2.5 overflow-hidden px-[11px] py-2 text-left transition-colors " + (isRunning ? "bg-[#F9F9F8] hover:bg-[#F9F9F8]" : "bg-[#FAFBFC] hover:bg-[#F3F5F8]")}
       >
         <ToolVariantIcon variant={call.variant} className="size-[14px] shrink-0 text-[var(--chat-label-secondary)]" />
         <span className="shrink-0 font-mono text-[12.5px] font-medium text-[var(--chat-label-primary)]">{call.name}</span>

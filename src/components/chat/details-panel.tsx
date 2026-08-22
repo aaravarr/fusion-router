@@ -40,16 +40,16 @@ function PanelInner({
   const hasUsage = totalTokens > 0
   return (
     <>
-      <div className="flex h-[52px] shrink-0 items-center justify-between bg-[var(--chat-bg-detail)] px-4 max-md:h-14">
+      <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-[#E9EDF3] bg-[var(--chat-bg-detail)] px-4 max-md:h-14">
         <span className="text-[13px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">运行详情</span>
         <button type="button" onClick={onClose} aria-label="关闭" className="flex size-11 items-center justify-center rounded-xl text-[var(--chat-label-tertiary)] hover:bg-white hover:text-[var(--chat-label-primary)] md:size-[26px] md:rounded-lg"><X className="size-5 md:size-4" strokeWidth={1.5} /></button>
       </div>
       <div className="flex gap-1 px-3 pb-2.5 pt-0 bg-[var(--chat-bg-detail)]">
-        <button type="button" className="flex-1 h-7 rounded-[8px] bg-[var(--chat-bg-card)] text-xs font-semibold text-[var(--chat-label-primary)] shadow-[var(--chat-shadow-card)]">工具</button>
-        <button type="button" className="flex-1 h-7 rounded-[8px] text-xs font-medium text-[var(--chat-label-secondary)]">上下文</button>
+        <button type="button" className="flex-1 h-7 rounded-[8px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] text-xs font-semibold text-[var(--chat-label-primary)] shadow-[var(--chat-shadow-xs)]">工具</button>
+        <button type="button" className="flex-1 h-7 rounded-[8px] border border-transparent text-xs font-medium text-[var(--chat-label-secondary)] hover:bg-white/60 hover:border-[#E7EAEE]">上下文</button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto bg-[var(--chat-bg-detail)] p-[14px] pt-2">
-        <section className="rounded-[12px] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-card)]">
+        <section className="rounded-[8px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-xs)]">
           <div className="mb-2 text-[12px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">工具调用</div>
           {total ? (
             <>
@@ -75,7 +75,7 @@ function PanelInner({
           )}
         </section>
 
-        <section className="rounded-[12px] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-card)]">
+        <section className="rounded-[8px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] p-[14px] shadow-[var(--chat-shadow-xs)]">
           <div className="mb-2 text-[12px] font-semibold tracking-[-.01em] text-[var(--chat-label-primary)]">上下文</div>
           {hasUsage ? (
             <>
@@ -114,8 +114,8 @@ export function DetailsPanel({
   if (!open) return null
   return (
     <>
-      {/* Desktop side panel — v3 无竖线，底色区分 */}
-      <aside className="hidden min-h-0 w-[340px] shrink-0 flex-col bg-[var(--chat-bg-detail)] md:flex">
+      {/* Desktop side panel — hairline左分隔，底色区分 */}
+      <aside className="hidden min-h-0 w-[340px] shrink-0 flex-col border-l border-[#E9EDF3] bg-[var(--chat-bg-detail)] md:flex">
         <PanelInner onClose={onClose} toolCalls={toolCalls} usage={usage} />
       </aside>
       {/* Mobile drawer/overlay from right */}

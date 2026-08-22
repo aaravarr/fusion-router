@@ -26,7 +26,7 @@ export interface ChatMessage {
 export function UserBubble({ content }: { content: string }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[68%] rounded-[16px_16px_6px_16px] bg-[var(--chat-bubble-bg)] px-4 py-[10px] text-[14px] leading-[1.65] font-medium text-[var(--chat-bubble-ink)] shadow-[0_1px_2px_rgba(16,24,40,.04)]">
+      <div className="max-w-[78%] rounded-[16px_16px_6px_16px] border border-[#CFE6FF] bg-[#E8F3FF] px-[15px] py-[11px] text-[15px] leading-[1.5] font-medium text-[var(--chat-label-primary)] shadow-[var(--chat-shadow-xs)]">
         <p className="whitespace-pre-wrap">{content}</p>
       </div>
     </div>
@@ -37,8 +37,8 @@ export function ReasoningBlock({ text, streaming, label }: { text?: string; stre
   const [open, setOpen] = useState(false)
   const teaser = text ? text.replace(/\s+/g, " ").slice(0, 64) : ""
   return (
-    <div className="mb-4 mt-0.5 overflow-hidden rounded-[12px] bg-[var(--chat-bg-subtle)]">
-      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full items-center gap-2.5 px-[14px] py-[10px] text-left hover:bg-[#F3F4F5] transition-colors duration-[120ms]">
+    <div className="mb-4 mt-0.5 overflow-hidden rounded-[8px] border border-[#E7EAEE] bg-[#FAFBFC] shadow-[var(--chat-shadow-xs)]">
+      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full items-center gap-2.5 px-[11px] py-[10px] text-left hover:bg-[#F3F5F8] transition-colors duration-[120ms]">
         <Sparkles className="size-4 shrink-0 text-[var(--chat-label-tertiary)]" strokeWidth={1.5} />
         <span className="inline-flex items-center rounded-[6px] bg-[var(--chat-bg-subtle)] px-2 py-0.5 font-mono text-[10px] font-medium leading-none text-[var(--chat-label-tertiary)]">{label || (streaming ? "思考中" : "已思考")}</span>
         <span className="min-w-0 flex-1 truncate text-xs text-[var(--chat-label-tertiary)]">{teaser}</span>
@@ -46,8 +46,8 @@ export function ReasoningBlock({ text, streaming, label }: { text?: string; stre
       </button>
       <div className="chat-disclose" data-open={open}>
         <div className="chat-disclose-inner">
-          <div className="bg-[var(--chat-bg-card)] px-[14px] pb-[14px] pt-3 text-[12.5px] leading-[1.70] text-[var(--chat-label-secondary)]">
-            <p className="mt-2 whitespace-pre-wrap">{text ?? (streaming ? "思考中…" : "（无思考内容）")}</p>
+          <div className="border-t border-[#E7EAEE] bg-[#F3F5F8] px-[14px] pb-[14px] pt-3 text-[13px] leading-[1.65] text-[var(--chat-label-secondary)]">
+            <p className="whitespace-pre-wrap">{text ?? (streaming ? "思考中…" : "（无思考内容）")}</p>
           </div>
         </div>
       </div>
@@ -85,7 +85,7 @@ export function AssistantMessage({
         <ToolCard call={toolCalls[0]} />
       ) : null}
       {message.status === "error" && message.error ? (
-        <div className="mt-4 flex items-start gap-2.5 rounded-[12px] border border-[#FEE2E2] bg-[#FDF5F5] px-4 py-[14px] md:bg-white md:border-[var(--chat-border-l1)] md:border-l-[3px] md:border-l-[#FECACA] md:shadow-[var(--chat-shadow-card)]">
+        <div className="mt-4 flex items-start gap-2.5 rounded-[8px] border border-[#E7EAEE] bg-[#FAFBFC] px-4 py-[14px] shadow-[var(--chat-shadow-xs)] md:bg-white md:border-[#E7EAEE] md:border-l-[3px] md:border-l-[#FECACA] md:shadow-[var(--chat-shadow-xs)]">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="text-[13px] font-medium text-[var(--chat-label-primary)]">连接中断，响应不完整</span>
@@ -99,7 +99,7 @@ export function AssistantMessage({
                 </button>
               ) : null}
               {onDiscard ? (
-                <button type="button" onClick={onDiscard} className="flex h-[30px] items-center gap-1.5 rounded-[8px] bg-[var(--chat-bg-card)] px-[13px] text-[12.5px] font-semibold text-[var(--chat-label-secondary)] shadow-[var(--chat-shadow-card)] transition-colors hover:shadow-[0_2px_8px_rgba(16,24,40,.06)]">丢弃并停止</button>
+                <button type="button" onClick={onDiscard} className="flex h-[30px] items-center gap-1.5 rounded-[8px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] px-[13px] text-[12.5px] font-semibold text-[var(--chat-label-secondary)] shadow-[var(--chat-shadow-xs)] transition-colors hover:shadow-[var(--chat-shadow-sm)]">丢弃并停止</button>
             ) : null}
           </div>
         </div>

@@ -743,32 +743,36 @@ html { scroll-behavior: smooth; }
   .landing .nav-right a { min-height: 44px; }
 }
 /* ================================================================
-   Fusion Router · 聊天页 v3 淡雅设计 token（--chat-* 前缀，避免与 landing 冲突）
-   对齐 design-mockups/chat/v3/index.html 视觉语言
+   Fusion Router · 聊天页 v3.1 — Kimi 取证规格校准（hairline + shadow 双保险）
+   对齐 design-mockups/kimi-real-spec.md §1/§5/§7
+   v3 淡雅成果保留：间距刻度/字重克制/蓝色收敛/ghost 选择器/抽屉/状态色非零上色
    ================================================================ */
 :root {
-  /* 基础灰阶（v3 对齐 ink 体系） */
+  /* 基础灰阶（v3 对齐 ink 体系，保留） */
   --chat-gray-0: #FFFFFF; --chat-gray-50: #FAFAF9; --chat-gray-100: #F9F9F8;
   --chat-gray-200: #F0F0EE; --chat-gray-300: #E4E4E7; --chat-gray-400: #A1A1AA;
   --chat-gray-500: #71717A; --chat-gray-600: #52525B; --chat-gray-700: #3F3F46;
   --chat-gray-800: #27272A; --chat-gray-900: #18181B;
 
-  /* v3 专用底色阶 */
-  --chat-bg-page: #F7F7F5;
-  --chat-bg-sidebar: #F7F7F5;
+  /* 底色阶 — 按 §6 取证：侧栏暖白 #FBFAF9 / 主区白 / 卡片 #FAFBFC / 下沉 #F3F5F8 */
+  --chat-bg-page: #FFFFFF;
+  --chat-bg-sidebar: #FBFAF9;
   --chat-bg-main: #FFFFFF;
   --chat-bg-detail: #FAFAF9;
   --chat-bg-card: #FFFFFF;
-  --chat-bg-subtle: #F9F9F8;
-  --chat-bg-tool: #F7F8FA;
+  --chat-bg-card-solid: #FAFBFC;
+  --chat-bg-subtle: #F3F5F8;
+  --chat-bg-tool: #FAFBFC;
   --chat-bg-active: #F0F0EE;
   --chat-run-soft: #F9F9F8;
   --chat-run-soft-muted: #F9F9F8;
 
   --chat-accent: #2563EB; --chat-accent-hover: #1D4ED8; --chat-accent-strong: #1E40AF;
-  --chat-accent-soft: #EFF4FF; --chat-accent-soft-2: #DBEAFE;
-  /* v3 用户气泡 */
-  --chat-bubble-bg: #E8EFFC;
+  --chat-accent-soft: #E8F3FF; --chat-accent-soft-2: #DBEAFE;
+  --chat-accent-bd: #CFE6FF;
+  /* 用户气泡 — §7.1 实测：#E8F3FF / #CFE6FF / #1E40AF */
+  --chat-bubble-bg: #E8F3FF;
+  --chat-bubble-bd: #CFE6FF;
   --chat-bubble-ink: #1E40AF;
 
   --chat-success: #16A34A; --chat-success-soft: #F0FDF4; --chat-success-border: #BBF7D0;
@@ -776,15 +780,19 @@ html { scroll-behavior: smooth; }
   --chat-warn: #B45309;    --chat-warn-soft: #FFFBEB;    --chat-warn-border: #FDE68A;
   --chat-business: #2563EB;
 
-  /* 背景层次重映射：页面暖灰 / 主区纯白 / 细节 */
+  /* 实线 hairline — §1 核心：卡片/工具卡 #E7EAEE / composer/侧栏分隔 #E9EDF3 / 气泡 #CFE6FF */
+  --chat-line: #E9EDF3;
+  --chat-line-card: #E7EAEE;
+  --chat-line-strong: #E7EAEE;
+  /* 兼容旧变量：用实线替代原来的 rgba(.06/.04) */
   --chat-bg-base: var(--chat-bg-page);
   --chat-bg-layer-1: var(--chat-bg-subtle);
   --chat-bg-layer-2: var(--chat-bg-tool);
   --chat-bg-layer-3: #EDEEF1;
-  --chat-border-l1: rgba(16,24,40,.06);
-  --chat-border-l2: rgba(16,24,40,.04);
+  --chat-border-l1: #E7EAEE;
+  --chat-border-l2: #E9EDF3;
   --chat-border-l3: #D4D4D8;
-  --chat-border-subtle: rgba(16,24,40,.04);
+  --chat-border-subtle: #E7EAEE;
   --chat-label-primary: #18181B;
   --chat-label-secondary: #3F3F46;
   --chat-label-tertiary: #71717A;
@@ -795,14 +803,27 @@ html { scroll-behavior: smooth; }
   --chat-code-ink: #E4E4E7; --chat-code-ink-dim: #8B8B93;
 
   --chat-r-4: 4px; --chat-r-6: 6px; --chat-r-8: 8px; --chat-r-12: 12px; --chat-r-16: 16px; --chat-r-22: 22px; --chat-r-pill: 999px;
-  --chat-shadow-card: 0 1px 2px rgba(16,24,40,.04);
-  --chat-shadow-card-2: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
-  --chat-shadow-lv2: 0 1px 2px rgba(16,24,40,.04);
-  --chat-shadow-lv3: 0 8px 24px rgba(16,24,40,.08), 0 4px 10px rgba(16,24,40,.05);
-  --chat-shadow-pop: 0 8px 24px rgba(16,24,40,.08), 0 4px 10px rgba(16,24,40,.05);
+  /* 阴影 — §5 实测公式（light） */
+  --chat-shadow-xs: 0 1px 2px rgba(16,24,40,.04);
+  --chat-shadow-sm: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --chat-shadow-md: 0 4px 12px rgba(16,24,40,.07), 0 2px 4px rgba(16,24,40,.05);
+  --chat-shadow-lg: 0 12px 32px rgba(16,24,40,.12), 0 4px 10px rgba(16,24,40,.08);
+  --chat-shadow-xl: 0 24px 64px rgba(16,24,40,.18), 0 8px 20px rgba(16,24,40,.1);
+  /* 兼容别名：旧组件引用的 shadow 指向新公式 */
+  --chat-shadow-card: var(--chat-shadow-xs);
+  --chat-shadow-card-2: var(--chat-shadow-sm);
+  --chat-shadow-lv2: var(--chat-shadow-xs);
+  --chat-shadow-lv3: var(--chat-shadow-lg);
+  --chat-shadow-pop: var(--chat-shadow-sm);
   --chat-dur-fast: 120ms; --chat-dur-mid: 160ms;
   --chat-ease-out: cubic-bezier(.16,1,.3,1);
   --chat-content-w: 740px;
+  /* 间距 — §3 */
+  --chat-turn-gap: 16px;
+  --chat-block-gap: 10px;
+  --chat-section-gap: 18px;
+  --chat-pad-y: 22px;
+  --chat-pad-x: 20px;
 }
 
 /* ---- 工具卡状态点与动画（v3 淡雅） ---- */
@@ -842,11 +863,11 @@ html { scroll-behavior: smooth; }
 @keyframes chat-spin { to { transform: rotate(360deg); } }
 
 /* 键盘提示 chip（v3：距卡 10px，外层已处理） */
-.kbd-chip { font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; color: var(--chat-label-tertiary); background: var(--chat-bg-layer-1); border: 1px solid var(--chat-border-l1); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; line-height: 17px; white-space: nowrap; display: inline-block; }
+.kbd-chip { font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; color: var(--chat-label-tertiary); background: var(--chat-bg-layer-1); border: 1px solid #E7EAEE; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; line-height: 17px; white-space: nowrap; display: inline-block; }
 .chat-kbd-hint { margin-top: 10px; }
 
 /* 助手 markdown 正文排版（v3：14.5px / 1.70，字重 400/600） */
-.chat-markdown { font-size: 14.5px; line-height: 1.70; color: var(--chat-label-primary); font-weight: 400; }
+.chat-markdown { font-size: 14px; line-height: 1.6; color: var(--chat-label-primary); font-weight: 500; }
 .chat-markdown p { margin: 0 0 12px; }
 .chat-markdown p:last-child { margin-bottom: 0; }
 .chat-markdown h3 { font-size: 15.5px; font-weight: 600; margin: 16px 0 8px; letter-spacing: -.01em; }
@@ -854,4 +875,4 @@ html { scroll-behavior: smooth; }
 .chat-markdown li { margin: 4px 0; }
 .chat-markdown a { color: var(--chat-accent); text-decoration: none; }
 .chat-markdown a:hover { text-decoration: underline; }
-.chat-markdown code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; background: #F3F4F6; color: #71717A; border-radius: 6px; padding: 1px 5px; }
+.chat-markdown code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; background: #F3F5F8; color: var(--chat-accent-hover); border: 1px solid #E7EAEE; border-radius: 6px; padding: 1px 6px; }

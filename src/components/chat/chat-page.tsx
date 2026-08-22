@@ -371,7 +371,7 @@ export function ChatPage() {
         onClose={() => setSidebarOpen(false)}
       />
       <main className="flex min-w-0 flex-1 flex-col bg-[var(--chat-bg-main)]">
-        <header className="flex h-[52px] shrink-0 items-center justify-between gap-2 bg-[var(--chat-bg-main)] px-3 md:gap-3 md:px-5 max-md:h-14">
+        <header className="flex h-[52px] shrink-0 items-center justify-between gap-2 border-b border-[#E9EDF3] bg-[var(--chat-bg-main)] px-3 md:gap-3 md:px-5 max-md:h-14">
           <div className="flex min-w-0 items-center gap-1.5 md:gap-2">
             <button type="button" onClick={() => setSidebarOpen(true)} aria-label="打开会话列表" className="flex size-11 shrink-0 items-center justify-center rounded-xl text-[var(--chat-label-primary)] hover:bg-[var(--chat-bg-layer-2)] md:hidden">
               <Menu className="size-5" />
@@ -401,7 +401,7 @@ export function ChatPage() {
         <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--chat-bg-main)]">
           <div className="mx-auto w-full max-w-[740px] px-6 pb-8 pt-5">
             {!messages.length ? <EmptyState onPick={(text) => submit(text, true)} disabled={!model} /> : (
-              <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-[var(--chat-turn-gap)]">
                 {messages.map((message) => message.role === "user" ? (
                   <UserBubble key={message.id} content={message.content} />
                 ) : (
@@ -452,7 +452,7 @@ function EmptyState({ onPick, disabled }: { onPick: (text: string) => void; disa
       <p className="mb-5 mt-1.5 max-w-[380px] text-[12.5px] leading-[1.6] text-[var(--chat-label-tertiary)]">Fusion Router 聚合多个模型池，统一 OpenAI 与 Anthropic 兼容出口。选择一个任务开始。</p>
       <div className="grid w-full grid-cols-2 gap-3">
         {EMPTY_PROMPTS.map((prompt) => (
-          <button key={prompt.title} type="button" disabled={disabled} onClick={() => onPick(prompt.desc)} className="rounded-[12px] bg-[var(--chat-bg-card)] p-4 text-left shadow-[var(--chat-shadow-card)] transition-[box-shadow,transform] duration-120 hover:shadow-[0_2px_8px_rgba(16,24,40,.06)] hover:translate-y-[-1px] disabled:opacity-50">
+          <button key={prompt.title} type="button" disabled={disabled} onClick={() => onPick(prompt.desc)} className="rounded-[8px] border border-[#E7EAEE] bg-[var(--chat-bg-card)] p-4 text-left shadow-[var(--chat-shadow-xs)] transition-[border-color,box-shadow,transform] duration-120 hover:border-[#E7EAEE] hover:shadow-[var(--chat-shadow-sm)] hover:translate-y-[-1px] disabled:opacity-50">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="mb-2 size-[14px] text-[var(--chat-label-caption)]"><path d={prompt.icon} /></svg>
             <span className="block text-[13px] font-semibold text-[var(--chat-label-primary)]">{prompt.title}</span>
             <span className="text-[12.5px] leading-[1.5] text-[var(--chat-label-secondary)]">{prompt.desc}</span>
