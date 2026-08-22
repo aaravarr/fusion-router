@@ -40,10 +40,7 @@ export function ReasoningBlock({ text, streaming, label }: { text?: string; stre
     <div className="mb-4 mt-0.5 overflow-hidden rounded-[12px] bg-[var(--chat-bg-subtle)]">
       <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex w-full items-center gap-2.5 px-[14px] py-[10px] text-left hover:bg-[#F3F4F5] transition-colors duration-[120ms]">
         <Sparkles className="size-4 shrink-0 text-[var(--chat-label-tertiary)]" strokeWidth={1.5} />
-        <span className="flex items-center gap-[7px] text-[12.5px] font-semibold text-[var(--chat-label-secondary)]">
-          {streaming ? "正在思考" : "已思考"}
-          {label ? <span className="inline-flex items-center gap-1 rounded-[6px] bg-[var(--chat-bg-subtle)] px-[6px] font-mono text-[10px] font-medium leading-[18px] text-[var(--chat-label-tertiary)]">{label}</span> : null}
-        </span>
+        <span className="inline-flex items-center rounded-[6px] bg-[var(--chat-bg-subtle)] px-2 py-0.5 font-mono text-[10px] font-medium leading-none text-[var(--chat-label-tertiary)]">{label || (streaming ? "思考中" : "已思考")}</span>
         <span className="min-w-0 flex-1 truncate text-xs text-[var(--chat-label-tertiary)]">{teaser}</span>
         <ChevronRight className="size-[14px] shrink-0 text-[var(--chat-label-caption)] transition-transform" strokeWidth={1.5} style={{ transform: open ? "rotate(90deg)" : undefined }} />
       </button>
