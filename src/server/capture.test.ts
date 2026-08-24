@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest"
 import {
   ensureStreamUsage,
   extractBodyError,
+  extractResponseFromSse,
+  extractSseError,
   extractUsage,
   extractUsageFromSse,
   isLogOk,
   MAX_CAPTURE_BYTES,
   safeCloneBody,
+  teeAndCapture,
 } from "./capture"
 
 describe("capture.extractUsage", () => {
@@ -288,3 +291,132 @@ describe("capture muse chat-fallback usage 形态（生产断点回归）", () =
   })
 })
 
+
+describe("capture 流式成功请求误判修复（SSE 心跳/缺 usage/hasResponse）", () => {
+  it("含 ': OPENROUTER PROCESSING' 心跳 + data chunks + usage 帧：usage 正确提取且 error 为 undefined，isLogOk 为 true", async () => {
+    const sse = [
+      ": OPENROUTER PROCESSING",
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"hello"}}]}',
+      "",
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    // extractUsageFromSse 路径
+    const usage = extractUsageFromSse(sse);
+    expect(usage).toMatchObject({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    const err = extractSseError(sse);
+    expect(err).toBeUndefined();
+    expect(isLogOk(200, err ?? null)).toBe(true);
+    expect(isLogOk(200, err)).toBe(true);
+    // teeAndCapture 路径
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(sse)); c.close(); } });
+    const result = await new Promise<import("./capture").CaptureResult>((resolve) => {
+      const out = teeAndCapture(stream, resolve);
+      // 消费客户端流以驱动 tee 完成
+      void (async () => { const r = out.getReader(); while (!(await r.read()).done) {} })();
+    });
+    expect(result.usage).toMatchObject({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    expect(result.error == null).toBe(true);
+    expect(isLogOk(200, result.error ?? null)).toBe(true);
+    // 心跳不应导致 response 误判为错误，且 chat response 应可捕获
+    const resp = extractResponseFromSse(sse) as Record<string, unknown>;
+    expect(resp).toBeDefined();
+  });
+
+  it("无 usage 帧的流：error 为 undefined，isLogOk 仍为 true（不因缺 usage 翻转）", async () => {
+    const sse = [
+      ": OPENROUTER PROCESSING",
+      'data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"hi"}}]}',
+      "",
+      'data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const usage = extractUsageFromSse(sse);
+    expect(usage).toBeUndefined();
+    const err = extractSseError(sse);
+    expect(err == null).toBe(true);
+    expect(isLogOk(200, err ?? null)).toBe(true);
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(sse)); c.close(); } });
+    const result = await new Promise<import("./capture").CaptureResult>((resolve) => {
+      const out = teeAndCapture(stream, resolve);
+      void (async () => { const r = out.getReader(); while (!(await r.read()).done) {} })();
+    });
+    expect(result.usage).toBeUndefined();
+    expect(result.error == null).toBe(true);
+    expect(isLogOk(200, result.error ?? null)).toBe(true);
+    // 仍应能捕获 chat response，使 has_response=true
+    const resp = extractResponseFromSse(sse) as Record<string, unknown>;
+    expect(resp).toBeDefined();
+    expect((resp as { object: string }).object).toBe("chat.completion");
+  });
+
+  it("含真 error 对象的流：error 正确提取且 isLogOk 为 false", async () => {
+    const sse = [
+      'data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"hi"}}]}',
+      "",
+      'data: {"error":{"message":"boom","type":"server_error"}}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const err = extractSseError(sse);
+    expect(err).toBe("boom");
+    expect(isLogOk(200, err)).toBe(false);
+    expect(isLogOk(200, err ?? null)).toBe(false);
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(sse)); c.close(); } });
+    const result = await new Promise<import("./capture").CaptureResult>((resolve) => {
+      const out = teeAndCapture(stream, resolve);
+      void (async () => { const r = out.getReader(); while (!(await r.read()).done) {} })();
+    });
+    expect(result.error).toBe("boom");
+    expect(isLogOk(200, result.error ?? null)).toBe(false);
+    // 错误帧不应被心跳注释干扰
+    const sseWithComment = ": OPENROUTER PROCESSING\n" + sse;
+    expect(extractSseError(sseWithComment)).toBe("boom");
+  });
+
+  it("chat 流 response 捕获：构造带 choices 的 SSE 返回带 choices 的对象", () => {
+    const sse = [
+      'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":123,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}',
+      "",
+      'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":123,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const resp = extractResponseFromSse(sse) as Record<string, unknown>;
+    expect(resp).toBeDefined();
+    expect((resp as { object: string }).object).toBe("chat.completion");
+    expect((resp as { id: string }).id).toBe("chatcmpl-123");
+    expect((resp as { model: string }).model).toBe("gpt-4");
+    const choices = (resp as { choices: { message: { content: unknown }; finish_reason: unknown }[] }).choices;
+    expect(Array.isArray(choices)).toBe(true);
+    expect(choices.length).toBeGreaterThan(0);
+    expect(choices[0].message).toBeDefined();
+    expect(choices[0].finish_reason).toBe("stop");
+    // usage 应透传
+    expect((resp as { usage: unknown }).usage).toMatchObject({ prompt_tokens: 5, completion_tokens: 10 });
+  });
+
+  it("注释行 ': ' 与 ':' 在错误判定中跳过，不触发误判", () => {
+    const sse = [
+      ": OPENROUTER PROCESSING",
+      ": keep-alive",
+      'data: {"id":"chatcmpl-4","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"ok"}}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+
+    // 仅有注释行和正常 data，不应产生 error
+    expect(extractSseError(sse)).toBeUndefined();
+    expect(isLogOk(200, extractSseError(sse) ?? null)).toBe(true);
+    // 注释行本身即使包含 error 字样也不应被解析
+    const sse2 = ": error: fake\n" + sse;
+    expect(extractSseError(sse2)).toBeUndefined();
+  });
+});

@@ -197,7 +197,10 @@ export function extractUsageFromSse(text: string): TokenUsage | undefined {
 export function extractResponseFromSse(text: string): unknown | undefined {
   let completed: unknown | undefined;
   let lastResponseLike: unknown | undefined;
+  let lastChatChunk: Record<string, unknown> | undefined;
   for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith(":")) continue;
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trimStart();
     if (!data || data === "[DONE]") continue;
@@ -219,11 +222,48 @@ export function extractResponseFromSse(text: string): unknown | undefined {
       if (nested && typeof nested === "object" && (nested as Record<string, unknown>).object === "response") {
         lastResponseLike = nested;
       }
+      // chat/completions 流：收集最后一个带 choices 的 data 帧
+      if (Array.isArray(obj.choices) && obj.choices.length > 0) {
+        lastChatChunk = obj;
+      }
     } catch {
       // ignore malformed sse data lines
     }
   }
-  return completed ?? lastResponseLike;
+  if (completed !== undefined || lastResponseLike !== undefined) return completed ?? lastResponseLike;
+  if (lastChatChunk) {
+    const rawChoices = lastChatChunk.choices as unknown[];
+    const choices = rawChoices.map((c: unknown) => {
+      const choice = c as Record<string, unknown>;
+      const idx = typeof choice.index === "number" ? choice.index : 0;
+      const finish = (choice.finish_reason ?? choice.finishReason ?? null) as unknown;
+      let content: unknown = "";
+      if (choice.delta && typeof choice.delta === "object") {
+        const delta = choice.delta as Record<string, unknown>;
+        content = delta.content ?? delta.text ?? "";
+      } else if (choice.message && typeof choice.message === "object") {
+        const msg = choice.message as Record<string, unknown>;
+        content = msg.content ?? "";
+      } else if (typeof choice.text === "string") {
+        content = choice.text;
+      } else if (typeof choice.content === "string") {
+        content = choice.content;
+      }
+      return {
+        index: idx,
+        message: { role: "assistant", content },
+        finish_reason: finish,
+      };
+    });
+    return {
+      id: lastChatChunk.id,
+      object: "chat.completion",
+      model: lastChatChunk.model,
+      choices,
+      usage: lastChatChunk.usage,
+    };
+  }
+  return undefined;
 }
 
 export function extractBodyError(payload: unknown): string | undefined {
@@ -245,6 +285,28 @@ export function extractBodyError(payload: unknown): string | undefined {
         }
       }
       if (child && typeof child === "object") stack.push(child);
+    }
+  }
+  return undefined;
+}
+
+export function extractSseError(text: string): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trimStart();
+    if (!trimmed) continue;
+    if (trimmed.startsWith(":")) continue;
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trimStart();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(data) as unknown;
+      if (!parsed || typeof parsed !== "object") continue;
+      const obj = parsed as Record<string, unknown>;
+      if (!("error" in obj)) continue;
+      const err = extractBodyError(parsed);
+      if (err) return err;
+    } catch {
+      // ignore malformed sse data lines
     }
   }
   return undefined;
@@ -361,7 +423,7 @@ export function teeAndCapture(
       }
       if (response === undefined) response = extractResponseFromSse(text);
     }
-    const error = extractBodyError(usage ? undefined : tryParseText(text) ?? response);
+    const error = usage ? undefined : extractBodyError(response) ?? extractSseError(text);
     onComplete({ response: truncated ? undefined : response, responseTruncated: truncated, responseBytes: total, usage, firstByteAt, error });
   })();
   return client;
