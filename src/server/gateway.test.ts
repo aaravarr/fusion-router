@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createDatabase, getDatabase } from "./db"
 import { ApiKeyHasher, SecretVault } from "./crypto"
 import { AccountRepository, ApiKeyRepository, ProviderCredentialRepository } from "./repository"
+import { CustomProviderRepository } from "./custom-providers"
 import { classifyGoUsageLimit, computeBackoffMs, GatewayService, type CredentialProvider } from "./gateway"
 import { RoutingService } from "./routing"
 import { getSystemSettings, initializeSystemSettings, updateSystemSettings } from "./settings"
@@ -510,6 +511,89 @@ describe("gateway", () => {
     expect(attempt.error_message).toContain("ECONNRESET")
   })
 })
+
+
+  it("流式 network_error 触发同账号重试并切号，空内容不标 SUCCESS", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    db.prepare("REPLACE INTO provider_model_cache(pool_type, models_json, source, updated_at) VALUES ('opencode-go', ?, 'test', datetime('now'))").run(JSON.stringify(["muse-spark-1.2-contributor", "stealth/ox-alpha", "grok-4.5"]));
+    const customProvider = new CustomProviderRepository(ownerUserId, db).create({ name: "OpenRouter-test", baseUrl: "https://openrouter.ai/api/v1", interfaceTypes: ["chat"], models: ["stealth/ox-alpha"] });
+    const customAccountId = new AccountRepository(ownerUserId, db, new SecretVault(encryptionKey)).createProviderAccount({ name: "openrouter-test", poolType: customProvider.poolType }).id;
+    new ProviderCredentialRepository(ownerUserId, db, new SecretVault(encryptionKey)).upsert({ accountId: customAccountId, poolType: customProvider.poolType, credentialData: { token: "sk-test-openrouter" } });
+    initializeSystemSettings(db); updateSystemSettings({ maxFailoverAttempts: 12 }, null, db);
+    const encoder = new TextEncoder()
+    const networkErrorChunk = "data: " + JSON.stringify({ id: "gen-network", object: "chat.completion.chunk", model: "grok-4.5", choices: [{ index: 0, delta: { content: "" }, finish_reason: "stop", native_finish_reason: "network_error" }] }) + "\n\n"
+    const successChunk = "data: " + JSON.stringify({ id: "gen-ok", object: "chat.completion.chunk", model: "grok-4.5", choices: [{ index: 0, delta: { content: "hi ok" }, finish_reason: "stop" }] }) + "\n\n" + "data: [DONE]\n\n"
+    const stream1 = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode(networkErrorChunk + "data: [DONE]\n\n")); c.close(); } })
+    const stream2 = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode(successChunk)); c.close(); } })
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(stream1, { headers: { "content-type": "text/event-stream" } }))
+      .mockResolvedValueOnce(new Response(stream2, { headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "grok-4.5", messages: [{ role: "user", content: "hello" }], stream: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    await response.text();
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    const rows = db.prepare("SELECT outcome, ok, error FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as { outcome: string; ok: number; error: string | null }
+    expect(rows.outcome).toBe("SUCCESS")
+    expect(rows.ok).toBe(1)
+    const attempts = db.prepare("SELECT decision, error_type FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ decision: string; error_type: string | null }>
+    expect(attempts[0].decision).toBe("RETRY_SAME_ACCOUNT_BACKOFF")
+    expect(attempts[0].error_type).toBe("network_error")
+  })
+
+  it("流式 network_error 重试耗尽透传 502 而非空内容", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    db.prepare("REPLACE INTO provider_model_cache(pool_type, models_json, source, updated_at) VALUES ('opencode-go', ?, 'test', datetime('now'))").run(JSON.stringify(["muse-spark-1.2-contributor", "stealth/ox-alpha", "grok-4.5"]));
+    const customProvider = new CustomProviderRepository(ownerUserId, db).create({ name: "OpenRouter-test", baseUrl: "https://openrouter.ai/api/v1", interfaceTypes: ["chat"], models: ["stealth/ox-alpha"] });
+    const customAccountId = new AccountRepository(ownerUserId, db, new SecretVault(encryptionKey)).createProviderAccount({ name: "openrouter-test", poolType: customProvider.poolType }).id;
+    new ProviderCredentialRepository(ownerUserId, db, new SecretVault(encryptionKey)).upsert({ accountId: customAccountId, poolType: customProvider.poolType, credentialData: { token: "sk-test-openrouter" } });
+    initializeSystemSettings(db); updateSystemSettings({ maxFailoverAttempts: 5 }, null, db);
+    const encoder = new TextEncoder()
+    const networkErrorChunk = "data: " + JSON.stringify({ id: "gen-network", object: "chat.completion.chunk", model: "grok-4.5", choices: [{ index: 0, delta: { content: "" }, finish_reason: "stop", native_finish_reason: "network_error" }] }) + "\n\n" + "data: [DONE]\n\n"
+    const createStream = () => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode(networkErrorChunk)); c.close(); } })
+    const fetcher = vi.fn().mockImplementation(() => new Response(createStream(), { headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "grok-4.5", messages: [{ role: "user", content: "hello" }], stream: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(502)
+    const body = await response.json() as { error: { type: string } }
+    expect(body.error.type).toBe("network_error")
+    const row = db.prepare("SELECT outcome, ok, status FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as { outcome: string; ok: number; status: number }
+    expect(row.outcome).toBe("NETWORK")
+    expect(row.ok).toBe(0)
+    expect(row.status).toBe(502)
+  })
+
+  it("非流式 network_error 触发重试，空内容不标 SUCCESS", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    db.prepare("REPLACE INTO provider_model_cache(pool_type, models_json, source, updated_at) VALUES ('opencode-go', ?, 'test', datetime('now'))").run(JSON.stringify(["muse-spark-1.2-contributor", "stealth/ox-alpha", "grok-4.5"]));
+    const customProvider = new CustomProviderRepository(ownerUserId, db).create({ name: "OpenRouter-test", baseUrl: "https://openrouter.ai/api/v1", interfaceTypes: ["chat"], models: ["stealth/ox-alpha"] });
+    const customAccountId = new AccountRepository(ownerUserId, db, new SecretVault(encryptionKey)).createProviderAccount({ name: "openrouter-test", poolType: customProvider.poolType }).id;
+    new ProviderCredentialRepository(ownerUserId, db, new SecretVault(encryptionKey)).upsert({ accountId: customAccountId, poolType: customProvider.poolType, credentialData: { token: "sk-test-openrouter" } });
+    initializeSystemSettings(db); updateSystemSettings({ maxFailoverAttempts: 12 }, null, db);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(Response.json({ id: "gen-network", object: "chat.completion", model: "grok-4.5", choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop", native_finish_reason: "network_error" }] }))
+      .mockResolvedValueOnce(Response.json({ id: "gen-ok", object: "chat.completion", model: "grok-4.5", choices: [{ index: 0, message: { role: "assistant", content: "hi ok" }, finish_reason: "stop" }] }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "grok-4.5", messages: [{ role: "user", content: "hello" }] }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    const body = await response.json() as { choices: Array<{ message: { content: string } }> }
+    expect(body.choices[0].message.content).toBe("hi ok")
+  })
+
+
 
 describe("gateway logging", () => {
   beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })

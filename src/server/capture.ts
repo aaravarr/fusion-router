@@ -191,6 +191,67 @@ export function extractUsageFromSse(text: string): TokenUsage | undefined {
   return last;
 }
 
+const NETWORK_ERROR_DEFAULT_MESSAGE = "upstream native_finish_reason=network_error (empty content)";
+
+function networkErrorDetail(source: Record<string, unknown>): string {
+  const err = source.error;
+  if (err && typeof err === "object") {
+    const message = (err as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return message.slice(0, MAX_BODY_ERROR_CHARS);
+  }
+  return NETWORK_ERROR_DEFAULT_MESSAGE;
+}
+
+/**
+ * 检测（已解析的）JSON 响应体 / 单条 SSE data 载荷中的 native_finish_reason=network_error。
+ * OpenRouter custom 上游不支持 tools 等情况会返回 HTTP 200 + 单 chunk
+ * {"native_finish_reason":"network_error","finish_reason":"stop","content":""}，
+ * 属于可重试的上游网络错误，不应按 SUCCESS 透传空内容。
+ * 覆盖位置：根对象、choices[]（choice 自身 / delta / message）、嵌套 response 对象。
+ * 返回人类可读错误说明；未检测到返回 undefined。
+ */
+export function extractNetworkError(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const root = payload as Record<string, unknown>;
+  if (root.native_finish_reason === "network_error") return networkErrorDetail(root);
+  if (Array.isArray(root.choices)) {
+    for (const raw of root.choices) {
+      if (!raw || typeof raw !== "object") continue;
+      const choice = raw as Record<string, unknown>;
+      if (choice.native_finish_reason === "network_error") return networkErrorDetail(choice);
+      for (const key of ["delta", "message"] as const) {
+        const nested = choice[key];
+        if (nested && typeof nested === "object" && (nested as Record<string, unknown>).native_finish_reason === "network_error") {
+          return networkErrorDetail(nested as Record<string, unknown>);
+        }
+      }
+    }
+  }
+  // 嵌套 response 形态（responses SSE 事件如 response.incomplete / response.completed）
+  const nested = root.response;
+  if (nested && typeof nested === "object") return extractNetworkError(nested);
+  return undefined;
+}
+
+/** 扫描 SSE 文本中的所有 data 行，检测 native_finish_reason=network_error。 */
+export function extractSseNetworkError(text: string): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trimStart();
+    if (!trimmed) continue;
+    if (trimmed.startsWith(":")) continue;
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trimStart();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const found = extractNetworkError(JSON.parse(data));
+      if (found) return found;
+    } catch {
+      // ignore malformed sse data lines
+    }
+  }
+  return undefined;
+}
+
 // 从 SSE 文本中提取最终 responses 形态的响应体：
 // - 优先取 response.completed 事件中的 response 字段（为 Codex/前端展示所需的完整形态，含 output/reasoning）
 // - 兜底取最后一个形如 {object:"response", output:[...]} 的 data 对象
@@ -198,6 +259,9 @@ export function extractResponseFromSse(text: string): unknown | undefined {
   let completed: unknown | undefined;
   let lastResponseLike: unknown | undefined;
   let lastChatChunk: Record<string, unknown> | undefined;
+  // chat/completions 流：按 choice.index 跨 chunk 聚合 delta.content 与 reasoning
+  // （reasoning_content / reasoning / thinking），避免只取最后一帧导致内容丢失。
+  const chatAgg = new Map<number, { content: string; contentRaw: unknown; reasoning: string; finish: unknown }>();
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trimStart();
     if (trimmed.startsWith(":")) continue;
@@ -222,9 +286,37 @@ export function extractResponseFromSse(text: string): unknown | undefined {
       if (nested && typeof nested === "object" && (nested as Record<string, unknown>).object === "response") {
         lastResponseLike = nested;
       }
-      // chat/completions 流：收集最后一个带 choices 的 data 帧
+      // chat/completions 流：收集带 choices 的 data 帧并逐 choice 聚合
       if (Array.isArray(obj.choices) && obj.choices.length > 0) {
         lastChatChunk = obj;
+        for (const raw of obj.choices as unknown[]) {
+          if (!raw || typeof raw !== "object") continue;
+          const choice = raw as Record<string, unknown>;
+          const idx = typeof choice.index === "number" ? choice.index : 0;
+          let agg = chatAgg.get(idx);
+          if (!agg) {
+            agg = { content: "", contentRaw: undefined, reasoning: "", finish: null };
+            chatAgg.set(idx, agg);
+          }
+          const finish = choice.finish_reason ?? choice.finishReason;
+          if (finish != null) agg.finish = finish;
+          const src = (choice.delta && typeof choice.delta === "object"
+            ? choice.delta
+            : choice.message && typeof choice.message === "object"
+              ? choice.message
+              : null) as Record<string, unknown> | null;
+          if (src) {
+            if (typeof src.content === "string") agg.content += src.content;
+            else if (src.content != null) agg.contentRaw = src.content;
+            else if (typeof src.text === "string") agg.content += src.text;
+            const reasoning = [src.reasoning_content, src.reasoning, src.thinking].find((value) => typeof value === "string") as string | undefined;
+            if (reasoning) agg.reasoning += reasoning;
+          } else if (typeof choice.text === "string") {
+            agg.content += choice.text;
+          } else if (typeof choice.content === "string") {
+            agg.content += choice.content;
+          }
+        }
       }
     } catch {
       // ignore malformed sse data lines
@@ -232,27 +324,20 @@ export function extractResponseFromSse(text: string): unknown | undefined {
   }
   if (completed !== undefined || lastResponseLike !== undefined) return completed ?? lastResponseLike;
   if (lastChatChunk) {
-    const rawChoices = lastChatChunk.choices as unknown[];
-    const choices = rawChoices.map((c: unknown) => {
-      const choice = c as Record<string, unknown>;
-      const idx = typeof choice.index === "number" ? choice.index : 0;
-      const finish = (choice.finish_reason ?? choice.finishReason ?? null) as unknown;
-      let content: unknown = "";
-      if (choice.delta && typeof choice.delta === "object") {
-        const delta = choice.delta as Record<string, unknown>;
-        content = delta.content ?? delta.text ?? "";
-      } else if (choice.message && typeof choice.message === "object") {
-        const msg = choice.message as Record<string, unknown>;
-        content = msg.content ?? "";
-      } else if (typeof choice.text === "string") {
-        content = choice.text;
-      } else if (typeof choice.content === "string") {
-        content = choice.content;
-      }
+    const indices = [...chatAgg.keys()].sort((a, b) => a - b);
+    const choices = indices.map((idx) => {
+      const agg = chatAgg.get(idx)!;
+      // content 为空时合并聚合的 reasoning（reasoning_content / reasoning / thinking）
+      // 到响应内容存储（展示用）；原 reasoning 同时保留在 message.reasoning_content 上。
+      let content: unknown = agg.content;
+      if (content === "" && agg.contentRaw !== undefined) content = agg.contentRaw;
+      if (content === "" && agg.reasoning) content = agg.reasoning;
+      const message: Record<string, unknown> = { role: "assistant", content };
+      if (agg.reasoning) message.reasoning_content = agg.reasoning;
       return {
         index: idx,
-        message: { role: "assistant", content },
-        finish_reason: finish,
+        message,
+        finish_reason: agg.finish,
       };
     });
     return {
@@ -423,7 +508,8 @@ export function teeAndCapture(
       }
       if (response === undefined) response = extractResponseFromSse(text);
     }
-    const error = usage ? undefined : extractBodyError(response) ?? extractSseError(text);
+    // native_finish_reason=network_error 的流即使带 usage / 无 error 字段也记真实原因（ok 判定为 0）。
+    const error = extractSseNetworkError(text) ?? (usage ? undefined : extractBodyError(response) ?? extractSseError(text));
     onComplete({ response: truncated ? undefined : response, responseTruncated: truncated, responseBytes: total, usage, firstByteAt, error });
   })();
   return client;
@@ -465,7 +551,7 @@ export function captureJsonResponse(
       let response: unknown;
       try { response = JSON.parse(text) } catch { /* keep text */ }
       const usage = extractUsage(response);
-      const error = extractBodyError(response) ?? (usage ? undefined : extractBodyError(tryParseText(text)));
+      const error = extractNetworkError(response) ?? extractBodyError(response) ?? (usage ? undefined : extractBodyError(tryParseText(text)));
       onComplete({ response: truncated ? undefined : response, responseTruncated: truncated, responseBytes: total, usage, firstByteAt, error });
     },
     async cancel(reason) {

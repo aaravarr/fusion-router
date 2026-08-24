@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import {
   ensureStreamUsage,
   extractBodyError,
+  extractNetworkError,
   extractResponseFromSse,
+  extractSseNetworkError,
   extractSseError,
   extractUsage,
   extractUsageFromSse,
@@ -418,5 +420,93 @@ describe("capture 流式成功请求误判修复（SSE 心跳/缺 usage/hasRespo
     // 注释行本身即使包含 error 字样也不应被解析
     const sse2 = ": error: fake\n" + sse;
     expect(extractSseError(sse2)).toBeUndefined();
+  });
+});
+
+describe("capture network_error 识别与 reasoning_content 合并", () => {
+  it("extractNetworkError 识别根对象 native_finish_reason", () => {
+    expect(extractNetworkError({ native_finish_reason: "network_error" })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ native_finish_reason: "network_error" }] })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ delta: { native_finish_reason: "network_error" } }] })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ message: { native_finish_reason: "network_error" } }] })).toBeDefined();
+    expect(extractNetworkError({ id: "x", choices: [{ delta: { content: "hi" } }] })).toBeUndefined();
+  });
+
+  it("extractSseNetworkError 扫描所有 data 行", () => {
+    const sse = ': OPENROUTER PROCESSING\n' + 'data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":""},"native_finish_reason":"network_error","finish_reason":"stop"}]}\n\n' + 'data: [DONE]\n\n';
+    expect(extractSseNetworkError(sse)).toBeDefined();
+    const sse2 = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' + 'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\n';
+    expect(extractSseNetworkError(sse2)).toBeUndefined();
+  });
+
+  it("extractSseNetworkError 跳过注释行", () => {
+    const sse = ': OPENROUTER PROCESSING\n: keep-alive\n' + 'data: {"choices":[{"native_finish_reason":"network_error"}]}\n\n';
+    expect(extractSseNetworkError(sse)).toBeDefined();
+    expect(extractNetworkError({ choices: [{ native_finish_reason: "network_error" }] })).toBeDefined();
+  });
+
+  it("teeAndCapture 对 network_error 流记 error 且 ok 判定为 false", async () => {
+    const sse = [
+      ": OPENROUTER PROCESSING",
+      'data: {"id":"gen-network","object":"chat.completion.chunk","model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop","native_finish_reason":"network_error"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(sse)); c.close(); } });
+    const result = await new Promise<import("./capture").CaptureResult>((resolve) => {
+      const out = teeAndCapture(stream, resolve);
+      void (async () => { const r = out.getReader(); while (!(await r.read()).done) {} })();
+    });
+    expect(result.error).toBeDefined();
+    expect(result.error).toMatch(/network_error/);
+    expect(isLogOk(200, result.error ?? null)).toBe(false);
+  });
+
+  it("extractResponseFromSse 内容为空时合并 reasoning_content", () => {
+    const sse = [
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"reasoning_content":"The user wants"}}]}',
+      "",
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"reasoning_content":" to count"}}]}',
+      "",
+      'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"content":""},"finish_reason":"length"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const resp = extractResponseFromSse(sse) as Record<string, unknown>;
+    const choices = (resp as { choices: Array<{ message: Record<string, unknown> }> }).choices;
+    expect(choices[0].message.content).toBe("The user wants to count");
+    expect(choices[0].message.reasoning_content).toBe("The user wants to count");
+  });
+
+  it("extractResponseFromSse 有 content 时不覆盖，reasoning 亦保留", () => {
+    const sse = [
+      'data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"reasoning_content":"Simple request."}}]}',
+      "",
+      'data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"content":"1, 2, 3"}}]}',
+      "",
+      'data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":"stealth/ox-alpha","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const resp = extractResponseFromSse(sse) as Record<string, unknown>;
+    const choices = (resp as { choices: Array<{ message: Record<string, unknown> }> }).choices;
+    expect(choices[0].message.content).toBe("1, 2, 3");
+    expect(choices[0].message.reasoning_content).toBe("Simple request.");
+  });
+
+  it("extractResponseFromSse 跨多 chunk 聚合 content 与 reasoning", () => {
+    const sse = [
+      'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":123,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}',
+      "",
+      'data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":123,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const resp = extractResponseFromSse(sse) as Record<string, unknown>;
+    expect((resp as any).choices[0].message.content).toBe("hello world");
   });
 });

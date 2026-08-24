@@ -71,6 +71,46 @@ describe("prepareChatRequestBody developer role 归一化", () => {
   })
 })
 
+describe("prepareChatRequestBody reasoning 参数去重", () => {
+  it("同时携带 reasoning.effort 与 reasoning_effort 时去重为 reasoning_effort", () => {
+    const body = prepareChatRequestBody({
+      model: "stealth/ox-alpha",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning: { effort: "high" },
+      reasoning_effort: "low",
+    }) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe("high")
+    expect(body.reasoning).toBeUndefined()
+  })
+
+  it("仅 reasoning.effort 时保留", () => {
+    const body = prepareChatRequestBody({
+      model: "stealth/ox-alpha",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning: { effort: "low" },
+    }) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe("low")
+  })
+
+  it("仅 reasoning_effort 时保留", () => {
+    const body = prepareChatRequestBody({
+      model: "stealth/ox-alpha",
+      messages: [{ role: "user", content: "hi" }],
+      reasoning_effort: "high",
+    }) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe("high")
+  })
+
+  it("无 reasoning 参数时不注入", () => {
+    const body = prepareChatRequestBody({
+      model: "stealth/ox-alpha",
+      messages: [{ role: "user", content: "hi" }],
+    }) as Record<string, unknown>
+    expect(body.reasoning_effort).toBeUndefined()
+    expect(body.reasoning).toBeUndefined()
+  })
+})
+
 
   it("flattens nested function tools for responses mode", () => {
     const body = normalizeToolsInBody({

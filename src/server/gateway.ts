@@ -8,7 +8,7 @@ import { NoEligibleAccountError, QueueWaitAbortedError, QueueWaitTimeoutError, R
 import { getLogSettings, getSystemSettings, type LogSettings } from "./settings"
 import type { PoolType, QuotaKind } from "./types"
 import { collectRequestHeaders } from "./client-meta"
-import { captureJsonResponse, ensureStreamUsage, extractBodyError, extractUsage, isLogOk, safeCloneBody, teeAndCapture, type CaptureResult, type TokenUsage } from "./capture"
+import { captureJsonResponse, ensureStreamUsage, extractBodyError, extractNetworkError, extractSseNetworkError, extractUsage, isLogOk, safeCloneBody, teeAndCapture, type CaptureResult, type TokenUsage } from "./capture"
 import { convertChatJsonToResponses, convertChatStreamToResponses, prepareChatRequestBody, prepareResponsesRequestBody, remapResponsesSuccessBody, remapResponsesSuccessStream, rememberResponsesTurn, type PrepareResponsesResult } from "./responses/pipeline"
 import type { CodexToolContext } from "./responses/codex-chat-compat"
 import { tryGetProvider, getProviderRegistry, type UpstreamErrorClassification } from "./providers"
@@ -177,6 +177,24 @@ export function classifyGoUsageLimit(response: Response, body: string): GoLimit 
     const kind = name === "5 hour" ? "FIVE_HOUR" : name === "weekly" ? "WEEKLY" : name === "monthly" ? "MONTHLY" : "UNKNOWN_GO_LIMIT"
     return { kind, retryAfterSeconds: parseRetryAfter(response) }
   } catch { return null }
+}
+
+const NETWORK_ERROR_TYPE = "network_error"
+// network_error 同账号退避重试次数：重试一次让 OpenRouter 类上游更换节点，仍失败再切账号。
+const NETWORK_ERROR_MAX_SAME_ACCOUNT_RETRIES = 1
+
+/**
+ * 检测上游在 HTTP 200 响应体里以 native_finish_reason=network_error 报出的网络错误
+ * （OpenRouter custom 上游不支持 tools 等情况：单 chunk、finish_reason=stop、content 为空）。
+ * 返回人类可读错误说明；未检测到返回 null。
+ */
+export function classifyNetworkError(payload: unknown): string | null {
+  return extractNetworkError(payload) ?? null
+}
+
+/** 单条 SSE data 文本是否为 network_error chunk。 */
+export function isNetworkErrorChunk(data: string): boolean {
+  try { return classifyNetworkError(JSON.parse(data)) !== null } catch { return false }
 }
 
 // Adapt GoLimit (legacy) to UpstreamErrorClassification (provider interface).
@@ -441,9 +459,18 @@ export class GatewayService {
     let lastAttemptAccountId: string | undefined
     let lastAttemptAccountName: string | undefined
     let retryAfterSeconds: number | undefined
+    // 最近一次 network_error（HTTP 200 + native_finish_reason=network_error）的真实原因；
+    // 重试/切换全部耗尽时用于向客户端透传 502 结构化错误而非空内容。
+    let lastNetworkError: string | null = null
 
     while (true) {
       if (attemptNumber >= maxFailoverAttempts) {
+        // network_error 重试耗尽：把真实错误以 502 透传给客户端，绝不标 SUCCESS 透空内容。
+        if (lastNetworkError) {
+          const payload = { error: { type: NETWORK_ERROR_TYPE, message: lastNetworkError, attempts: attemptNumber } }
+          this.finalizeRequest(requestId, { status: 502, outcome: "NETWORK", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: 0, error: lastNetworkError, accountId: lastAttemptAccountId, accountName: lastAttemptAccountName, logSettings, requestBodyJson, responseBody: payload, responseTruncated: false, meta, ...routeMeta })
+          return Response.json(payload, { status: 502 })
+        }
         const type = "failover_attempt_limit_reached"
         const status = 503
         const payload = {
@@ -480,6 +507,12 @@ export class GatewayService {
       let selection
       try { selection = await routing.selectWithQueue(requestId, effectiveEndpoint, tried, { signal: request.signal }) } catch (cause) {
         if (cause instanceof NoEligibleAccountError) {
+          // network_error 切号后无可用账号：把真实错误以 502 透传给客户端。
+          if (lastNetworkError) {
+            const payload = { error: { type: NETWORK_ERROR_TYPE, message: lastNetworkError, attempts: attemptNumber } }
+            this.finalizeRequest(requestId, { status: 502, outcome: "NETWORK", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: 0, error: lastNetworkError, accountId: lastAttemptAccountId, accountName: lastAttemptAccountName, logSettings, requestBodyJson, responseBody: payload, responseTruncated: false, meta, ...routeMeta })
+            return Response.json(payload, { status: 502 })
+          }
           const exhausted = cause.reason === "EXHAUSTED" || (tried.size > permanentlyDisabled.size)
           const status = exhausted ? 429 : 503
           const headers = exhausted && cause.retryAfterSeconds ? { "retry-after": String(cause.retryAfterSeconds) } : undefined
@@ -735,6 +768,14 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
 
         if (attemptMessagesFallback && !(upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
           const raw = await upstream.text()
+          // 非流式同理检查：HTTP 200 但报文内 native_finish_reason=network_error 视为可重试的 NETWORK 失败。
+          const parsedForNetworkCheck = safeParse(raw)
+          const messagesNetworkError = parsedForNetworkCheck ? classifyNetworkError(parsedForNetworkCheck) : null
+          if (messagesNetworkError) {
+            lastNetworkError = messagesNetworkError
+            await this.retryUpstreamNetworkError(sameAccountRetryCounts, tried, selection.account.id, selection.account.name, attemptId, attemptStartedAt, messagesNetworkError, raw)
+            continue
+          }
           let converted: unknown
           try {
             const parsed = JSON.parse(raw)
@@ -752,6 +793,14 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
 
         if (attemptResponsesToChat && !(upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
           const raw = await upstream.text()
+          // 非流式同理检查：HTTP 200 但报文内 native_finish_reason=network_error 视为可重试的 NETWORK 失败。
+          const parsedForNetworkCheck = safeParse(raw)
+          const responsesNetworkError = parsedForNetworkCheck ? classifyNetworkError(parsedForNetworkCheck) : null
+          if (responsesNetworkError) {
+            lastNetworkError = responsesNetworkError
+            await this.retryUpstreamNetworkError(sameAccountRetryCounts, tried, selection.account.id, selection.account.name, attemptId, attemptStartedAt, responsesNetworkError, raw)
+            continue
+          }
           let converted: unknown
           try { converted = responsesJsonToChatCompletion(JSON.parse(raw)) } catch { converted = { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } } }
           const body = JSON.stringify(converted)
@@ -763,6 +812,20 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
         }
 
         const contentType = upstream.headers.get("content-type") ?? ""
+        // 非流式 JSON 响应先读全量报文：识别 native_finish_reason=network_error
+        // （HTTP 200 但实为可重试的上游网络错误），避免把空内容标 SUCCESS 透传给客户端。
+        if (!contentType.includes("text/event-stream") && contentType.includes("json") && upstream.body && request.method !== "GET") {
+          const raw = await upstream.text()
+          const parsed = safeParse(raw)
+          const networkError = parsed ? classifyNetworkError(parsed) : null
+          if (networkError) {
+            lastNetworkError = networkError
+            await this.retryUpstreamNetworkError(sameAccountRetryCounts, tried, selection.account.id, selection.account.name, attemptId, attemptStartedAt, networkError, raw)
+            continue
+          }
+          // 以缓冲报文重建 upstream，后续 processResponses / 直通路径照常处理。
+          upstream = new Response(raw, { status: upstream.status, statusText: upstream.statusText, headers: upstream.headers })
+        }
         if (contentType.includes("text/event-stream") && upstream.body) {
           const reader = upstream.body.getReader()
           const first = await readFirstSseEvent(reader)
@@ -797,6 +860,17 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
             }
             routing.markQuota(selection.account.id, sseLimit.quotaKind ?? "UNKNOWN_GO_LIMIT", attemptRetryAfterSeconds)
             this.finishAttempt(attemptId, 429, "RETRY_NEXT_ACCOUNT", sseLimit.errorType, Date.now() - attemptStartedAt, sseLimit.errorType, selection.account.name, first.text)
+            continue
+          }
+          // 上游在 SSE 数据帧里以 native_finish_reason=network_error 报网络错误（OpenRouter
+          // custom 上游不支持 tools 等情况：单 chunk、finish_reason=stop、content 为空）。
+          // HTTP 200 但属于可重试的 NETWORK 类失败：先同账号退避重试一次让上游换节点，
+          // 仍失败则切账号；绝不标 SUCCESS 把空内容透传给客户端。
+          const networkError = extractSseNetworkError(first.text)
+          if (networkError) {
+            await reader.cancel()
+            lastNetworkError = networkError
+            await this.retryUpstreamNetworkError(sameAccountRetryCounts, tried, selection.account.id, selection.account.name, attemptId, attemptStartedAt, networkError, first.text)
             continue
           }
           routing.markSuccess(selection.account.id)
@@ -1011,6 +1085,30 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
         return Response.json({ error: { type: "upstream_transport_error", message } }, { status: 502 })
       } finally { routing.releaseLease(selection.leaseId) }
     }
+  }
+
+  /**
+   * network_error（HTTP 200 但 native_finish_reason=network_error）的统一处理：
+   * 先在同账号上退避重试一次（OpenRouter 类上游重试会更换上游节点）；
+   * 重试用尽则 tried.add 切换账号。调用方在返回后 continue 进入下一轮。
+   */
+  private async retryUpstreamNetworkError(
+    sameAccountRetryCounts: Map<string, number>,
+    tried: Set<string>,
+    accountId: string,
+    accountName: string,
+    attemptId: string,
+    attemptStartedAt: number,
+    message: string,
+    responseBody: string | null,
+  ): Promise<void> {
+    if (await this.retrySameAccountWithBackoff(
+      sameAccountRetryCounts,
+      { retrySameAccount: { maxRetries: NETWORK_ERROR_MAX_SAME_ACCOUNT_RETRIES }, retryAfterSeconds: null, errorType: NETWORK_ERROR_TYPE },
+      accountId, accountName, attemptId, 502, attemptStartedAt, null, responseBody ?? "",
+    )) return
+    tried.add(accountId)
+    this.finishAttempt(attemptId, 502, "RETRY_NEXT_ACCOUNT", "NETWORK", Date.now() - attemptStartedAt, message, accountName, responseBody)
   }
 
   /**

@@ -320,6 +320,14 @@ export function prepareChatRequestBody(body: unknown): unknown {
   const normalized = normalizeToolsInBody(body, { mode: "chat" })
   if (!isObj(normalized)) return normalized
   const b = normalizeChatMessageRoles(normalized)
+  // reasoning 参数去重：同时携带 reasoning.effort 与 reasoning_effort 时仅保留一个
+  // （优先 reasoning.effort 的值，统一收敛到 chat 上游通用的 reasoning_effort 字段，
+  // 删除 reasoning 对象），避免上游因重复/冲突参数返回 400。
+  // 对齐 responses->chat 转换（codex-chat-compat）的取舍：纯结构整理，不新增语义。
+  if (isObj(b.reasoning) && typeof b.reasoning.effort === "string") {
+    b.reasoning_effort = b.reasoning.effort
+    delete b.reasoning
+  }
   if (b.stream === true) {
     const prev =
       b.stream_options && typeof b.stream_options === "object"
