@@ -191,7 +191,18 @@ export function extractUsageFromSse(text: string): TokenUsage | undefined {
   return last;
 }
 
-const NETWORK_ERROR_DEFAULT_MESSAGE = "upstream native_finish_reason=network_error (empty content)";
+const NETWORK_ERROR_DEFAULT_MESSAGE = "upstream finish_reason=network_error (empty content)";
+// 触发判定的字段拼写：native_finish_reason（OpenRouter 原生）、finish_reason
+// （部分上游直接复用标准字段，如 ox-alpha-free 实测返回 choices[0].finish_reason="network_error"），
+// 及各自 camelCase 变体。
+const NETWORK_ERROR_FINISH_KEYS = ["native_finish_reason", "nativeFinishReason", "finish_reason", "finishReason"] as const;
+
+function isNetworkErrorSource(source: Record<string, unknown>): boolean {
+  for (const key of NETWORK_ERROR_FINISH_KEYS) {
+    if (source[key] === "network_error") return true;
+  }
+  return false;
+}
 
 function networkErrorDetail(source: Record<string, unknown>): string {
   const err = source.error;
@@ -203,25 +214,27 @@ function networkErrorDetail(source: Record<string, unknown>): string {
 }
 
 /**
- * 检测（已解析的）JSON 响应体 / 单条 SSE data 载荷中的 native_finish_reason=network_error。
+ * 检测（已解析的）JSON 响应体 / 单条 SSE data 载荷中的 network_error 终态。
  * OpenRouter custom 上游不支持 tools 等情况会返回 HTTP 200 + 单 chunk
- * {"native_finish_reason":"network_error","finish_reason":"stop","content":""}，
+ * {"native_finish_reason":"network_error","finish_reason":"stop","content":""}；
+ * 也有上游直接以标准字段报出（ox-alpha-free 实测：choices[0].finish_reason="network_error"）。
  * 属于可重试的上游网络错误，不应按 SUCCESS 透传空内容。
+ * 字段拼写：native_finish_reason / nativeFinishReason / finish_reason / finishReason。
  * 覆盖位置：根对象、choices[]（choice 自身 / delta / message）、嵌套 response 对象。
  * 返回人类可读错误说明；未检测到返回 undefined。
  */
 export function extractNetworkError(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const root = payload as Record<string, unknown>;
-  if (root.native_finish_reason === "network_error") return networkErrorDetail(root);
+  if (isNetworkErrorSource(root)) return networkErrorDetail(root);
   if (Array.isArray(root.choices)) {
     for (const raw of root.choices) {
       if (!raw || typeof raw !== "object") continue;
       const choice = raw as Record<string, unknown>;
-      if (choice.native_finish_reason === "network_error") return networkErrorDetail(choice);
+      if (isNetworkErrorSource(choice)) return networkErrorDetail(choice);
       for (const key of ["delta", "message"] as const) {
         const nested = choice[key];
-        if (nested && typeof nested === "object" && (nested as Record<string, unknown>).native_finish_reason === "network_error") {
+        if (nested && typeof nested === "object" && isNetworkErrorSource(nested as Record<string, unknown>)) {
           return networkErrorDetail(nested as Record<string, unknown>);
         }
       }
@@ -233,7 +246,7 @@ export function extractNetworkError(payload: unknown): string | undefined {
   return undefined;
 }
 
-/** 扫描 SSE 文本中的所有 data 行，检测 native_finish_reason=network_error。 */
+/** 扫描 SSE 文本中的所有 data 行，检测 network_error 终态（各字段拼写见 extractNetworkError）。 */
 export function extractSseNetworkError(text: string): string | undefined {
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trimStart();

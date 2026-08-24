@@ -432,6 +432,32 @@ describe("capture network_error 识别与 reasoning_content 合并", () => {
     expect(extractNetworkError({ id: "x", choices: [{ delta: { content: "hi" } }] })).toBeUndefined();
   });
 
+  it("extractNetworkError 识别 finish_reason / finishReason / nativeFinishReason 拼写变体", () => {
+    // ox-alpha-free 实测：上游直接以标准字段 choices[0].finish_reason="network_error" 报网络错误
+    expect(extractNetworkError({ finish_reason: "network_error" })).toBeDefined();
+    expect(extractNetworkError({ finishReason: "network_error" })).toBeDefined();
+    expect(extractNetworkError({ nativeFinishReason: "network_error" })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ finish_reason: "network_error", delta: { role: "assistant", content: "" } }] })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ finishReason: "network_error" }] })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ nativeFinishReason: "network_error" }] })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ delta: { finish_reason: "network_error" } }] })).toBeDefined();
+    expect(extractNetworkError({ choices: [{ message: { finishReason: "network_error" } }] })).toBeDefined();
+    // 嵌套 response 对象
+    expect(extractNetworkError({ response: { finish_reason: "network_error" } })).toBeDefined();
+    expect(extractNetworkError({ response: { choices: [{ nativeFinishReason: "network_error" }] } })).toBeDefined();
+    // 非 network_error 的正常 finish_reason 不误判
+    expect(extractNetworkError({ choices: [{ finish_reason: "stop" }] })).toBeUndefined();
+    expect(extractNetworkError({ choices: [{ finish_reason: "tool_calls" }] })).toBeUndefined();
+    expect(extractNetworkError({ choices: [{ finish_reason: "length" }] })).toBeUndefined();
+  });
+
+  it("extractSseNetworkError 识别 finish_reason 拼写变体（ox-alpha-free 形态）", () => {
+    const sse = 'data: {"id":"gen-x","object":"chat.completion.chunk","model":"ox-alpha-free","choices":[{"index":0,"finish_reason":"network_error","delta":{"role":"assistant","content":""}}]}\n\n' + 'data: [DONE]\n\n';
+    expect(extractSseNetworkError(sse)).toBeDefined();
+    const camel = 'data: {"choices":[{"finishReason":"network_error","delta":{"content":""}}]}\n\n';
+    expect(extractSseNetworkError(camel)).toBeDefined();
+  });
+
   it("extractSseNetworkError 扫描所有 data 行", () => {
     const sse = ': OPENROUTER PROCESSING\n' + 'data: {"id":"gen-1","choices":[{"index":0,"delta":{"content":""},"native_finish_reason":"network_error","finish_reason":"stop"}]}\n\n' + 'data: [DONE]\n\n';
     expect(extractSseNetworkError(sse)).toBeDefined();

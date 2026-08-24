@@ -593,6 +593,41 @@ describe("gateway", () => {
     expect(body.choices[0].message.content).toBe("hi ok")
   })
 
+  // 覆盖 ox-alpha-free（fusion-router / OpenRouter 自定义上游链路）实测形态：
+  // 上游网络错误以标准字段 choices[0].finish_reason="network_error"（无 native_finish_reason）
+  // 报出（2026-08 生产实测，chunk 结构与本用例一致）。检测在 capture.ts 与模型无关，
+  // 这里沿用 grok-4.5 模型名走 opencode-go 池（避免 ox-alpha-free 依赖全局 DB 的
+  // provider_model_cache），仅验证该 chunk 形态同样触发重试而不透传空内容。
+  it("ox-alpha-free 形态：流式 finish_reason=network_error（无 native_ 前缀）触发重试", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    db.prepare("REPLACE INTO provider_model_cache(pool_type, models_json, source, updated_at) VALUES ('opencode-go', ?, 'test', datetime('now'))").run(JSON.stringify(["muse-spark-1.2-contributor", "stealth/ox-alpha", "grok-4.5"]));
+    initializeSystemSettings(db); updateSystemSettings({ maxFailoverAttempts: 12 }, null, db);
+    const encoder = new TextEncoder()
+    // 与 ox-alpha-free 生产实测 chunk 结构一致：finish_reason 直接在 choice 上，delta 为空 content
+    const networkErrorChunk = "data: " + JSON.stringify({ id: "gen-network", object: "chat.completion.chunk", model: "ox-alpha-free", choices: [{ index: 0, finish_reason: "network_error", delta: { role: "assistant", content: "" } }] }) + "\n\n"
+    const successChunk = "data: " + JSON.stringify({ id: "gen-ok", object: "chat.completion.chunk", model: "grok-4.5", choices: [{ index: 0, delta: { content: "hi ok" }, finish_reason: "stop" }] }) + "\n\n" + "data: [DONE]\n\n"
+    const stream1 = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode(networkErrorChunk + "data: [DONE]\n\n")); c.close(); } })
+    const stream2 = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode(successChunk)); c.close(); } })
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(stream1, { headers: { "content-type": "text/event-stream" } }))
+      .mockResolvedValueOnce(new Response(stream2, { headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+      body: JSON.stringify({ model: "grok-4.5", messages: [{ role: "user", content: "hello" }], stream: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    const text = await response.text()
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    // 客户端只见成功流，不应看到 network_error chunk
+    expect(text).not.toContain("network_error")
+    expect(text).toContain("hi ok")
+    const attempts = db.prepare("SELECT decision, error_type FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ decision: string; error_type: string | null }>
+    expect(attempts[0].decision).toBe("RETRY_SAME_ACCOUNT_BACKOFF")
+    expect(attempts[0].error_type).toBe("network_error")
+  })
+
 
 
 describe("gateway logging", () => {
