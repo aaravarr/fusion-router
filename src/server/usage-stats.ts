@@ -62,11 +62,13 @@ export function addRow(bucket: UsageBucket, row: UsageBucketRow): void {
   if (row.first_token_ms != null) { bucket.firstTokenSum += row.first_token_ms; bucket.firstTokenCount += 1 }
   const localPrep = row.local_prep_ms ?? 0
   const firstToken = row.first_token_ms ?? 0
-  const genLatency = (row.latency_ms ?? 0) - localPrep - firstToken
-  if (row.latency_ms != null && genLatency >= 50) {
+  // TPS 窗口 = 首 chunk → 完成（latency - 本地准备 - 首 token）；分子只用 completion_tokens。
+  // 窗口 <200ms 说明内容是末尾 burst（如 reasoning 流思考完一次性吐出），TPS 无意义，不采样。
+  const genWindow = (row.latency_ms ?? 0) - localPrep - firstToken
+  if (row.latency_ms != null && row.completion_tokens != null && genWindow >= 200) {
     bucket.tpsSampleCount += 1
-    bucket.genLatencySum += genLatency
-    bucket.genTokensForTps += (row.completion_tokens ?? 0) + (row.reasoning_tokens ?? 0)
+    bucket.genLatencySum += genWindow
+    bucket.genTokensForTps += row.completion_tokens
   }
   bucket.promptTokens += row.prompt_tokens ?? 0
   bucket.completionTokens += row.completion_tokens ?? 0
@@ -101,7 +103,7 @@ export interface UsageSummary {
   fail: number;
   avgLatencyMs: number;
   avgFirstTokenMs: number | null;
-  avgTps: number;
+  avgTps: number | null;
   tpsSampleCount: number;
   promptTokens: number;
   completionTokens: number;
@@ -118,7 +120,7 @@ export function finalizeSummary(b: UsageBucket, latencyCount: number): UsageSumm
     fail: b.fail,
     avgLatencyMs: latencyCount > 0 ? b.latencySum / latencyCount : 0,
     avgFirstTokenMs: b.firstTokenCount > 0 ? b.firstTokenSum / b.firstTokenCount : null,
-    avgTps: b.tpsSampleCount > 0 && b.genLatencySum > 0 ? b.genTokensForTps / (b.genLatencySum / 1000) : 0,
+    avgTps: b.tpsSampleCount > 0 && b.genLatencySum > 0 ? b.genTokensForTps / (b.genLatencySum / 1000) : null,
     tpsSampleCount: b.tpsSampleCount,
     promptTokens: b.promptTokens,
     completionTokens: b.completionTokens,

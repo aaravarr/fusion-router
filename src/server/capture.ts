@@ -19,7 +19,35 @@ export interface CaptureResult {
   responseBytes?: number;
   usage?: TokenUsage;
   firstByteAt?: number;
+  /** 首个携带实际内容的 chunk（content / reasoning_content / reasoning / thinking / text / delta / tool_calls 任一）到达时间。 */
+  firstContentAt?: number;
   error?: string;
+}
+
+// 首内容 chunk 判定：递归扫描已解析的 SSE data 帧，命中任一内容字段即视为"模型开始产出"。
+// 覆盖：chat completions 的 delta.content / reasoning_content / reasoning / thinking / text /
+// tool_calls；responses API 的 *.delta 事件（delta 字段）；Anthropic messages 的 text/thinking。
+// 空 content（如仅带 role 的首帧）不算首内容。
+const CONTENT_STRING_KEYS = ["content", "reasoning_content", "reasoning", "thinking", "text", "delta"] as const;
+
+export function sseChunkHasContent(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (sseChunkHasContent(item)) return true;
+    }
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  for (const key of CONTENT_STRING_KEYS) {
+    if (typeof obj[key] === "string" && (obj[key] as string).length > 0) return true;
+  }
+  const toolCalls = obj.tool_calls;
+  if (Array.isArray(toolCalls) && toolCalls.length > 0) return true;
+  for (const child of Object.values(obj)) {
+    if (child && typeof child === "object" && sseChunkHasContent(child)) return true;
+  }
+  return false;
 }
 
 function num(value: unknown): number | undefined {
@@ -454,6 +482,8 @@ export function teeAndCapture(
   const chunks: Uint8Array[] = [];
   let total = 0;
   let firstByteAt: number | undefined;
+  // 首 token 打点：第一个任何内容 chunk（含 reasoning），而非首个 content chunk。
+  let firstContentAt: number | undefined;
   let truncated = false;
   let usage: TokenUsage | undefined;
   let sseLineBuf = "";
@@ -477,6 +507,7 @@ export function teeAndCapture(
           if (!data || data === "[DONE]") continue;
           try {
             const parsed = JSON.parse(data) as unknown;
+            if (firstContentAt === undefined && sseChunkHasContent(parsed)) firstContentAt = Date.now();
             const nextUsage = extractUsage(parsed);
             if (nextUsage) usage = mergeUsage(usage, nextUsage);
           } catch {
@@ -499,6 +530,7 @@ export function teeAndCapture(
           if (!data || data === "[DONE]") continue;
           try {
             const parsed = JSON.parse(data) as unknown;
+            if (firstContentAt === undefined && sseChunkHasContent(parsed)) firstContentAt = Date.now();
             const nextUsage = extractUsage(parsed);
             if (nextUsage) usage = mergeUsage(usage, nextUsage);
           } catch { /* ignore */ }
@@ -523,7 +555,7 @@ export function teeAndCapture(
     }
     // native_finish_reason=network_error 的流即使带 usage / 无 error 字段也记真实原因（ok 判定为 0）。
     const error = extractSseNetworkError(text) ?? (usage ? undefined : extractBodyError(response) ?? extractSseError(text));
-    onComplete({ response: truncated ? undefined : response, responseTruncated: truncated, responseBytes: total, usage, firstByteAt, error });
+    onComplete({ response: truncated ? undefined : response, responseTruncated: truncated, responseBytes: total, usage, firstByteAt, firstContentAt, error });
   })();
   return client;
 }

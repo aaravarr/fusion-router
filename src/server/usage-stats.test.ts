@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { __resetModelPricingCacheForTests, refreshModelPricing } from "./model-pricing"
 import { createDatabase } from "./db"
-import { addRow, createBucket, finalizeBucketCost, type UsageBucketRow } from "./usage-stats"
+import { addRow, createBucket, finalizeBucketCost, finalizeSummary, type UsageBucketRow } from "./usage-stats"
 
 function makeRow(overrides: Partial<UsageBucketRow>): UsageBucketRow {
   return {
@@ -134,5 +134,49 @@ describe("usage-stats", () => {
     finalizeBucketCost(unknownOnly, db)
 
     expect(unknownOnly.costUsd).toBe(0)
+  })
+
+  it("reasoning 流末尾 burst（TPS 窗口<200ms）不采样，avgTps 记 null", () => {
+    const bucket = createBucket("t", "测试")
+    // 病例复刻：总延迟 25905ms、首 token 25784ms（思考期），生成窗口仅 ~111ms
+    addRow(bucket, makeRow({
+      latency_ms: 25905,
+      local_prep_ms: 10,
+      first_token_ms: 25784,
+      completion_tokens: 1900,
+      reasoning_tokens: 5000,
+      stream: 1,
+    }))
+    expect(bucket.tpsSampleCount).toBe(0)
+    expect(finalizeSummary(bucket, 1).avgTps).toBeNull()
+  })
+
+  it("正常流 TPS：分子只用 completion_tokens，窗口 = 首 chunk → 完成", () => {
+    const bucket = createBucket("t", "测试")
+    addRow(bucket, makeRow({
+      latency_ms: 3000,
+      local_prep_ms: 100,
+      first_token_ms: 400,
+      completion_tokens: 600,
+      reasoning_tokens: 9000,
+      stream: 1,
+    }))
+    expect(bucket.tpsSampleCount).toBe(1)
+    expect(bucket.genLatencySum).toBe(2500)
+    expect(bucket.genTokensForTps).toBe(600)
+    expect(finalizeSummary(bucket, 1).avgTps).toBeCloseTo(240, 5)
+  })
+
+  it("tokens 缺失时 TPS 记 null", () => {
+    const bucket = createBucket("t", "测试")
+    addRow(bucket, makeRow({
+      latency_ms: 5000,
+      local_prep_ms: 100,
+      first_token_ms: 400,
+      completion_tokens: null,
+      stream: 1,
+    }))
+    expect(bucket.tpsSampleCount).toBe(0)
+    expect(finalizeSummary(bucket, 1).avgTps).toBeNull()
   })
 })

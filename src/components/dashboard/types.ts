@@ -256,7 +256,7 @@ export interface UsageSummary {
   fail: number;
   avgLatencyMs: number;
   avgFirstTokenMs: number | null;
-  avgTps: number;
+  avgTps: number | null;
   tpsSampleCount: number;
   promptTokens: number;
   completionTokens: number;

@@ -884,7 +884,9 @@ upstream = await this.fetcher(resolveMirrorUrlForContext(`${selection.target.bas
           // Always capture usage for dashboard stats, even when body logging is off.
           const onComplete = (r: CaptureResult) => {
             const latencyMs = Date.now() - t0
-            const firstTokenMs = firstTokenAt - upstreamStartedAt
+            // 首 token = 第一个任何内容 chunk（content / reasoning_content / reasoning / tool_calls）
+            // 到达时间；reasoning 流不再把思考期算进等待，未检出内容帧时回退首个 SSE 事件时间。
+            const firstTokenMs = r.firstContentAt != null ? r.firstContentAt - upstreamStartedAt : firstTokenAt - upstreamStartedAt
             this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, r.error ?? null, selection.account.name)
             this.finalizeRequest(requestId, {
               status,

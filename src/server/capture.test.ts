@@ -11,7 +11,9 @@ import {
   isLogOk,
   MAX_CAPTURE_BYTES,
   safeCloneBody,
+  sseChunkHasContent,
   teeAndCapture,
+  type CaptureResult,
 } from "./capture"
 
 describe("capture.extractUsage", () => {
@@ -534,5 +536,74 @@ describe("capture network_error 识别与 reasoning_content 合并", () => {
     ].join("\n");
     const resp = extractResponseFromSse(sse) as Record<string, unknown>;
     expect((resp as any).choices[0].message.content).toBe("hello world");
+  });
+});
+
+describe("capture.sseChunkHasContent", () => {
+  it("仅 role 的首帧不算内容", () => {
+    expect(sseChunkHasContent({ choices: [{ delta: { role: "assistant", content: "" } }] })).toBe(false);
+    expect(sseChunkHasContent({ choices: [] })).toBe(false);
+    expect(sseChunkHasContent({ usage: { prompt_tokens: 1, completion_tokens: 1 } })).toBe(false);
+  });
+
+  it("content / reasoning_content / reasoning / tool_calls 任一即算内容", () => {
+    expect(sseChunkHasContent({ choices: [{ delta: { content: "hi" } }] })).toBe(true);
+    expect(sseChunkHasContent({ choices: [{ delta: { reasoning_content: "thinking" } }] })).toBe(true);
+    expect(sseChunkHasContent({ choices: [{ delta: { reasoning: "thinking" } }] })).toBe(true);
+    expect(sseChunkHasContent({ choices: [{ delta: { tool_calls: [{ id: "t1", function: { name: "f" } }] } }] })).toBe(true);
+    // responses API delta 事件与 Anthropic text_delta
+    expect(sseChunkHasContent({ type: "response.output_text.delta", delta: "hi" })).toBe(true);
+    expect(sseChunkHasContent({ type: "content_block_delta", delta: { type: "text_delta", text: "hi" } })).toBe(true);
+  });
+});
+
+describe("capture.teeAndCapture 首 token 打点（reasoning 流）", () => {
+  const enc = new TextEncoder();
+  const frame = (json: unknown) => `data: ${JSON.stringify(json)}\n\n`;
+
+  function collect(stream: ReadableStream<Uint8Array>, onDone: () => void): Promise<CaptureResult | undefined> {
+    return new Promise((resolve) => {
+      teeAndCapture(stream, (r) => { resolve(r); onDone(); });
+    });
+  }
+
+  it("25s reasoning chunks 后 content burst：firstContentAt 等于首个 reasoning chunk 时间", async () => {
+    let contentPushedAt = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        // 模拟：role 帧 + 思考期 reasoning chunks，随后末尾 content burst
+        controller.enqueue(enc.encode(frame({ id: "1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant" } }] })));
+        controller.enqueue(enc.encode(frame({ id: "2", object: "chat.completion.chunk", choices: [{ index: 0, delta: { reasoning_content: "deep thought..." } }] })));
+        await new Promise((r) => setTimeout(r, 50));
+        contentPushedAt = Date.now();
+        controller.enqueue(enc.encode(frame({ id: "3", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "answer!" } }] })));
+        controller.enqueue(enc.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+    const startedAt = Date.now();
+    const result = await collect(stream, () => {});
+    expect(result?.firstContentAt).toBeDefined();
+    // 打点落在 reasoning chunk 到达时（burst 之前），而非 content burst 时
+    expect(result!.firstContentAt!).toBeLessThanOrEqual(contentPushedAt);
+    expect(result!.firstContentAt!).toBeGreaterThanOrEqual(startedAt);
+  });
+
+  it("纯 content 正常流回归：firstContentAt 照常打点", async () => {
+    const frames = [
+      frame({ choices: [{ delta: { role: "assistant" } }] }),
+      frame({ choices: [{ delta: { content: "hello world" } }] }),
+      frame({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }),
+      "data: [DONE]\n\n",
+    ].join("");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(enc.encode(frames));
+        controller.close();
+      },
+    });
+    const result = await collect(stream, () => {});
+    expect(result?.firstContentAt).toBeDefined();
+    expect(result?.usage).toBeDefined();
   });
 });

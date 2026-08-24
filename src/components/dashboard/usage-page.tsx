@@ -348,7 +348,7 @@ function KpiRow({ summary }: { summary: UsageStats["summary"] }) {
     { label: "成功率", value: successRate != null ? `${successRate.toFixed(1)}%` : "—", note: "成功 / 总请求" },
     { label: "平均延迟", value: formatMs(summary.avgLatencyMs), note: "端到端" },
     { label: "平均 TTFT", value: formatMs(summary.avgFirstTokenMs), note: "首 Token 时间" },
-    { label: "平均 TPS", value: summary.tpsSampleCount > 0 ? summary.avgTps.toFixed(1) : "—", note: `样本 ${summary.tpsSampleCount}` },
+    { label: "平均 TPS", value: summary.tpsSampleCount > 0 && summary.avgTps != null ? summary.avgTps.toFixed(1) : "—", note: `样本 ${summary.tpsSampleCount}` },
     { label: "总 Token", value: formatNumber(summary.totalTokens), note: "输入 + 输出" },
     { label: "估算费用", value: formatUsd(summary.costUsd), note: "OpenRouter 参考价" },
     { label: "输入 Token", value: formatNumber(summary.promptTokens), note: "含缓存" },
