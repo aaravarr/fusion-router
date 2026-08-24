@@ -9,6 +9,7 @@ import {
   extractUsage,
   extractUsageFromSse,
   isLogOk,
+  isLegacyEmptyToolCallCapture,
   MAX_CAPTURE_BYTES,
   safeCloneBody,
   sseChunkHasContent,
@@ -536,6 +537,73 @@ describe("capture network_error 识别与 reasoning_content 合并", () => {
     ].join("\n");
     const resp = extractResponseFromSse(sse) as Record<string, unknown>;
     expect((resp as any).choices[0].message.content).toBe("hello world");
+  });
+
+  it("extractResponseFromSse 多 chunk 分片聚合两个工具的 tool_calls（arguments 跨 chunk 拼接）", () => {
+    // 模拟 grok-4.5 真实流：tool_calls 分片，arguments 分多个 chunk 到达
+    const sse = [
+      'data: {"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_aaa","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}',
+      "",
+      'data: {"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\\"city\\\":"}}]}}]}',
+      "",
+      'data: {"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\\"上海\\\"}"}}]}}]}',
+      "",
+      'data: {"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_bbb","type":"function","function":{"name":"get_time"}}]}}]}',
+      "",
+      'data: {"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\\\"tz\\\":\\\"Asia/Shanghai\\\"}"}}]}}]}',
+      "",
+      'data: {"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const resp = extractResponseFromSse(sse) as any;
+    const msg = resp.choices[0].message;
+    expect(resp.choices[0].finish_reason).toBe("tool_calls");
+    expect(msg.content).toBe("");
+    expect(msg.tool_calls).toHaveLength(2);
+    expect(msg.tool_calls[0]).toEqual({ id: "call_aaa", type: "function", function: { name: "get_weather", arguments: '{"city":"上海"}' } });
+    expect(msg.tool_calls[1]).toEqual({ id: "call_bbb", type: "function", function: { name: "get_time", arguments: '{"tz":"Asia/Shanghai"}' } });
+    // 新版存证不再是脏数据
+    expect(isLegacyEmptyToolCallCapture(resp)).toBe(false);
+  });
+
+  it("extractResponseFromSse content/reasoning/tool_calls 混合流各自正确归位", () => {
+    const sse = [
+      'data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"先查天气。"}}]}',
+      "",
+      'data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"content":"我来查一下："}}]}',
+      "",
+      'data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_mix","type":"function","function":{"name":"get_weather","arguments":"{\\\"city\\\":"}}]}}]}',
+      "",
+      'data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\\"北京\\\"}"}}]}}]}',
+      "",
+      'data: {"id":"chatcmpl-mix","object":"chat.completion.chunk","created":1,"model":"grok-4.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    const resp = extractResponseFromSse(sse) as any;
+    const msg = resp.choices[0].message;
+    expect(msg.content).toBe("我来查一下：");
+    expect(msg.reasoning_content).toBe("先查天气。");
+    expect(msg.tool_calls).toHaveLength(1);
+    expect(msg.tool_calls[0].function.arguments).toBe('{"city":"北京"}');
+  });
+
+  it("isLegacyEmptyToolCallCapture 识别历史脏存证（finish=tool_calls 但无 tool_calls 字段）", () => {
+    // 生产 34d4450a 的实际存证形态：旧版捕获把工具调用收尾重建成假空
+    const legacy = { id: "afb1785c", object: "chat.completion", model: "grok-4.5", choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "tool_calls" }] };
+    expect(isLegacyEmptyToolCallCapture(legacy)).toBe(true);
+    // 正常文本响应不是脏数据
+    const text = { choices: [{ index: 0, message: { role: "assistant", content: "你好" }, finish_reason: "stop" }] };
+    expect(isLegacyEmptyToolCallCapture(text)).toBe(false);
+    // 新版含 tool_calls 的重建体不是脏数据
+    const fixed = { choices: [{ index: 0, message: { role: "assistant", content: "", tool_calls: [{ id: "call_x", type: "function", function: { name: "f", arguments: "{}" } }] }, finish_reason: "tool_calls" }] };
+    expect(isLegacyEmptyToolCallCapture(fixed)).toBe(false);
+    // 非 chat 形态安全返回 false
+    expect(isLegacyEmptyToolCallCapture(null)).toBe(false);
+    expect(isLegacyEmptyToolCallCapture({ output: [] })).toBe(false);
   });
 });
 

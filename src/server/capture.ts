@@ -302,7 +302,9 @@ export function extractResponseFromSse(text: string): unknown | undefined {
   let lastChatChunk: Record<string, unknown> | undefined;
   // chat/completions 流：按 choice.index 跨 chunk 聚合 delta.content 与 reasoning
   // （reasoning_content / reasoning / thinking），避免只取最后一帧导致内容丢失。
-  const chatAgg = new Map<number, { content: string; contentRaw: unknown; reasoning: string; finish: unknown }>();
+  // 同时按 tool index 聚合 delta.tool_calls（id/type/name 拼接、arguments 逐 chunk 拼接），
+  // 否则工具调用收尾的请求会被重建成 content="" 的"假空"存证。
+  const chatAgg = new Map<number, { content: string; contentRaw: unknown; reasoning: string; finish: unknown; tools: Map<number, { id?: string; type?: string; name: string; arguments: string }> }>();
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trimStart();
     if (trimmed.startsWith(":")) continue;
@@ -336,7 +338,7 @@ export function extractResponseFromSse(text: string): unknown | undefined {
           const idx = typeof choice.index === "number" ? choice.index : 0;
           let agg = chatAgg.get(idx);
           if (!agg) {
-            agg = { content: "", contentRaw: undefined, reasoning: "", finish: null };
+            agg = { content: "", contentRaw: undefined, reasoning: "", finish: null, tools: new Map() };
             chatAgg.set(idx, agg);
           }
           const finish = choice.finish_reason ?? choice.finishReason;
@@ -352,6 +354,31 @@ export function extractResponseFromSse(text: string): unknown | undefined {
             else if (typeof src.text === "string") agg.content += src.text;
             const reasoning = [src.reasoning_content, src.reasoning, src.thinking].find((value) => typeof value === "string") as string | undefined;
             if (reasoning) agg.reasoning += reasoning;
+            // 聚合流式 tool_calls：按上游给的 tool index 归组（缺省用数组下标），
+            // id/type/name 首次出现时记录、arguments 字符串逐 chunk 拼接。
+            const rawToolCalls = src.tool_calls;
+            if (Array.isArray(rawToolCalls)) {
+              for (let t = 0; t < rawToolCalls.length; t++) {
+                const tc = rawToolCalls[t];
+                if (!tc || typeof tc !== "object") continue;
+                const tool = tc as Record<string, unknown>;
+                const toolIdx = typeof tool.index === "number" && Number.isFinite(tool.index) ? tool.index : t;
+                let slot = agg.tools.get(toolIdx);
+                if (!slot) {
+                  slot = { name: "", arguments: "" };
+                  agg.tools.set(toolIdx, slot);
+                }
+                if (typeof tool.id === "string" && tool.id) slot.id = tool.id;
+                if (typeof tool.type === "string" && tool.type) slot.type = tool.type;
+                const fn = tool.function && typeof tool.function === "object"
+                  ? (tool.function as Record<string, unknown>)
+                  : null;
+                if (fn) {
+                  if (typeof fn.name === "string") slot.name += fn.name;
+                  if (typeof fn.arguments === "string") slot.arguments += fn.arguments;
+                }
+              }
+            }
           } else if (typeof choice.text === "string") {
             agg.content += choice.text;
           } else if (typeof choice.content === "string") {
@@ -375,6 +402,16 @@ export function extractResponseFromSse(text: string): unknown | undefined {
       if (content === "" && agg.reasoning) content = agg.reasoning;
       const message: Record<string, unknown> = { role: "assistant", content };
       if (agg.reasoning) message.reasoning_content = agg.reasoning;
+      // finish_reason=tool_calls 时存证体必须完整呈现工具调用，否则展示层只见空 content。
+      if (agg.tools.size > 0) {
+        message.tool_calls = [...agg.tools.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([, slot]) => ({
+            id: slot.id,
+            type: slot.type ?? "function",
+            function: { name: slot.name, arguments: slot.arguments },
+          }));
+      }
       return {
         index: idx,
         message,
@@ -390,6 +427,26 @@ export function extractResponseFromSse(text: string): unknown | undefined {
     };
   }
   return undefined;
+}
+
+/**
+ * 识别历史脏存证：finish_reason=tool_calls 但重建 message 缺 tool_calls 字段。
+ * 旧版捕获（068bba8 及之前）不聚合 delta.tool_calls，工具调用收尾的请求会被重建成
+ * content="" 的"假空"响应体；展示层据此标记，不做库内修复。新版捕获已修复此问题。
+ */
+export function isLegacyEmptyToolCallCapture(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const choices = (payload as Record<string, unknown>).choices;
+  if (!Array.isArray(choices)) return false;
+  return choices.some((choice) => {
+    if (!choice || typeof choice !== "object") return false;
+    const c = choice as Record<string, unknown>;
+    if (c.finish_reason !== "tool_calls") return false;
+    const message = c.message && typeof c.message === "object" ? (c.message as Record<string, unknown>) : null;
+    if (!message) return true;
+    const toolCalls = message.tool_calls;
+    return !Array.isArray(toolCalls) || toolCalls.length === 0;
+  });
 }
 
 export function extractBodyError(payload: unknown): string | undefined {

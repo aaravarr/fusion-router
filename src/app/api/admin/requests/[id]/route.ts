@@ -1,6 +1,7 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../../_auth";
 import { estimateUsageCost, formatUsd } from "@/server/model-pricing";
+import { isLegacyEmptyToolCallCapture } from "@/server/capture";
 
 export const runtime = "nodejs";
 
@@ -144,6 +145,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       request: parseJson(body?.request_body_json ?? null),
       requestTruncated: body?.request_truncated === 1,
       response: parseJson(body?.response_body_json ?? null),
+      // 展示层标记：旧版捕获未聚合 delta.tool_calls，工具调用收尾的存证被重建成
+      // content 为空的假空响应体（历史脏数据，不做库内修复，仅提示阅读时注意）。
+      responseSuspiciousEmptyToolCalls: isLegacyEmptyToolCallCapture(parseJson(body?.response_body_json ?? null)),
       responseTruncated: body?.response_truncated === 1,
       headers,
     },
