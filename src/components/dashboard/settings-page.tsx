@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { useSession } from "./admin-context";
 import { ErrorState, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { LogsCleanupResponse, LogStats } from "./types";
 import { copyToClipboard } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-provider";
@@ -67,6 +68,7 @@ export function SettingsPage() {
   const [stripDialogOpen, setStripDialogOpen] = useState(false);
   const [logStats, setLogStats] = useState<LogStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState(false);
   const form = draft ?? resource.data?.settings ?? null;
   if (!isAdmin)
     return (
@@ -124,17 +126,23 @@ export function SettingsPage() {
     }));
   async function loadLogStats() {
     setStatsLoading(true);
+    setStatsError(false);
     try {
-      const response = await sessionFetch("/api/admin/logs/stats");
-      if (response.ok) setLogStats(await response.json().catch(() => null));
+      // 日志统计独立拉取：超时/失败只影响本区域，不阻塞页面其他部分。
+      const response = await sessionFetch("/api/admin/logs/stats", { signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) throw new Error(`stats ${response.status}`);
+      setLogStats(await response.json().catch(() => null));
     } catch {
       setLogStats(null);
+      setStatsError(true);
     } finally {
       setStatsLoading(false);
     }
   }
   useEffect(() => {
-    void loadLogStats();
+    // 页面主体（各设置表单）先行渲染；日志区延迟到首帧后再懒加载统计。
+    const timer = window.setTimeout(() => { void loadLogStats(); }, 500);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   async function cleanupLogs(options: { retentionDays?: number; stripBodies?: boolean }) {
@@ -376,12 +384,16 @@ export function SettingsPage() {
               </Field>
             </div>
             <div className="flex flex-wrap items-center gap-2 border-t bg-[#fafafa] px-4 py-3 sm:px-5">
-              <span className="mr-auto text-[11px] leading-5 text-muted-foreground">
+              <span className="mr-auto flex items-center gap-2 text-[11px] leading-5 text-muted-foreground">
                 {statsLoading ? (
-                  "日志占用统计中…"
+                  <>
+                    <Skeleton className="h-3 w-44" />
+                    <Skeleton className="h-3 w-28" />
+                    <span>日志占用统计加载中…</span>
+                  </>
                 ) : logStats ? (
                   <>
-                    当前日志占用：数据库 {formatBytes(logStats.dbFileBytes)} · 请求体{" "}
+                    当前日志占用（近似值）：数据库 {formatBytes(logStats.dbFileBytes)} · 请求体{" "}
                     {formatBytes(logStats.bodies.bytes)}（{logStats.bodies.count} 条）· 请求{" "}
                     {logStats.requests} 条 · 保留 {logStats.retentionDays} 天
                     {logStats.unmeasuredRows ? (
@@ -391,9 +403,14 @@ export function SettingsPage() {
                       <span className="ml-1 text-warning">（正在记录请求/响应体）</span>
                     ) : null}
                   </>
-                ) : (
-                  "日志占用统计不可用"
-                )}
+                ) : statsError ? (
+                  <>
+                    日志占用统计不可用
+                    <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => void loadLogStats()}>
+                      重试
+                    </Button>
+                  </>
+                ) : null}
               </span>
               <Button
                 type="button"
