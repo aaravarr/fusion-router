@@ -1,4 +1,5 @@
  import { getDatabase } from "@/server/db";
+import { cachedCount, cappedCount } from "@/server/lightweight-count";
  import { listPoolTypeOptions } from "@/server/pool-type-options";
  import { requireSession } from "../_auth";
  
@@ -51,7 +52,9 @@
    const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
    const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get("pageSize") ?? "50") || 50));
    const db = getDatabase();
-   const total = Number((db.prepare("SELECT COUNT(*) AS value FROM events WHERE owner_user_id=?").get(user.id) as { value: number }).value);
+   // better-sqlite3 同步驱动：COUNT(*) 全扫会卡死事件循环，改封顶计数（LIMIT 截断）+ 60s TTL 缓存。
+  const totalInfo = cachedCount(`events:${user.id}`, () => cappedCount(db, "FROM events e WHERE e.owner_user_id=?", [user.id]));
+  const total = totalInfo.value;
    const rows = db.prepare("SELECT e.id,e.type,e.severity,e.account_id,a.name AS account_name,e.request_id,e.metadata_json,e.created_at FROM events e LEFT JOIN accounts a ON a.id=e.account_id WHERE e.owner_user_id=? ORDER BY e.created_at DESC LIMIT ? OFFSET ?").all(user.id, pageSize, (page - 1) * pageSize) as EventRow[];
    const items = rows.map((row) => {
      let metadata: Record<string, unknown> = {};
@@ -70,5 +73,5 @@
        metadata,
      };
    });
-   return Response.json({ items, total, page, pageSize, poolTypes: listPoolTypeOptions(user.id, db) });
+   return Response.json({ items, total, totalApproximate: totalInfo.approximate, page, pageSize, poolTypes: listPoolTypeOptions(user.id, db) });
  }

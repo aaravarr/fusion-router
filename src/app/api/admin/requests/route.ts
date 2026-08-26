@@ -1,5 +1,6 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../_auth";
+import { cachedCount, cappedCount } from "@/server/lightweight-count";
 import { estimateUsageCost, formatUsd } from "@/server/model-pricing";
 
 export const runtime = "nodejs";
@@ -137,8 +138,11 @@ export function GET(request: Request): Response {
 
   const db = getDatabase();
   const where = conditions.join(" AND ");
-  const total = Number((db.prepare(`SELECT COUNT(*) AS value FROM gateway_requests g WHERE ${where}`).get(...params) as { value: number }).value);
+  // 分页 total 不做无界 COUNT(*) 全扫（同步驱动会卡死事件循环且随库增长变慢）：
+  // 封顶计数（LIMIT 截断，触顶即「约」）+ 60s TTL 缓存，翻页耗时恒定。
+  const totalInfo = cachedCount(`gateway-requests:${user.id}:${JSON.stringify(params)}`, () => cappedCount(db, `FROM gateway_requests g WHERE ${where}`, params));
+  const total = totalInfo.value;
   const rows = db.prepare(`SELECT g.id,g.endpoint,g.model,g.status,g.outcome,g.ok,g.stream,g.api_key_prefix,k.name AS api_key_name,g.account_id,g.account_name,g.attempt_count,g.started_at,g.completed_at,g.latency_ms,g.local_prep_ms,g.first_token_ms,g.prompt_tokens,g.completion_tokens,g.total_tokens,g.cached_tokens,g.reasoning_tokens,g.text_tokens,g.image_tokens,g.audio_tokens,g.client,g.error,g.inbound_endpoint,g.upstream_endpoint,g.process_mode,g.route_mode,g.route_reason,g.converted,g.transform_summary,rb.has_request,rb.has_response FROM gateway_requests g LEFT JOIN request_bodies rb ON rb.request_id = g.id LEFT JOIN api_keys k ON k.id = g.api_key_id WHERE ${where} ORDER BY g.started_at DESC LIMIT ? OFFSET ?`)
     .all(...params, pageSize, (page - 1) * pageSize) as RequestRow[];
-  return Response.json({ items: rows.map(mapRequest), total, page, pageSize });
+  return Response.json({ items: rows.map(mapRequest), total, totalApproximate: totalInfo.approximate, page, pageSize });
 }
