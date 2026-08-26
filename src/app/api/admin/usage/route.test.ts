@@ -136,4 +136,19 @@ describe("GET /api/admin/usage", () => {
     const singlePayload = (await single.json()) as { summary: { requests: number } }
     expect(singlePayload.summary.requests).toBe(1)
   })
+
+  it("apiKeyId 按密钥过滤（用量看板密钥下拉）", async () => {
+    const db = mocks.db as Database.Database
+    const insertWithKey = db.prepare(
+      `INSERT INTO gateway_requests (id, owner_user_id, api_key_id, endpoint, model, status, outcome, attempt_count, started_at, ok, stream, api_key_prefix, account_id, account_name, latency_ms, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    const isoAt = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
+    insertWithKey.run("k-hit", "owner", "key-a", "/v1/chat/completions", null, 200, "success", 1, isoAt(1 * hourMs), 1, 0, "pa", null, null, 100, 10, 20, 30)
+    insertWithKey.run("k-miss", "owner", "key-b", "/v1/chat/completions", null, 200, "success", 1, isoAt(1 * hourMs), 1, 0, "pb", null, null, 100, 10, 20, 30)
+    const response = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&apiKeyId=key-a"))
+    expect(response.status).toBe(200)
+    const payload = (await response.json()) as { summary: { requests: number }; byKey: Array<{ key: string }> }
+    expect(payload.summary.requests).toBe(1)
+    expect(payload.byKey.map((bucket) => bucket.key)).toEqual(["key-a"])
+  })
 })

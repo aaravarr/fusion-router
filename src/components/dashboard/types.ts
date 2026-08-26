@@ -225,8 +225,28 @@ export interface AccountListResponse {
 export interface RequestListResponse {
   items: RequestRecord[];
   total: number;
+  /** true 表示 total 为封顶近似值（触达计数上限）。 */
+  totalApproximate?: boolean;
   page: number;
   pageSize: number;
+}
+
+/** GET /api/admin/keys 响应。 */
+export interface ApiKeysResponse {
+  apiKeys?: Array<{ id: string; name: string; prefix?: string }>;
+}
+
+/** /api/admin/requests/facets 响应：各筛选维度的候选项（近 N 行采样，可能截断）。 */
+export interface RequestFacets {
+  sampledRows: number;
+  approximate: boolean;
+  accounts: Array<{ id: string; name: string }>;
+  apiKeys: Array<{ id: string; name: string; prefix: string }>;
+  providers: string[];
+  models: string[];
+  inboundEndpoints: string[];
+  upstreamEndpoints: string[];
+  clients: string[];
 }
 
 export interface Bucket {

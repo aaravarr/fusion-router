@@ -1,18 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronRight, LoaderCircle, RefreshCw, Search } from "lucide-react";
+import { ChevronRight, LoaderCircle, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel, PaginationBar, StatsStrip, formatDate } from "./page-kit";
-import { StatusBadge } from "./status-ui";
-import { PoolTypeBadge } from "./status-ui";
+import { StatusBadge, PoolTypeBadge, getPoolLabel } from "./status-ui";
+import { RangeDatePicker } from "./range-date-picker";
+import { FilterMultiSelect } from "./filter-multi-select";
+import { cn } from "@/lib/utils";
+import type { AttemptDetail, RequestDetail, RequestFacets, RequestListResponse, RequestRecord } from "./types";
 import { useAdmin } from "./admin-context";
 import { useAdminResource } from "./use-admin-resource";
-import type { AttemptDetail, RequestDetail, RequestListResponse, RequestRecord } from "./types";
 
 const pageSize = 20;
 
@@ -82,10 +84,84 @@ function explainRouteReason(reason?: string | null): string {
   return r
 }
 
+
+/** 多维组合筛选状态（不含关键词/状态这两个常驻控件）。 */
+interface RequestFilters {
+  accountIds: string[];
+  apiKeyIds: string[];
+  providers: string[];
+  models: string[];
+  inboundEndpoints: string[];
+  upstreamEndpoints: string[];
+  clients: string[];
+  /** 本地日期 yyyy-mm-dd；null 表示未选。 */
+  from: string | null;
+  to: string | null;
+}
+
+type RequestFilterKey = Exclude<keyof RequestFilters, "from" | "to">;
+const listFilterKeys: RequestFilterKey[] = [
+  "accountIds",
+  "apiKeyIds",
+  "providers",
+  "models",
+  "inboundEndpoints",
+  "upstreamEndpoints",
+  "clients",
+];
+const defaultRequestFilters: RequestFilters = {
+  accountIds: [],
+  apiKeyIds: [],
+  providers: [],
+  models: [],
+  inboundEndpoints: [],
+  upstreamEndpoints: [],
+  clients: [],
+  from: null,
+  to: null,
+};
+
+function isoToLocalDate(iso: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 从 URL query 恢复筛选（分享/刷新保留）；非法值静默忽略。 */
+function readFiltersFromUrl(): RequestFilters {
+  if (typeof window === "undefined") return defaultRequestFilters;
+  const sp = new URLSearchParams(window.location.search);
+  const filters: RequestFilters = { ...defaultRequestFilters };
+  for (const key of listFilterKeys) {
+    filters[key] = (sp.get(key) ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+  const fromRaw = sp.get("from");
+  const toRaw = sp.get("to");
+  filters.from = fromRaw && !Number.isNaN(Date.parse(fromRaw)) ? isoToLocalDate(fromRaw) : null;
+  filters.to = toRaw && !Number.isNaN(Date.parse(toRaw)) ? isoToLocalDate(toRaw) : null;
+  return filters;
+}
+
+/** 筛选状态 → URL query（本地零点/末秒语义对齐用量看板）；不含 page/pageSize。 */
+function filtersToSearchParams(filters: RequestFilters): URLSearchParams {
+  const sp = new URLSearchParams();
+  for (const key of listFilterKeys) {
+    if (filters[key].length) sp.set(key, filters[key].join(","));
+  }
+  // 与 usage 页一致：开始取本地零点、结束取本地 23:59:59.999。
+  if (filters.from) sp.set("from", new Date(`${filters.from}T00:00:00`).toISOString());
+  if (filters.to) sp.set("to", new Date(`${filters.to}T23:59:59.999`).toISOString());
+  return sp;
+}
+
 export function RequestsPage() {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState<"all" | "success" | "fail">("all");
-  const [model, setModel] = useState("");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
@@ -97,13 +173,39 @@ export function RequestsPage() {
     return () => window.clearTimeout(timer);
   }, [search]);
 
+  // 多维筛选：挂载后从 URL 恢复一次（避免 SSR 水合不一致），此后每次变更回写 URL（replaceState 不产生历史项）。
+  const [filters, setFilters] = useState<RequestFilters>(defaultRequestFilters);
+  const [hydrated, setHydrated] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  useEffect(() => {
+    // 挂载后一次性从 URL 恢复筛选（SSR 预渲染输出默认值，避免水合不一致）。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFilters(readFiltersFromUrl());
+    setHydrated(true);
+  }, []);
+
+  function updateFilters(patch: Partial<RequestFilters>) {
+    setFilters((prev) => ({ ...prev, ...patch }));
+    setPage(1);
+  }
+
   const params = useMemo(() => {
     const parts = [`page=${page}`, `pageSize=${pageSize}`];
     if (status !== "all") parts.push(`ok=${status === "success" ? "true" : "false"}`);
-    if (model.trim()) parts.push(`model=${encodeURIComponent(model.trim())}`);
     if (debouncedSearch.trim()) parts.push(`q=${encodeURIComponent(debouncedSearch.trim())}`);
+    const sp = filtersToSearchParams(filters);
+    sp.forEach((value, key) => parts.push(`${key}=${encodeURIComponent(value)}`));
     return parts.join("&");
-  }, [page, status, model, debouncedSearch]);
+  }, [page, status, debouncedSearch, filters]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const sp = filtersToSearchParams(filters);
+    if (status !== "all") sp.set("ok", status === "success" ? "true" : "false");
+    if (debouncedSearch.trim()) sp.set("q", debouncedSearch.trim());
+    const qs = sp.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+  }, [hydrated, status, debouncedSearch, filters]);
 
   const path = `/api/admin/requests?${params}`;
   const resource = useAdminResource<RequestListResponse>(path);
@@ -115,17 +217,82 @@ export function RequestsPage() {
     }
     return map;
   }, [accountsResource.data]);
+  // 各维度候选项：来自轻量 facets 接口（近 N 行采样 + TTL 缓存）。
+  const facetsResource = useAdminResource<RequestFacets>("/api/admin/requests/facets");
+  const facets = facetsResource.data;
+  const accountOptions = useMemo(
+    () => (facets?.accounts ?? []).map((account) => ({ value: account.id, label: account.name || account.id })),
+    [facets],
+  );
+  const apiKeyOptions = useMemo(
+    () => (facets?.apiKeys ?? []).map((key) => ({ value: key.id, label: key.name || key.prefix || key.id })),
+    [facets],
+  );
+  const providerOptions = useMemo(
+    () => (facets?.providers ?? []).map((provider) => ({ value: provider, label: getPoolLabel(provider) })),
+    [facets],
+  );
+  const modelOptions = useMemo(() => (facets?.models ?? []).map((model) => ({ value: model, label: model })), [facets]);
+  const inboundOptions = useMemo(() => (facets?.inboundEndpoints ?? []).map((value) => ({ value, label: value })), [facets]);
+  const upstreamOptions = useMemo(() => (facets?.upstreamEndpoints ?? []).map((value) => ({ value, label: value })), [facets]);
+  const clientOptions = useMemo(() => (facets?.clients ?? []).map((value) => ({ value, label: value })), [facets]);
+  const accountNameById = useMemo(
+    () => new Map(accountOptions.map((option) => [option.value, option.label])),
+    [accountOptions],
+  );
+  const apiKeyLabelById = useMemo(
+    () => new Map(apiKeyOptions.map((option) => [option.value, option.label])),
+    [apiKeyOptions],
+  );
   const [selected, setSelected] = useState<RequestRecord | null>(null);
 
   const items = resource.data?.items ?? [];
   const total = resource.data?.total ?? 0;
+
+  // 已选条件 chip：每个维度可单独清除。
+  const chips = useMemo(() => {
+    const list: Array<{ key: string; group: string; label: string; onRemove: () => void }> = [];
+    if (status !== "all") {
+      list.push({ key: "status", group: "状态", label: status === "success" ? "成功" : "失败", onRemove: () => { setStatus("all"); setPage(1); } });
+    }
+    const keyword = debouncedSearch.trim();
+    if (keyword) list.push({ key: "q", group: "关键词", label: keyword, onRemove: () => setSearch("") });
+    if (filters.from || filters.to) {
+      list.push({ key: "range", group: "时间", label: `${filters.from ?? "…"} ~ ${filters.to ?? "…"}`, onRemove: () => updateFilters({ from: null, to: null }) });
+    }
+    const chipGroup = (key: RequestFilterKey, group: string, resolve: (value: string) => string) => {
+      filters[key].forEach((value) => {
+        list.push({
+          key: `${key}:${value}`,
+          group,
+          label: resolve(value),
+          onRemove: () => updateFilters({ [key]: filters[key].filter((item) => item !== value) }),
+        });
+      });
+    };
+    chipGroup("accountIds", "账号", (id) => accountNameById.get(id) ?? id);
+    chipGroup("apiKeyIds", "密钥", (id) => apiKeyLabelById.get(id) ?? id);
+    chipGroup("providers", "Provider", getPoolLabel);
+    chipGroup("models", "模型", (model) => model);
+    chipGroup("inboundEndpoints", "入站路径", (value) => value);
+    chipGroup("upstreamEndpoints", "上游路径", (value) => value);
+    chipGroup("clients", "客户端", (value) => value);
+    return list;
+  }, [status, debouncedSearch, filters, accountNameById, apiKeyLabelById]);
+
+  function clearAllFilters() {
+    setSearch("");
+    setStatus("all");
+    setFilters(defaultRequestFilters);
+    setPage(1);
+  }
 
   return (
     <>
       <PageIntro
         eyebrow="REQUEST TRACE"
         title="请求与内部切号"
-        description="查看每条请求的详情、Token 分解和 failover 时间线。支持按状态、模型和关键词过滤。"
+        description="查看每条请求的详情、Token 分解和 failover 时间线。支持关键词、时间范围、账号、密钥、Provider、模型、路径与客户端多维组合过滤。"
         actions={
           <Button variant="outline" size="sm" onClick={() => void resource.refresh()} disabled={resource.loading}>
             <RefreshCw data-icon="inline-start" />刷新
@@ -136,7 +303,7 @@ export function RequestsPage() {
       <div className="mb-4">
         <StatsStrip
           items={[
-            { label: "匹配请求", value: total, hint: "当前筛选结果" },
+            { label: "匹配请求", value: total, hint: resource.data?.totalApproximate ? "近似值（封顶计数）" : "当前筛选结果" },
             { label: "当前页", value: items.length, hint: `第 ${page} 页` },
             { label: "成功", value: items.filter((item) => item.ok).length, hint: "本页成功数", tone: "success" },
             { label: "失败", value: items.filter((item) => item.ok === false).length, hint: "本页失败数", tone: "danger" },
@@ -145,34 +312,82 @@ export function RequestsPage() {
       </div>
 
       <Panel>
-        <div className="flex flex-wrap items-center gap-2 border-b bg-[#fafafa] p-3">
-          <div className="relative min-w-48 flex-1">
-            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-            <Input
-              type="search"
-              placeholder="搜索 endpoint 或错误"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-8"
-            />
+        <div className="border-b bg-[#fafafa] p-3">
+          {/* 常驻行：关键词 + 状态 + 移动端筛选折叠开关 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-48 flex-1">
+              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+              <Input
+                type="search"
+                placeholder="搜索 request id / model / error / endpoint…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-8"
+              />
+            </div>
+            <Select value={status} onValueChange={(value) => { setStatus(value as typeof status); setPage(1); }}>
+              <SelectTrigger size="sm" className="w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部状态</SelectItem>
+                <SelectItem value="success">成功</SelectItem>
+                <SelectItem value="fail">失败</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant={filtersOpen ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFiltersOpen((open) => !open)}
+              aria-expanded={filtersOpen}
+              className="sm:hidden"
+            >
+              <SlidersHorizontal data-icon="inline-start" />筛选
+            </Button>
           </div>
-          <Select value={status} onValueChange={(value) => { setStatus(value as typeof status); setPage(1); }}>
-            <SelectTrigger size="sm" className="w-32">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
-              <SelectItem value="success">成功</SelectItem>
-              <SelectItem value="fail">失败</SelectItem>
-            </SelectContent>
-          </Select>
-          <Input
-            type="text"
-            placeholder="模型过滤"
-            value={model}
-            onChange={(e) => { setModel(e.target.value); setPage(1); }}
-            className="w-40"
-          />
+          {/* 多维组合筛选：移动端默认折叠（filtersOpen 展开），桌面端常驻 */}
+          <div className={cn("mt-2 flex-wrap items-center gap-2", filtersOpen ? "flex" : "hidden sm:flex")}>
+            <RangeDatePicker
+              startDate={filters.from}
+              endDate={filters.to}
+              highlighted={Boolean(filters.from || filters.to)}
+              onChange={(next) => updateFilters(next.start || next.end ? { from: next.start, to: next.end } : { from: null, to: null })}
+            />
+            <FilterMultiSelect label="账号" options={accountOptions} selected={filters.accountIds} onChange={(next) => updateFilters({ accountIds: next })} />
+            <FilterMultiSelect label="密钥" options={apiKeyOptions} selected={filters.apiKeyIds} onChange={(next) => updateFilters({ apiKeyIds: next })} />
+            <FilterMultiSelect label="Provider" options={providerOptions} selected={filters.providers} onChange={(next) => updateFilters({ providers: next })} />
+            <FilterMultiSelect label="模型" options={modelOptions} selected={filters.models} onChange={(next) => updateFilters({ models: next })} />
+            <FilterMultiSelect label="入站路径" options={inboundOptions} selected={filters.inboundEndpoints} onChange={(next) => updateFilters({ inboundEndpoints: next })} />
+            <FilterMultiSelect label="上游路径" options={upstreamOptions} selected={filters.upstreamEndpoints} onChange={(next) => updateFilters({ upstreamEndpoints: next })} />
+            <FilterMultiSelect label="客户端" options={clientOptions} selected={filters.clients} onChange={(next) => updateFilters({ clients: next })} />
+          </div>
+          {/* 已选条件 chips：可单独清除，一键清空 */}
+          {chips.length > 0 ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t pt-2">
+              <span className="text-xs text-muted-foreground">已选条件：</span>
+              {chips.map((chip) => (
+                <span
+                  key={chip.key}
+                  className="inline-flex max-w-full items-center gap-1 rounded-md border bg-white px-2 py-0.5 text-xs font-medium text-foreground"
+                >
+                  <span className="text-muted-foreground">{chip.group}:</span>
+                  <span className="max-w-48 truncate">{chip.label}</span>
+                  <button
+                    type="button"
+                    aria-label={`移除${chip.group}筛选 ${chip.label}`}
+                    onClick={chip.onRemove}
+                    className="-mr-0.5 rounded-sm p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </span>
+              ))}
+              <Button type="button" variant="ghost" size="xs" className="ml-1 text-muted-foreground" onClick={clearAllFilters}>
+                清除全部
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         {resource.error ? (

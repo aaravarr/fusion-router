@@ -29,7 +29,7 @@ import { useAdminResource } from "./use-admin-resource";
 import { getPoolLabel, PoolTypeBadge } from "./status-ui";
 import { AccountPicker } from "./account-picker";
 import { RangeDatePicker } from "./range-date-picker";
-import type { AccountListResponse, Bucket, UsageStats } from "./types";
+import type { AccountListResponse, ApiKeysResponse, Bucket, UsageStats } from "./types";
 
 const palette = ["#0070f3", "#7928ca", "#0a7a3e", "#ab570a", "#ee0000", "#00a0a0", "#333", "#888"];
 
@@ -110,6 +110,8 @@ export function UsagePage() {
   const [poolType, setPoolType] = useState<PoolTypeFilter>("all");
   const [model, setModel] = useState<string>("all");
   const [accountId, setAccountId] = useState("");
+  // 按密钥筛选：单选（对齐现有 Select 交互），"all" 表示全部密钥。
+  const [apiKeyId, setApiKeyId] = useState("all");
   // 自定义时间范围（yyyy-mm-dd）；激活时预设按钮组不高亮、不传 hours。
   const [customRange, setCustomRange] = useState<{ start: string | null; end: string | null } | null>(null);
   const customRangeActive = customRange !== null;
@@ -135,10 +137,14 @@ export function UsagePage() {
   if (poolType && poolType !== "all") queryParts.push(`poolType=${poolType}`);
   if (model && model !== "all") queryParts.push(`model=${encodeURIComponent(model)}`);
   if (accountId) queryParts.push(`accountId=${encodeURIComponent(accountId)}`);
+  if (apiKeyId && apiKeyId !== "all") queryParts.push(`apiKeyId=${encodeURIComponent(apiKeyId)}`);
   const path = `/api/admin/usage?${queryParts.join("&")}`;
   // 账号筛选数据源：不带 pageSize 拉全量（items / accounts 同源，均为完整 AccountRecord）。
   const accountsResource = useAdminResource<AccountListResponse>("/api/admin/accounts");
   const accounts = accountsResource.data?.items ?? accountsResource.data?.accounts ?? [];
+  // 密钥筛选数据源：/api/admin/keys 全量小表。
+  const keysResource = useAdminResource<ApiKeysResponse>("/api/admin/keys");
+  const apiKeyOptions = keysResource.data?.apiKeys ?? [];
   const resource = useAdminResource<UsageStats>(path);
   const data = resource.data;
   const apiPoolTypes = resource.data?.poolTypes;
@@ -246,6 +252,17 @@ export function UsagePage() {
           </SelectContent>
         </Select>
         <div className="w-full sm:w-auto"><AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} /></div>
+        <Select value={apiKeyId} onValueChange={setApiKeyId}>
+          <SelectTrigger size="sm" className="w-full sm:w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部密钥</SelectItem>
+            {apiKeyOptions.map((key) => (
+              <SelectItem key={key.id} value={key.id}>{key.name || key.prefix || key.id}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {resource.error ? (
