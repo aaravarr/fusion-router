@@ -67,8 +67,8 @@ function parseIsoParam(value: string | null): string | null {
   return date.toISOString();
 }
 
-/** 解析逗号分隔的账号 ID 列表：单值兼容（无逗号即单值），trim 后过滤空串，上限 100 个。 */
-function parseAccountIds(value: string | null): string[] {
+/** 解析逗号分隔的 ID 列表：单值兼容（无逗号即单值），trim 后过滤空串，上限 100 个。 */
+function parseIdList(value: string | null): string[] {
   if (value === null) return [];
   return value
     .split(",")
@@ -105,11 +105,18 @@ export function GET(request: Request): Response {
   const gran = clampGranularity(windowHours, requestedGran === "auto" ? autoGranularity(windowHours) : requestedGran);
   const model = url.searchParams.get("model");
   const accountId = url.searchParams.get("accountId");
-  const accountIds = parseAccountIds(accountId);
-  const apiKeyId = url.searchParams.get("apiKeyId");
+  const accountIds = parseIdList(accountId);
+  // 密钥筛选：apiKeyIds 多值为主，apiKeyId 为旧版单值参数（两者都给时并入去重，保持向后兼容）
+  const apiKeyIds = parseIdList(url.searchParams.get("apiKeyIds"));
+  const legacyApiKeyId = url.searchParams.get("apiKeyId");
+  if (legacyApiKeyId && !apiKeyIds.includes(legacyApiKeyId)) {
+    apiKeyIds.push(legacyApiKeyId);
+    if (apiKeyIds.length > 100) apiKeyIds.length = 100;
+  }
+  const apiKeyIdFilter = apiKeyIds;
   const poolType = url.searchParams.get("poolType");
-  // 缓存 key 必须并入 from/to 与多账号列表，否则不同范围会串数据
-  const cacheKey = `${user.id}|${hours}|${gran}|${model ?? ""}|${accountId ?? ""}|${apiKeyId ?? ""}|${poolType ?? ""}|${fromIso ?? ""}|${toIso ?? ""}`;
+  // 缓存 key 必须并入 from/to 与多账号/多密钥列表，否则不同范围会串数据
+  const cacheKey = `${user.id}|${hours}|${gran}|${model ?? ""}|${accountId ?? ""}|${url.searchParams.get("apiKeyIds") ?? ""}|${legacyApiKeyId ?? ""}|${poolType ?? ""}|${fromIso ?? ""}|${toIso ?? ""}`;
   const db = getDatabase();
   const poolTypes = listPoolTypeOptions(user.id, db);
   const cached = cache.get(cacheKey);
@@ -126,7 +133,11 @@ export function GET(request: Request): Response {
     conditions.push(`account_id IN (${placeholders})`);
     params.push(...accountIds);
   }
-  if (apiKeyId) { conditions.push("api_key_id = ?"); params.push(apiKeyId) }
+  if (apiKeyIdFilter.length) {
+    const placeholders = apiKeyIdFilter.map(() => "?").join(",");
+    conditions.push(`api_key_id IN (${placeholders})`);
+    params.push(...apiKeyIdFilter);
+  }
   if (poolType) { conditions.push("account_id IN (SELECT id FROM accounts WHERE owner_user_id = ? AND pool_type = ?)"); params.push(user.id, poolType) }
   const rows = db.prepare(`SELECT started_at,status,ok,latency_ms,local_prep_ms,first_token_ms,model,account_id,account_name,api_key_id,api_key_prefix,prompt_tokens,completion_tokens,total_tokens,cached_tokens,reasoning_tokens,stream FROM gateway_requests WHERE ${conditions.join(" AND ")}`).all(...params) as UsageBucketRow[];
   const apiKeyNames = new Map(

@@ -151,4 +151,40 @@ describe("GET /api/admin/usage", () => {
     expect(payload.summary.requests).toBe(1)
     expect(payload.byKey.map((bucket) => bucket.key)).toEqual(["key-a"])
   })
+
+  it("apiKeyIds 逗号分隔多值 IN 过滤（兼容旧 apiKeyId 单值，缓存 key 不串数据）", async () => {
+    const db = mocks.db as Database.Database
+    const insertWithKey = db.prepare(
+      `INSERT INTO gateway_requests (id, owner_user_id, api_key_id, endpoint, model, status, outcome, attempt_count, started_at, ok, stream, api_key_prefix, account_id, account_name, latency_ms, prompt_tokens, completion_tokens, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    const isoAt = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
+    insertWithKey.run("mk-1", "owner", "key-a", "/v1/chat/completions", null, 200, "success", 1, isoAt(1 * hourMs), 1, 0, "pa", null, null, 100, 10, 20, 30)
+    insertWithKey.run("mk-2", "owner", "key-b", "/v1/chat/completions", null, 200, "success", 1, isoAt(1 * hourMs), 1, 0, "pb", null, null, 100, 10, 20, 30)
+    insertWithKey.run("mk-3", "owner", "key-c", "/v1/chat/completions", null, 200, "success", 1, isoAt(1 * hourMs), 1, 0, "pc", null, null, 100, 10, 20, 30)
+
+    // 多值：只统计 key-a / key-b
+    const multi = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&apiKeyIds=key-a,key-b"))
+    expect(multi.status).toBe(200)
+    const multiPayload = (await multi.json()) as { summary: { requests: number }; byKey: Array<{ key: string }> }
+    expect(multiPayload.summary.requests).toBe(2)
+    expect(multiPayload.byKey.map((bucket) => bucket.key).sort()).toEqual(["key-a", "key-b"])
+
+    // 单值兼容：无逗号时行为一致；且与上面多值请求缓存 key 不同，不会串数据
+    const single = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&apiKeyIds=key-c"))
+    const singlePayload = (await single.json()) as { summary: { requests: number }; byKey: Array<{ key: string }> }
+    expect(singlePayload.summary.requests).toBe(1)
+    expect(singlePayload.byKey.map((bucket) => bucket.key)).toEqual(["key-c"])
+
+    // 新旧参数并存：并入去重生效（key-b 已在列表中，不重复计数）
+    const both = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&apiKeyIds=key-a&apiKeyId=key-b"))
+    const bothPayload = (await both.json()) as { summary: { requests: number }; byKey: Array<{ key: string }> }
+    expect(bothPayload.summary.requests).toBe(2)
+    expect(bothPayload.byKey.map((bucket) => bucket.key).sort()).toEqual(["key-a", "key-b"])
+
+    // 旧单值参数回归：仍按精确过滤
+    const legacy = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&apiKeyId=key-a"))
+    const legacyPayload = (await legacy.json()) as { summary: { requests: number }; byKey: Array<{ key: string }> }
+    expect(legacyPayload.summary.requests).toBe(1)
+    expect(legacyPayload.byKey.map((bucket) => bucket.key)).toEqual(["key-a"])
+  })
 })

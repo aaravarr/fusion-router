@@ -28,6 +28,7 @@ import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel } from "./page-k
 import { useAdminResource } from "./use-admin-resource";
 import { getPoolLabel, PoolTypeBadge } from "./status-ui";
 import { AccountPicker } from "./account-picker";
+import { FilterMultiSelect } from "./filter-multi-select";
 import { RangeDatePicker } from "./range-date-picker";
 import type { AccountListResponse, ApiKeysResponse, Bucket, UsageStats } from "./types";
 
@@ -110,8 +111,8 @@ export function UsagePage() {
   const [poolType, setPoolType] = useState<PoolTypeFilter>("all");
   const [model, setModel] = useState<string>("all");
   const [accountId, setAccountId] = useState("");
-  // 按密钥筛选：单选（对齐现有 Select 交互），"all" 表示全部密钥。
-  const [apiKeyId, setApiKeyId] = useState("all");
+  // 按密钥筛选：多选（对齐请求日志 FilterMultiSelect 交互），空数组表示全部密钥。
+  const [apiKeyIds, setApiKeyIds] = useState<string[]>([]);
   // 自定义时间范围（yyyy-mm-dd）；激活时预设按钮组不高亮、不传 hours。
   const [customRange, setCustomRange] = useState<{ start: string | null; end: string | null } | null>(null);
   const customRangeActive = customRange !== null;
@@ -137,7 +138,7 @@ export function UsagePage() {
   if (poolType && poolType !== "all") queryParts.push(`poolType=${poolType}`);
   if (model && model !== "all") queryParts.push(`model=${encodeURIComponent(model)}`);
   if (accountId) queryParts.push(`accountId=${encodeURIComponent(accountId)}`);
-  if (apiKeyId && apiKeyId !== "all") queryParts.push(`apiKeyId=${encodeURIComponent(apiKeyId)}`);
+  if (apiKeyIds.length) queryParts.push(`apiKeyIds=${encodeURIComponent(apiKeyIds.join(","))}`);
   const path = `/api/admin/usage?${queryParts.join("&")}`;
   // 账号筛选数据源：不带 pageSize 拉全量（items / accounts 同源，均为完整 AccountRecord）。
   const accountsResource = useAdminResource<AccountListResponse>("/api/admin/accounts");
@@ -252,17 +253,12 @@ export function UsagePage() {
           </SelectContent>
         </Select>
         <div className="w-full sm:w-auto"><AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} /></div>
-        <Select value={apiKeyId} onValueChange={setApiKeyId}>
-          <SelectTrigger size="sm" className="w-full sm:w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部密钥</SelectItem>
-            {apiKeyOptions.map((key) => (
-              <SelectItem key={key.id} value={key.id}>{key.name || key.prefix || key.id}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <FilterMultiSelect
+          label="密钥"
+          options={apiKeyOptions.map((key) => ({ value: key.id, label: key.name || key.prefix || key.id }))}
+          selected={apiKeyIds}
+          onChange={setApiKeyIds}
+        />
       </div>
 
       {resource.error ? (
