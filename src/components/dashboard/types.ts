@@ -236,6 +236,15 @@ export interface ApiKeysResponse {
   apiKeys?: Array<{ id: string; name: string; prefix?: string }>;
 }
 
+/** /api/admin/usage/facets 响应：用量看板固定选项源（不随筛选参数变化）。 */
+export interface UsageFacets {
+  sampledRows: number;
+  approximate: boolean;
+  models: string[];
+  recentModels: string[];
+  poolTypes: Array<{ type: string; label: string }>;
+}
+
 /** /api/admin/requests/facets 响应：各筛选维度的候选项（近 N 行采样，可能截断）。 */
 export interface RequestFacets {
   sampledRows: number;

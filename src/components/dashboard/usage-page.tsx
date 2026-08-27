@@ -26,20 +26,17 @@ import {
 } from "@/components/ui/chart";
 import { EmptyState, ErrorState, LoadingTable, PageIntro, Panel } from "./page-kit";
 import { useAdminResource } from "./use-admin-resource";
-import { getPoolLabel, PoolTypeBadge } from "./status-ui";
-import { AccountPicker } from "./account-picker";
+import { PoolTypeBadge } from "./status-ui";
 import { FilterMultiSelect } from "./filter-multi-select";
 import { RangeDatePicker } from "./range-date-picker";
-import type { AccountListResponse, ApiKeysResponse, Bucket, UsageStats } from "./types";
+import type { AccountListResponse, ApiKeysResponse, Bucket, UsageFacets, UsageStats } from "./types";
 
 const palette = ["#0070f3", "#7928ca", "#0a7a3e", "#ab570a", "#ee0000", "#00a0a0", "#333", "#888"];
 
 type RangeKey = "1h" | "6h" | "24h" | "7d" | "30d";
 type Granularity = "auto" | "5m" | "1m" | "1h" | "1d";
 
-type PoolTypeFilter = string;
-const fallbackPoolTypeOptions: { value: PoolTypeFilter; label: string }[] = [
-  { value: "all", label: "全部号池" },
+const fallbackPoolTypeOptions: { value: string; label: string }[] = [
   { value: "opencode-go", label: "OpenCode Go" },
   { value: "openai", label: "OpenAI" },
   { value: "xai-grok", label: "xAI Grok" },
@@ -108,10 +105,10 @@ function formatUsd(value?: number | null) {
 export function UsagePage() {
   const [range, setRange] = useState<RangeKey>("24h");
   const [granularity, setGranularity] = useState<Granularity>("auto");
-  const [poolType, setPoolType] = useState<PoolTypeFilter>("all");
-  const [model, setModel] = useState<string>("all");
-  const [accountId, setAccountId] = useState("");
-  // 按密钥筛选：多选（对齐请求日志 FilterMultiSelect 交互），空数组表示全部密钥。
+  // 筛选维度全部多选（对齐请求日志 FilterMultiSelect 交互），空数组表示不筛选该维度。
+  const [poolTypes, setPoolTypes] = useState<string[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [accountIds, setAccountIds] = useState<string[]>([]);
   const [apiKeyIds, setApiKeyIds] = useState<string[]>([]);
   // 自定义时间范围（yyyy-mm-dd）；激活时预设按钮组不高亮、不传 hours。
   const [customRange, setCustomRange] = useState<{ start: string | null; end: string | null } | null>(null);
@@ -135,42 +132,46 @@ export function UsagePage() {
   } else {
     queryParts.push(`hours=${rangeHours[range]}`, `granularity=${granularity}`);
   }
-  if (poolType && poolType !== "all") queryParts.push(`poolType=${poolType}`);
-  if (model && model !== "all") queryParts.push(`model=${encodeURIComponent(model)}`);
-  if (accountId) queryParts.push(`accountId=${encodeURIComponent(accountId)}`);
+  if (poolTypes.length) queryParts.push(`poolType=${encodeURIComponent(poolTypes.join(","))}`);
+  if (models.length) queryParts.push(`model=${encodeURIComponent(models.join(","))}`);
+  if (accountIds.length) queryParts.push(`accountId=${encodeURIComponent(accountIds.join(","))}`);
   if (apiKeyIds.length) queryParts.push(`apiKeyIds=${encodeURIComponent(apiKeyIds.join(","))}`);
   const path = `/api/admin/usage?${queryParts.join("&")}`;
   // 账号筛选数据源：不带 pageSize 拉全量（items / accounts 同源，均为完整 AccountRecord）。
   const accountsResource = useAdminResource<AccountListResponse>("/api/admin/accounts");
   const accounts = accountsResource.data?.items ?? accountsResource.data?.accounts ?? [];
+  const accountOptions = useMemo(
+    () =>
+      accounts
+        .filter((account) => account.adminState !== "DISABLED")
+        .map((account) => ({ value: account.id, label: account.name || account.id }))
+        .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
+    [accounts],
+  );
   // 密钥筛选数据源：/api/admin/keys 全量小表。
   const keysResource = useAdminResource<ApiKeysResponse>("/api/admin/keys");
   const apiKeyOptions = keysResource.data?.apiKeys ?? [];
   const resource = useAdminResource<UsageStats>(path);
   const data = resource.data;
+  // 各维度候选项：来自固定选项源（配置表全量 / 近 N 行采样 + TTL 缓存），不随筛选结果缩水。
+  const facetsResource = useAdminResource<UsageFacets>("/api/admin/usage/facets");
+  const usageFacets = facetsResource.data;
   const apiPoolTypes = resource.data?.poolTypes;
-  const poolTypeOptions = useMemo(() => {
-    const base = apiPoolTypes?.length
-      ? [{ value: "all", label: "全部号池" }, ...apiPoolTypes.map((pool) => ({ value: pool.type, label: pool.label }))]
-      : fallbackPoolTypeOptions;
-    return poolType !== "all" && !base.some((option) => option.value === poolType)
-      ? [...base, { value: poolType, label: getPoolLabel(poolType) }]
-      : base;
-  }, [apiPoolTypes, poolType]);
-  const modelOptions = useMemo(() => {
-    const seen = new Set<string>();
-    const options: Array<{ value: string; label: string }> = [];
-    for (const bucket of resource.data?.byModel ?? []) {
-      const key = bucket.key || bucket.label || "";
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      options.push({ value: key, label: bucket.label || key });
-    }
-    if (model !== "all" && !options.some((option) => option.value === model)) {
-      options.push({ value: model, label: model });
-    }
-    return options;
-  }, [resource.data?.byModel, model]);
+  const poolTypeOptions = useMemo(
+    () =>
+      (usageFacets?.poolTypes.length
+        ? usageFacets.poolTypes.map((pool) => ({ value: pool.type, label: pool.label }))
+        : (apiPoolTypes?.length
+          ? apiPoolTypes.map((pool) => ({ value: pool.type, label: pool.label }))
+          : fallbackPoolTypeOptions)),
+    [usageFacets?.poolTypes, apiPoolTypes],
+  );
+  const modelOptions = useMemo(
+    () =>
+      ((usageFacets?.recentModels.length ? usageFacets.recentModels : usageFacets?.models) ?? [])
+        .map((model) => ({ value: model, label: model })),
+    [usageFacets?.models, usageFacets?.recentModels],
+  );
 
   function selectRange(next: RangeKey) {
     setRange(next);
@@ -231,28 +232,24 @@ export function UsagePage() {
         <span className="text-xs text-muted-foreground">
           粒度：{granLabels[effectiveGranularity]}
         </span>
-        <Select value={poolType} onValueChange={(value) => setPoolType(value)}>
-          <SelectTrigger size="sm" className="w-full sm:w-32">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {poolTypeOptions.map((option) => (
-              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={model} onValueChange={(value) => setModel(value)}>
-          <SelectTrigger size="sm" className="w-full sm:w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部模型</SelectItem>
-            {modelOptions.map((option) => (
-              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <div className="w-full sm:w-auto"><AccountPicker accounts={accounts} value={accountId} onChange={setAccountId} /></div>
+        <FilterMultiSelect
+          label="号池"
+          options={poolTypeOptions}
+          selected={poolTypes}
+          onChange={setPoolTypes}
+        />
+        <FilterMultiSelect
+          label="模型"
+          options={modelOptions}
+          selected={models}
+          onChange={setModels}
+        />
+        <FilterMultiSelect
+          label="账号"
+          options={accountOptions}
+          selected={accountIds}
+          onChange={setAccountIds}
+        />
         <FilterMultiSelect
           label="密钥"
           options={apiKeyOptions.map((key) => ({ value: key.id, label: key.name || key.prefix || key.id }))}

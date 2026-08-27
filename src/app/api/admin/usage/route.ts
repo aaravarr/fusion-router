@@ -103,9 +103,11 @@ export function GET(request: Request): Response {
   const windowHours = fromIso ? (Date.parse(toIso ?? new Date().toISOString()) - Date.parse(fromIso)) / 3600000 : hours;
   const requestedGran = url.searchParams.get("granularity") ?? "auto";
   const gran = clampGranularity(windowHours, requestedGran === "auto" ? autoGranularity(windowHours) : requestedGran);
-  const model = url.searchParams.get("model");
   const accountId = url.searchParams.get("accountId");
   const accountIds = parseIdList(accountId);
+  // 模型/号池筛选：逗号分隔多值（单值=一个元素的数组语义）
+  const modelFilter = parseIdList(url.searchParams.get("model"));
+  const poolTypeFilter = parseIdList(url.searchParams.get("poolType"));
   // 密钥筛选：apiKeyIds 多值为主，apiKeyId 为旧版单值参数（两者都给时并入去重，保持向后兼容）
   const apiKeyIds = parseIdList(url.searchParams.get("apiKeyIds"));
   const legacyApiKeyId = url.searchParams.get("apiKeyId");
@@ -114,9 +116,8 @@ export function GET(request: Request): Response {
     if (apiKeyIds.length > 100) apiKeyIds.length = 100;
   }
   const apiKeyIdFilter = apiKeyIds;
-  const poolType = url.searchParams.get("poolType");
-  // 缓存 key 必须并入 from/to 与多账号/多密钥列表，否则不同范围会串数据
-  const cacheKey = `${user.id}|${hours}|${gran}|${model ?? ""}|${accountId ?? ""}|${url.searchParams.get("apiKeyIds") ?? ""}|${legacyApiKeyId ?? ""}|${poolType ?? ""}|${fromIso ?? ""}|${toIso ?? ""}`;
+  // 缓存 key 必须并入 from/to 与模型/号池/账号/密钥原始参数，否则不同范围会串数据
+  const cacheKey = `${user.id}|${hours}|${gran}|${url.searchParams.get("model") ?? ""}|${accountId ?? ""}|${url.searchParams.get("apiKeyIds") ?? ""}|${legacyApiKeyId ?? ""}|${url.searchParams.get("poolType") ?? ""}|${fromIso ?? ""}|${toIso ?? ""}`;
   const db = getDatabase();
   const poolTypes = listPoolTypeOptions(user.id, db);
   const cached = cache.get(cacheKey);
@@ -127,7 +128,11 @@ export function GET(request: Request): Response {
   const toIso2 = toIso ?? new Date(now).toISOString();
   const conditions = ["owner_user_id = ?", "started_at >= ?", "started_at <= ?"];
   const params: (string | number)[] = [user.id, fromIso2, toIso2];
-  if (model) { conditions.push("model = ?"); params.push(model) }
+  if (modelFilter.length) {
+    const placeholders = modelFilter.map(() => "?").join(",");
+    conditions.push(`model IN (${placeholders})`);
+    params.push(...modelFilter);
+  }
   if (accountIds.length) {
     const placeholders = accountIds.map(() => "?").join(",");
     conditions.push(`account_id IN (${placeholders})`);
@@ -138,7 +143,11 @@ export function GET(request: Request): Response {
     conditions.push(`api_key_id IN (${placeholders})`);
     params.push(...apiKeyIdFilter);
   }
-  if (poolType) { conditions.push("account_id IN (SELECT id FROM accounts WHERE owner_user_id = ? AND pool_type = ?)"); params.push(user.id, poolType) }
+  if (poolTypeFilter.length) {
+    const placeholders = poolTypeFilter.map(() => "?").join(",");
+    conditions.push(`account_id IN (SELECT id FROM accounts WHERE owner_user_id = ? AND pool_type IN (${placeholders}))`);
+    params.push(user.id, ...poolTypeFilter);
+  }
   const rows = db.prepare(`SELECT started_at,status,ok,latency_ms,local_prep_ms,first_token_ms,model,account_id,account_name,api_key_id,api_key_prefix,prompt_tokens,completion_tokens,total_tokens,cached_tokens,reasoning_tokens,stream FROM gateway_requests WHERE ${conditions.join(" AND ")}`).all(...params) as UsageBucketRow[];
   const apiKeyNames = new Map(
     (db.prepare("SELECT id,name FROM api_keys WHERE owner_user_id=?").all(user.id) as Array<{ id: string; name: string }>)

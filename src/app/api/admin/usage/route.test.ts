@@ -137,6 +137,46 @@ describe("GET /api/admin/usage", () => {
     expect(singlePayload.summary.requests).toBe(1)
   })
 
+  it("model 逗号分隔多值 IN 过滤（含单值兼容）", async () => {
+    const db = mocks.db as Database.Database
+    insertRequest(db, "m-1", { accountId: "acct-1", accountName: "Go 账号", startedAt: iso(1 * hourMs), model: "gpt-x" })
+    insertRequest(db, "m-2", { accountId: "acct-2", accountName: "OpenAI 账号", startedAt: iso(1 * hourMs), model: "kimi-k2" })
+    insertRequest(db, "m-3", { accountId: "acct-3", accountName: "Kimi 账号", startedAt: iso(1 * hourMs), model: "grok-4" })
+
+    // 多值：只统计 gpt-x / grok-4
+    const multi = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&model=gpt-x,grok-4"))
+    expect(multi.status).toBe(200)
+    const multiPayload = (await multi.json()) as { summary: { requests: number }; byModel: Array<{ key: string }> }
+    expect(multiPayload.summary.requests).toBe(2)
+    expect(multiPayload.byModel.map((bucket) => bucket.key).sort()).toEqual(["gpt-x", "grok-4"])
+
+    // 单值兼容：无逗号时行为与原 = 过滤一致
+    const single = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&model=kimi-k2"))
+    const singlePayload = (await single.json()) as { summary: { requests: number }; byModel: Array<{ key: string }> }
+    expect(singlePayload.summary.requests).toBe(1)
+    expect(singlePayload.byModel.map((bucket) => bucket.key)).toEqual(["kimi-k2"])
+  })
+
+  it("poolType 逗号分隔多值 IN 子查询过滤（含单值兼容）", async () => {
+    const db = mocks.db as Database.Database
+    insertRequest(db, "p-1", { accountId: "acct-1", accountName: "Go 账号", startedAt: iso(1 * hourMs) })
+    insertRequest(db, "p-2", { accountId: "acct-2", accountName: "OpenAI 账号", startedAt: iso(1 * hourMs) })
+    insertRequest(db, "p-3", { accountId: "acct-3", accountName: "Kimi 账号", startedAt: iso(1 * hourMs) })
+
+    // 多值：只统计 opencode-go / openai 号池
+    const multi = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&poolType=opencode-go,openai"))
+    expect(multi.status).toBe(200)
+    const multiPayload = (await multi.json()) as { summary: { requests: number }; byAccount: Array<{ key: string }> }
+    expect(multiPayload.summary.requests).toBe(2)
+    expect(multiPayload.byAccount.map((bucket) => bucket.key).sort()).toEqual(["acct-1", "acct-2"])
+
+    // 单值兼容：与原单值子查询一致
+    const single = await GET(new Request("http://x/api/admin/usage?hours=24&granularity=auto&poolType=kimi-code"))
+    const singlePayload = (await single.json()) as { summary: { requests: number }; byAccount: Array<{ key: string }> }
+    expect(singlePayload.summary.requests).toBe(1)
+    expect(singlePayload.byAccount.map((bucket) => bucket.key)).toEqual(["acct-3"])
+  })
+
   it("apiKeyId 按密钥过滤（用量看板密钥下拉）", async () => {
     const db = mocks.db as Database.Database
     const insertWithKey = db.prepare(
