@@ -44,7 +44,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return Response.json({ error: { type: "validation_error", message: "该开关仅支持 OpenCode Go 账号" } }, { status: 400 })
     }
     try {
-      await getOpenCodeWebService(user.id).setChinaProviders(id, value.chinaProviders)
+      await getOpenCodeWebService(user.id).setChinaProviders(id, value.chinaProviders, { userAgent: request.headers.get("user-agent") ?? undefined })
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "更新 OpenCode 提供商路由失败"
       return Response.json({ error: { type: "opencode_action_failed", message } }, { status: cause instanceof Error && cause.message.includes("auth") ? 401 : 502 })

@@ -87,9 +87,29 @@ describe("OpenCodeWebService referral", () => {
     vi.mocked(client.applyReferralReward).mockResolvedValue(undefined)
     const result = await service.applyReferralReward(acc!.id, "ref_1")
     expect(result.applied).toBe(true)
-    expect(client.applyReferralReward).toHaveBeenCalledWith("browser-cookie-secret", "wrk_apply", "ref_1")
+    expect(client.applyReferralReward).toHaveBeenCalledWith("browser-cookie-secret", "wrk_apply", "ref_1", {})
     // refreshUsage 被触发（dashboard 调用次数增加：report 1 次 + refresh 1 次）
     expect(client.dashboard).toHaveBeenCalledTimes(2)
+  })
+
+  it("applyReferralReward 透传操作者 UA 给兑换请求与顺手触发的额度刷新", async () => {
+    const { client, service } = setup()
+    const acc = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_apply_ua" })
+    vi.mocked(client.applyReferralReward).mockResolvedValue(undefined)
+    const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0"
+    await service.applyReferralReward(acc!.id, "ref_1", { userAgent: ua })
+    expect(client.applyReferralReward).toHaveBeenCalledWith("browser-cookie-secret", "wrk_apply_ua", "ref_1", { userAgent: ua })
+    // 兑换成功后的 refreshUsage 属同一用户动作延续，dashboard 抓取也带该 UA
+    expect(vi.mocked(client.dashboard).mock.calls.at(-1)).toEqual(["browser-cookie-secret", "wrk_apply_ua", { userAgent: ua }])
+  })
+
+  it("listReferralRewards 透传操作者 UA 给 go 页面抓取", async () => {
+    const { client, service } = setup()
+    const acc = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_list_ua" })
+    vi.mocked(client.referrals).mockResolvedValue(null)
+    const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari/26.0"
+    await service.listReferralRewards(acc!.id, { userAgent: ua })
+    expect(client.referrals).toHaveBeenCalledWith("browser-cookie-secret", "wrk_list_ua", { userAgent: ua })
   })
 
   it("applyReferralReward AUTH 失败标记凭据失效", async () => {

@@ -39,7 +39,8 @@ export function createPluginAccountPost(dependencies: PluginAccountDependencies)
     const input = schema.safeParse(await request.json().catch(() => null))
     if (!input.success) return Response.json({ error: { type: "validation_error", details: input.error.flatten() } }, { status: 400, headers: cors })
     try {
-      const account = await dependencies.report(apiKey.ownerUserId, input.data)
+      // 扩展上报来自真实浏览器：透传其 UA 给 opencode.ai 控制面（录入会拉取页面/创建 key）。
+      const account = await dependencies.report(apiKey.ownerUserId, { ...input.data, userAgent: request.headers.get("user-agent") ?? undefined })
       recordEvent(apiKey.ownerUserId, "ACCOUNT_CONNECTED", "INFO", account.id, {
         apiKeyId: apiKey.id,
         apiKeyName: apiKey.name,

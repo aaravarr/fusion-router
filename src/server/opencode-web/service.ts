@@ -1,12 +1,14 @@
 import { AccountRepository } from "@/server/repository"
 import type { AccessCredential } from "@/server/gateway"
-import { OpenCodeWebClient, OpenCodeWebError } from "./client"
+import { OpenCodeWebClient, OpenCodeWebError, type OpenCodeWebCallOptions } from "./client"
 
 export interface ReportBrowserAccountInput {
   authCookie: string
   workspaceId: string
   extensionVersion?: string | null
   name?: string
+  /** 扩展上报请求的浏览器 UA，有用户在场时透传给 opencode.ai 控制面。 */
+  userAgent?: string | null
 }
 
 const inflightReports = new Map<string, Promise<ReturnType<AccountRepository["get"]>>>()
@@ -24,12 +26,13 @@ export class OpenCodeWebService {
   }
 
   private async reportOnce(input: ReportBrowserAccountInput) {
+    const callOptions: OpenCodeWebCallOptions = { userAgent: input.userAgent }
     const [managedKey, dashboard] = await Promise.all([
-      this.client.ensureManagedKey(input.authCookie, input.workspaceId),
-      this.client.dashboard(input.authCookie, input.workspaceId),
+      this.client.ensureManagedKey(input.authCookie, input.workspaceId, callOptions),
+      this.client.dashboard(input.authCookie, input.workspaceId, callOptions),
     ])
     // 账号录入时自动开启“部署在中国的模型”，失败不阻断录入主流程。
-    await this.client.setChinaProviders(input.authCookie, input.workspaceId, true).catch(() => undefined)
+    await this.client.setChinaProviders(input.authCookie, input.workspaceId, true, callOptions).catch(() => undefined)
     const verified = dashboard.subscriptionExists && dashboard.useBalance === false
     const account = this.repository.upsertBrowserAccount({
       name: input.name,
@@ -63,11 +66,11 @@ export class OpenCodeWebService {
     return { accountId, goApiKey: account.goApiKey, credentialVersion: account.credentialVersion }
   }
 
-  async refreshUsage(accountId: string) {
+  async refreshUsage(accountId: string, options: OpenCodeWebCallOptions = {}) {
     const account = this.repository.getCredential(accountId)
     if (!account) return
     try {
-      const dashboard = await this.client.dashboard(account.authCookie, account.workspaceId)
+      const dashboard = await this.client.dashboard(account.authCookie, account.workspaceId, options)
       const verified = dashboard.subscriptionExists && dashboard.useBalance === false
       const syncedAt = new Date().toISOString()
       this.repository.updateState(accountId, {
@@ -91,11 +94,11 @@ export class OpenCodeWebService {
     }
   }
 
-  async setChinaProviders(accountId: string, enabled: boolean) {
+  async setChinaProviders(accountId: string, enabled: boolean, options: OpenCodeWebCallOptions = {}) {
     const account = this.repository.getCredential(accountId)
     if (!account) throw new OpenCodeWebError("Account not found", "PROTOCOL")
     try {
-      await this.client.setChinaProviders(account.authCookie, account.workspaceId, enabled)
+      await this.client.setChinaProviders(account.authCookie, account.workspaceId, enabled, options)
     } catch (cause) {
       if (cause instanceof OpenCodeWebError && cause.code === "AUTH") this.repository.markAuthError(accountId, true)
       throw cause
@@ -104,11 +107,11 @@ export class OpenCodeWebService {
     return this.repository.get(accountId)
   }
 
-  async listReferralRewards(accountId: string) {
+  async listReferralRewards(accountId: string, options: OpenCodeWebCallOptions = {}) {
     const account = this.repository.getCredential(accountId)
     if (!account) throw new OpenCodeWebError("Account not found", "PROTOCOL")
     try {
-      const summary = await this.client.referrals(account.authCookie, account.workspaceId)
+      const summary = await this.client.referrals(account.authCookie, account.workspaceId, options)
       return {
         referralCode: summary?.referralCode ?? null,
         rewardAmount: summary?.rewardAmount ?? null,
@@ -120,19 +123,19 @@ export class OpenCodeWebService {
     }
   }
 
-  async applyReferralReward(accountId: string, referralId: string) {
+  async applyReferralReward(accountId: string, referralId: string, options: OpenCodeWebCallOptions = {}) {
     const account = this.repository.getCredential(accountId)
     if (!account) throw new OpenCodeWebError("Account not found", "PROTOCOL")
     let applied = false
     try {
-      await this.client.applyReferralReward(account.authCookie, account.workspaceId, referralId)
+      await this.client.applyReferralReward(account.authCookie, account.workspaceId, referralId, options)
       applied = true
     } catch (cause) {
       if (cause instanceof OpenCodeWebError && cause.code === "AUTH") this.repository.markAuthError(accountId, true)
       throw cause
     }
-    // 兑换成功后立即同步一次额度，让奖励计入后的余额尽快反映到配额。
-    if (applied) await this.refreshUsage(accountId).catch(() => undefined)
+    // 兑换成功后立即同步一次额度，让奖励计入后的余额尽快反映到配额（同一用户动作延续，带上操作者 UA）。
+    if (applied) await this.refreshUsage(accountId, options).catch(() => undefined)
     return { applied, account: this.repository.get(accountId) }
   }
 }

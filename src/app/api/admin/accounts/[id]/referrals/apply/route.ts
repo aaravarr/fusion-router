@@ -23,9 +23,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return Response.json({ error: { type: "validation_error", message: "邀请奖励仅支持 OpenCode Go 账号" } }, { status: 400 })
   }
   const referralId = parsed.data.referralId
+  // 兑换是管理台用户实时触发的动作：透传操作者浏览器的真实 UA 给 opencode.ai 控制面。
+  const userAgent = request.headers.get("user-agent") ?? undefined
   // 业务失败一律不用 401/403，避免前端 sessionFetch 误判会话过期跳登录。
   try {
-    const result = await getOpenCodeWebService(user.id).applyReferralReward(id, referralId)
+    const result = await getOpenCodeWebService(user.id).applyReferralReward(id, referralId, { userAgent })
     return Response.json(result)
   } catch (cause) {
     const authenticationFailed = cause instanceof OpenCodeWebError && cause.code === "AUTH"

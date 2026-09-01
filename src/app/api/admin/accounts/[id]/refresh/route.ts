@@ -22,7 +22,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (existing.poolType !== "opencode-go") {
       return Response.json(await syncProviderAccount(user.id, id, db))
     }
-    const account = await getOpenCodeWebService(user.id).refreshUsage(id)
+    // 管理台手动刷新：透传操作者浏览器的真实 UA 给 opencode.ai 控制面（后台定时刷新不传，走默认 UA）。
+    const account = await getOpenCodeWebService(user.id).refreshUsage(id, { userAgent: request.headers.get("user-agent") ?? undefined })
     const quotaWindows = db.prepare(`SELECT kind,usage_percent,reset_at,source,last_observed_at
       FROM quota_windows WHERE owner_user_id=? AND account_id=? ORDER BY last_observed_at DESC`)
       .all(user.id, id) as Record<string, unknown>[]

@@ -16,7 +16,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     return Response.json({ error: { type: "validation_error", message: "邀请奖励仅支持 OpenCode Go 账号" } }, { status: 400 })
   }
   try {
-    const summary = await getOpenCodeWebService(user.id).listReferralRewards(id)
+    // 管理台用户实时查询：透传操作者浏览器的真实 UA 给 opencode.ai 控制面。
+    const summary = await getOpenCodeWebService(user.id).listReferralRewards(id, { userAgent: request.headers.get("user-agent") ?? undefined })
     return Response.json(summary)
   } catch (cause) {
     const authenticationFailed = cause instanceof OpenCodeWebError && cause.code === "AUTH"

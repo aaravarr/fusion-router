@@ -3,6 +3,20 @@ import { isLoginPage, parseGoDashboard, parseGoKeys, parseReferralSummary, type 
 const BASE = "https://opencode.ai"
 export const MANAGED_GO_KEY_NAME = "OpenCode to API"
 
+/** 后台任务（无用户在场）访问 opencode.ai 控制面时使用的网关自标识 UA。 */
+export const OPENCODE_WEB_DEFAULT_USER_AGENT = "Mozilla/5.0 OpenCode-to-API/1.0"
+
+/**
+ * 有用户在场的调用（管理台操作、扩展上报）可透传操作者的真实 UA；
+ * 缺省或空值时回落到 OPENCODE_WEB_DEFAULT_USER_AGENT，后台路径行为不变。
+ */
+export interface OpenCodeWebCallOptions {
+  userAgent?: string | null
+}
+
+/** 内部重试标记（action 发现缓存失效后重试一次）。 */
+type RetryOption = { retried?: boolean }
+
 export class OpenCodeWebError extends Error {
   constructor(message: string, readonly code: "AUTH" | "PROTOCOL" | "UPSTREAM" = "UPSTREAM") {
     super(message)
@@ -28,34 +42,34 @@ export class OpenCodeWebClient {
     this.timeoutMs = options.timeoutMs ?? 30_000
   }
 
-  async dashboard(authCookie: string, workspaceId: string): Promise<ParsedGoDashboard> {
-    const html = await this.page(authCookie, workspaceId, "go")
+  async dashboard(authCookie: string, workspaceId: string, options: OpenCodeWebCallOptions = {}): Promise<ParsedGoDashboard> {
+    const html = await this.page(authCookie, workspaceId, "go", options)
     return parseGoDashboard(html)
   }
 
-  async keys(authCookie: string, workspaceId: string): Promise<ParsedGoKey[]> {
-    return parseGoKeys(await this.page(authCookie, workspaceId, "keys"))
+  async keys(authCookie: string, workspaceId: string, options: OpenCodeWebCallOptions = {}): Promise<ParsedGoKey[]> {
+    return parseGoKeys(await this.page(authCookie, workspaceId, "keys", options))
   }
 
-  async ensureManagedKey(authCookie: string, workspaceId: string): Promise<ParsedGoKey> {
-    const current = await this.keys(authCookie, workspaceId)
+  async ensureManagedKey(authCookie: string, workspaceId: string, options: OpenCodeWebCallOptions = {}): Promise<ParsedGoKey> {
+    const current = await this.keys(authCookie, workspaceId, options)
     const existing = current.find((key) => key.name === MANAGED_GO_KEY_NAME)
     if (existing) return existing
     const previousIds = new Set(current.map((key) => key.id))
-    await this.createKey(authCookie, workspaceId, false)
-    const refreshed = await this.keys(authCookie, workspaceId)
+    await this.createKey(authCookie, workspaceId, options)
+    const refreshed = await this.keys(authCookie, workspaceId, options)
     const created = refreshed.find((key) => key.name === MANAGED_GO_KEY_NAME && !previousIds.has(key.id))
       ?? refreshed.find((key) => key.name === MANAGED_GO_KEY_NAME)
     if (!created) throw new OpenCodeWebError("Created Go API key was not returned by the Keys page", "PROTOCOL")
     return created
   }
 
-  private async createKey(authCookie: string, workspaceId: string, retried: boolean): Promise<void> {
-    const actionId = await this.discoverCreateAction(retried)
+  private async createKey(authCookie: string, workspaceId: string, options: OpenCodeWebCallOptions & RetryOption = {}): Promise<void> {
+    const actionId = await this.discoverCreateAction(Boolean(options.retried))
     const body = new URLSearchParams({ workspaceID: workspaceId, name: MANAGED_GO_KEY_NAME })
     const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}`, {
       method: "POST",
-      headers: this.headers(authCookie, `${BASE}/workspace/${workspaceId}/keys`, "application/x-www-form-urlencoded"),
+      headers: this.headers(authCookie, { referer: `${BASE}/workspace/${workspaceId}/keys`, contentType: "application/x-www-form-urlencoded", userAgent: options.userAgent }),
       body,
       redirect: "manual",
       signal: AbortSignal.timeout(this.timeoutMs),
@@ -63,17 +77,17 @@ export class OpenCodeWebClient {
     const flash = parseFlash(response.headers.get("set-cookie"))
     const failed = response.status !== 302 || !flash || flash.error === true
       || Boolean(flash.result && typeof flash.result === "object" && "error" in flash.result)
-    if (failed && !retried) {
+    if (failed && !options.retried) {
       cachedCreateAction = undefined
-      return this.createKey(authCookie, workspaceId, true)
+      return this.createKey(authCookie, workspaceId, { ...options, retried: true })
     }
     if (failed) throw new OpenCodeWebError(`OpenCode key creation failed (${response.status})`, response.status === 401 || response.status === 403 ? "AUTH" : "UPSTREAM")
   }
 
-  private async page(authCookie: string, workspaceId: string, page: "go" | "keys"): Promise<string> {
+  private async page(authCookie: string, workspaceId: string, page: "go" | "keys", options: OpenCodeWebCallOptions = {}): Promise<string> {
     assertWorkspaceId(workspaceId)
     const response = await this.fetcher(`${BASE}/workspace/${workspaceId}/${page}`, {
-      headers: this.headers(authCookie),
+      headers: this.headers(authCookie, { userAgent: options.userAgent }),
       redirect: "manual",
       signal: AbortSignal.timeout(this.timeoutMs),
     })
@@ -84,25 +98,26 @@ export class OpenCodeWebClient {
     return html
   }
 
-  private headers(authCookie: string, referer = `${BASE}/`, contentType?: string): Headers {
+  private headers(authCookie: string, options: { referer?: string; contentType?: string; userAgent?: string | null } = {}): Headers {
     if (!authCookie.trim()) throw new OpenCodeWebError("OpenCode auth cookie is required", "AUTH")
     const headers = new Headers({
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       Cookie: `auth=${authCookie}`,
       Origin: BASE,
-      Referer: referer,
-      "User-Agent": "Mozilla/5.0 OpenCode-to-API/1.0",
+      Referer: options.referer ?? `${BASE}/`,
+      // 有用户在场时透传操作者真实 UA；空值回落到网关自标识默认值（后台任务）。
+      "User-Agent": options.userAgent?.trim() || OPENCODE_WEB_DEFAULT_USER_AGENT,
     })
-    if (contentType) headers.set("Content-Type", contentType)
+    if (options.contentType) headers.set("Content-Type", options.contentType)
     return headers
   }
 
-  async setChinaProviders(authCookie: string, workspaceId: string, enabled: boolean): Promise<void> {
+  async setChinaProviders(authCookie: string, workspaceId: string, enabled: boolean, options: OpenCodeWebCallOptions = {}): Promise<void> {
     const actionId = await this.discoverProviderRoutingAction()
     const body = new URLSearchParams({ workspaceID: workspaceId, useChinaProviders: enabled ? "on" : "" })
     const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}`, {
       method: "POST",
-      headers: this.headers(authCookie, `${BASE}/workspace/${workspaceId}/go`, "application/x-www-form-urlencoded"),
+      headers: this.headers(authCookie, { referer: `${BASE}/workspace/${workspaceId}/go`, contentType: "application/x-www-form-urlencoded", userAgent: options.userAgent }),
       body,
       redirect: "manual",
       signal: AbortSignal.timeout(this.timeoutMs),
@@ -113,28 +128,28 @@ export class OpenCodeWebClient {
     if (failed) throw new OpenCodeWebError(`OpenCode provider routing update failed (${response.status})`, response.status === 401 || response.status === 403 ? "AUTH" : "UPSTREAM")
   }
 
-  async referrals(authCookie: string, workspaceId: string): Promise<ParsedReferralSummary | null> {
-    const html = await this.page(authCookie, workspaceId, "go")
+  async referrals(authCookie: string, workspaceId: string, options: OpenCodeWebCallOptions = {}): Promise<ParsedReferralSummary | null> {
+    const html = await this.page(authCookie, workspaceId, "go", options)
     return parseReferralSummary(html)
   }
 
   // 兑换邀请奖励。上游当前版本只接受 GET /_server?id=<actionId>&args=<JSON 数组> 通道
   // （POST + URLSearchParams 会 302 到 /auth/authorize，见实测）。成功通道为 302 + Set-Cookie flash（flash 无 error），
   // 失败判定兼容 flash.error / flash.result.error（302 通道）与 x-error 响应头（200 通道）。
-  async applyReferralReward(authCookie: string, workspaceId: string, referralId: string, retried = false): Promise<void> {
-    const actionId = await this.discoverApplyRewardAction(retried)
+  async applyReferralReward(authCookie: string, workspaceId: string, referralId: string, options: OpenCodeWebCallOptions & RetryOption = {}): Promise<void> {
+    const actionId = await this.discoverApplyRewardAction(Boolean(options.retried))
     const args = JSON.stringify([workspaceId, referralId])
     const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}&args=${encodeURIComponent(args)}`, {
       method: "GET",
-      headers: this.serverActionHeaders(authCookie, actionId, `${BASE}/workspace/${workspaceId}/go`),
+      headers: this.serverActionHeaders(authCookie, actionId, `${BASE}/workspace/${workspaceId}/go`, options),
       redirect: "manual",
       signal: AbortSignal.timeout(this.timeoutMs),
     })
     const redirecting = response.status === 302
     const xError = response.headers.get("x-error")
-    if ((redirecting || xError !== null || !response.ok) && !retried) {
+    if ((redirecting || xError !== null || !response.ok) && !options.retried) {
       cachedApplyRewardAction = undefined
-      return this.applyReferralReward(authCookie, workspaceId, referralId, true)
+      return this.applyReferralReward(authCookie, workspaceId, referralId, { ...options, retried: true })
     }
     if (redirecting) {
       const location = response.headers.get("location") ?? ""
@@ -169,8 +184,8 @@ export class OpenCodeWebClient {
     return action
   }
 
-  private serverActionHeaders(authCookie: string, actionId: string, referer: string): Headers {
-    const headers = this.headers(authCookie, referer)
+  private serverActionHeaders(authCookie: string, actionId: string, referer: string, options: OpenCodeWebCallOptions = {}): Headers {
+    const headers = this.headers(authCookie, { referer, userAgent: options.userAgent })
     headers.set("X-Server-Id", actionId)
     headers.set("X-Server-Instance", `server-fn:${Date.now().toString(36)}`)
     return headers

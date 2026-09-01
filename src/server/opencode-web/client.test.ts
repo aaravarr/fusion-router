@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { clearActionDiscoveryCacheForTests, MANAGED_GO_KEY_NAME, OpenCodeWebClient, OpenCodeWebError } from "./client"
+import { clearActionDiscoveryCacheForTests, MANAGED_GO_KEY_NAME, OpenCodeWebClient, OpenCodeWebError, OPENCODE_WEB_DEFAULT_USER_AGENT } from "./client"
 
 const existing = (id: string, name = MANAGED_GO_KEY_NAME, key = "sk-managed") => `{id:"${id}",name:"${name}",key:"${key}",createdAt:"x",userID:"usr_1",email:"a@example.com",keyDisplay:"sk-..."}`
 const hash = "a".repeat(64)
@@ -152,6 +152,74 @@ describe("OpenCode referral 兑换", () => {
     await expect(new OpenCodeWebClient({ fetch: fetcher }).applyReferralReward("cookie", "wrk_abc", "ref_x")).rejects.toMatchObject({
       code: "AUTH",
     } satisfies Partial<OpenCodeWebError>)
+  })
+})
+
+describe("OpenCode Web client User-Agent 透传", () => {
+  beforeEach(() => clearActionDiscoveryCacheForTests())
+
+  const operatorUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0"
+
+  // 兑换 action 发现的通用资源响应；/_server 行为由各用例的 onServer 自定义。
+  const discoveryFetcher = (onServer: (init: RequestInit | undefined, callCount: number) => Response) => {
+    let serverCalls = 0
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url === "https://opencode.ai/") return new Response('<script src="/_build/assets/entry-client-demo.js"></script>')
+      if (url.endsWith("entry-client-demo.js")) return new Response('src/routes/workspace/[id]/go/index.tsx import("./index-go.js")')
+      if (url.endsWith("index-go.js")) return new Response(`const a=createServerReference("${hash}"); const b=action(a,"go.referral.reward.apply")`)
+      if (url.startsWith("https://opencode.ai/_server?id=")) { serverCalls += 1; return onServer(init, serverCalls) }
+      return new Response(null, { status: 404 })
+    })
+    return { fetcher: fetcher as unknown as typeof fetch, serverCallCount: () => serverCalls }
+  }
+
+  it("apply 传入 userAgent：/_server 兑换请求携带操作者 UA", async () => {
+    const { fetcher } = discoveryFetcher((init) => {
+      expect(new Headers(init?.headers).get("user-agent")).toBe(operatorUA)
+      return new Response(";ok", { status: 200 })
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).applyReferralReward("cookie", "wrk_abc", "ref_1", { userAgent: operatorUA })).resolves.toBeUndefined()
+  })
+
+  it("apply 不传 userAgent：/_server 兑换请求用网关自标识默认 UA", async () => {
+    const { fetcher } = discoveryFetcher((init) => {
+      expect(new Headers(init?.headers).get("user-agent")).toBe(OPENCODE_WEB_DEFAULT_USER_AGENT)
+      return new Response(";ok", { status: 200 })
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).applyReferralReward("cookie", "wrk_abc", "ref_1")).resolves.toBeUndefined()
+  })
+
+  it("apply 重试后仍携带传入的 userAgent", async () => {
+    const { fetcher, serverCallCount } = discoveryFetcher((init, callCount) => {
+      expect(new Headers(init?.headers).get("user-agent")).toBe(operatorUA)
+      // 第一次 302 且无 flash → 触发重试；第二次 200 成功
+      return callCount === 1 ? new Response(null, { status: 302 }) : new Response(";ok", { status: 200 })
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).applyReferralReward("cookie", "wrk_abc", "ref_1", { userAgent: operatorUA })).resolves.toBeUndefined()
+    expect(serverCallCount()).toBe(2)
+  })
+
+  it("referrals 传入 userAgent：go 页面请求携带操作者 UA；不传则用默认", async () => {
+    const goPage = "<html>go.referral.get;referralCode:\"X\",rewardAmount:0,rewards:[]</html>"
+    const seen: Array<string | null> = []
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith("/workspace/wrk_abc/go")) { seen.push(new Headers(init?.headers).get("user-agent")); return new Response(goPage) }
+      return new Response(null, { status: 404 })
+    }) as typeof fetch
+    const client = new OpenCodeWebClient({ fetch: fetcher })
+    await client.referrals("cookie", "wrk_abc", { userAgent: operatorUA })
+    await client.referrals("cookie", "wrk_abc")
+    expect(seen).toEqual([operatorUA, OPENCODE_WEB_DEFAULT_USER_AGENT])
+  })
+
+  it("空白 userAgent 回落默认值", async () => {
+    const { fetcher } = discoveryFetcher((init) => {
+      expect(new Headers(init?.headers).get("user-agent")).toBe(OPENCODE_WEB_DEFAULT_USER_AGENT)
+      return new Response(";ok", { status: 200 })
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).applyReferralReward("cookie", "wrk_abc", "ref_1", { userAgent: "   " })).resolves.toBeUndefined()
   })
 })
 
