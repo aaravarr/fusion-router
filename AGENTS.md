@@ -22,7 +22,7 @@
 
 ### 各 provider 原生接口格式能力（2026-08-09 确认）
 
-- opencode-go：chat completions + Anthropic messages（上游 opencode.ai 原生支持 /messages）；**responses 入口走网关转 chat 的兼容链路，不是原生**。
+- opencode-go：chat completions + Anthropic messages（上游 opencode.ai 原生支持 /messages）；responses 入口对**白名单模型**（`OPENCODE_GO_RESPONSES_MODELS`，见 `src/server/providers/opencode-go.ts`）原生直通，其余模型走网关转 chat 的兼容链路。**muse-\* 模型上游仅支持 /v1/responses**（2026-09-03 实测，commit `40aecd5`）：网关对 `/^muse-/i` 命中模型只声明 responses 能力，chat/messages 入口自动转换接力上行。
 - kimi-code：chat completions + Anthropic messages（官方 Claude Code 接入方式 `ANTHROPIC_BASE_URL=https://api.kimi.com/coding/` → `/v1/messages`，文档确认）。
 - openai (codex)：仅 responses（chatgpt.com/backend-api/codex）。
 - xai-grok：chat completions + responses（cli-chat-proxy.grok.com）；**不支持 messages（用户确认，已知事实）**。
