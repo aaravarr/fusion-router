@@ -155,6 +155,87 @@ describe("OpenCode referral 兑换", () => {
   })
 })
 
+describe("OpenCode allowTraining 开关", () => {
+  beforeEach(() => clearActionDiscoveryCacheForTests())
+
+  const goChunk = `const setGoAllowTraining_action=createServerReference("${hash}"); const setGoAllowTraining=action(setGoAllowTraining_action,"go.allowTraining.set")`
+
+  // action 发现链：首页 → entry-client → go 路由 chunk；/_server 行为由 onServer 自定义。
+  const discoveryFetcher = (onServer: (url: string, init: RequestInit | undefined) => Response) => {
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url === "https://opencode.ai/") return new Response('<script src="/_build/assets/entry-client-demo.js"></script>')
+      if (url.endsWith("entry-client-demo.js")) return new Response('src/routes/workspace/[id]/go/index.tsx import("./index-go.js")')
+      if (url.endsWith("index-go.js")) return new Response(goChunk)
+      if (url.startsWith("https://opencode.ai/_server?id=")) return onServer(url, init)
+      return new Response(null, { status: 404 })
+    })
+    return fetcher as unknown as typeof fetch
+  }
+
+  const flashOk = () => new Response(null, { status: 302, headers: { "set-cookie": `flash=${encodeURIComponent(JSON.stringify({ result: { data: null } }))}; Path=/` } })
+
+  it("开启时向上游表单提交 allowTraining=true（显式布尔串，对齐上游 === \"true\" 解析）", async () => {
+    const fetcher = discoveryFetcher((url, init) => {
+      expect(url).toContain(`id=${hash}`)
+      expect(init?.method).toBe("POST")
+      const body = String(init?.body)
+      expect(body).toContain("workspaceID=wrk_abc")
+      expect(body).toContain("allowTraining=true")
+      return flashOk()
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setAllowTraining("cookie", "wrk_abc", true)).resolves.toBeUndefined()
+  })
+
+  it("关闭时提交 allowTraining=false", async () => {
+    const fetcher = discoveryFetcher((_url, init) => {
+      expect(String(init?.body)).toContain("allowTraining=false")
+      return flashOk()
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setAllowTraining("cookie", "wrk_abc", false)).resolves.toBeUndefined()
+  })
+
+  it("302 但缺少 flash 时失败关闭", async () => {
+    const fetcher = discoveryFetcher(() => new Response(null, { status: 302 }))
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setAllowTraining("cookie", "wrk_abc", true)).rejects.toMatchObject({ code: "UPSTREAM" } satisfies Partial<OpenCodeWebError>)
+  })
+
+  it("flash 带业务错误时抛出 UPSTREAM", async () => {
+    const fetcher = discoveryFetcher(() => new Response(null, { status: 302, headers: { "set-cookie": `flash=${encodeURIComponent(JSON.stringify({ error: true, result: { error: "nope" } }))}; Path=/` } }))
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setAllowTraining("cookie", "wrk_abc", true)).rejects.toMatchObject({ code: "UPSTREAM" } satisfies Partial<OpenCodeWebError>)
+  })
+
+  it("401/403 标记 AUTH", async () => {
+    const fetcher = discoveryFetcher(() => new Response(null, { status: 403 }))
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setAllowTraining("cookie", "wrk_abc", true)).rejects.toMatchObject({ code: "AUTH" } satisfies Partial<OpenCodeWebError>)
+  })
+
+  it("chunk 缺少 go.allowTraining.set 时抛 PROTOCOL", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url === "https://opencode.ai/") return new Response('<script src="/_build/assets/entry-client-demo.js"></script>')
+      if (url.endsWith("entry-client-demo.js")) return new Response('src/routes/workspace/[id]/go/index.tsx import("./index-go.js")')
+      if (url.endsWith("index-go.js")) return new Response(`const a=createServerReference("${hash}"); const b=action(a,"go.providerRouting.set")`)
+      return new Response(null, { status: 404 })
+    }) as unknown as typeof fetch
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setAllowTraining("cookie", "wrk_abc", true)).rejects.toMatchObject({ code: "PROTOCOL", message: "OpenCode go.allowTraining.set action was not found" } satisfies Partial<OpenCodeWebError>)
+  })
+
+  it("传入 userAgent 时 /_server 请求携带操作者 UA；不传用网关默认", async () => {
+    const operatorUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0"
+    const seen: Array<string | null> = []
+    const fetcher = discoveryFetcher((_url, init) => {
+      seen.push(new Headers(init?.headers).get("user-agent"))
+      return flashOk()
+    })
+    const client = new OpenCodeWebClient({ fetch: fetcher })
+    await client.setAllowTraining("cookie", "wrk_abc", true, { userAgent: operatorUA })
+    clearActionDiscoveryCacheForTests()
+    await client.setAllowTraining("cookie", "wrk_abc", false)
+    expect(seen).toEqual([operatorUA, OPENCODE_WEB_DEFAULT_USER_AGENT])
+  })
+})
+
 describe("OpenCode Web client User-Agent 透传", () => {
   beforeEach(() => clearActionDiscoveryCacheForTests())
 

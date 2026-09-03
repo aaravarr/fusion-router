@@ -23,6 +23,7 @@ export interface ParsedGoDashboard {
   hasManageSubscriptionButton: boolean
   useBalance: boolean | null
   useChinaProviders: boolean | null
+  allowTraining: boolean | null
   usage: ParsedUsage | null
 }
 
@@ -100,6 +101,10 @@ export function parseGoDashboard(html: string): ParsedGoDashboard {
   const zenSubscriptionId = /subscriptionID:"([^"]+)"/.exec(html)?.[1] ?? null
   const subscribedText = html.includes("You are subscribed to OpenCode Go")
   const chinaValue = /name="useChinaProviders"\s+value="(true|false)"/.exec(html)?.[1]
+  // allowTraining 当前状态只能从 hydration 数据读取（与 useBalance 同一序列化对象）。
+  // 上游页面里 name="allowTraining" 的 hidden input 持有的是点击后要提交的“目标值”
+  // （sub().allowTraining ? "false" : "true"，与当前状态相反），不能用它判断当前状态。
+  const training = /(?:allowTraining|["']allowTraining["']|\\["']allowTraining\\["'])\s*:\s*(?:\$R\[\d+\]=)?(true|false|!0|!1)/.exec(html)?.[1]
   return {
     subscriptionExists: subscribedText || Boolean(goSubscriptionId),
     goSubscriptionId,
@@ -108,6 +113,7 @@ export function parseGoDashboard(html: string): ParsedGoDashboard {
     hasManageSubscriptionButton: html.includes("Manage Subscription"),
     useBalance: balance === "true" || balance === "!0" ? true : balance === "false" || balance === "!1" ? false : null,
     useChinaProviders: chinaValue === "true" ? true : chinaValue === "false" ? false : null,
+    allowTraining: training === "true" || training === "!0" ? true : training === "false" || training === "!1" ? false : null,
     usage,
   }
 }

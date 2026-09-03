@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   billing_guard TEXT NOT NULL DEFAULT 'UNVERIFIED',
   use_balance INTEGER,
   use_china_providers INTEGER NOT NULL DEFAULT 0,
+  allow_training INTEGER NOT NULL DEFAULT 0,
   go_key_id TEXT NOT NULL,
   credential_source TEXT NOT NULL DEFAULT 'BROWSER_EXTENSION',
   extension_version TEXT,
@@ -439,6 +440,7 @@ function ensureCurrentAccountColumns(db: AppDatabase): void {
     ["last_error", "TEXT"],
     ["external_id", "TEXT"],
     ["use_china_providers", "INTEGER NOT NULL DEFAULT 0"],
+    ["allow_training", "INTEGER NOT NULL DEFAULT 0"],
   ] as const
   for (const [name, definition] of additions) {
     if (!existing.has(name)) db.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${definition}`)

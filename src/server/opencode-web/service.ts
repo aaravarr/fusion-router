@@ -50,6 +50,8 @@ export class OpenCodeWebService {
       billingGuard: verified ? "VERIFIED_GO_ONLY" : dashboard.useBalance ? "PAYG_FALLBACK_ENABLED" : "UNVERIFIED",
       useBalance: dashboard.useBalance,
       useChinaProviders: dashboard.useChinaProviders ?? true,
+      // 上游默认关闭（row.allowTraining ?? false）；解析不到时按关闭记录，下次同步再校正。
+      allowTraining: dashboard.allowTraining ?? false,
       usage: dashboard.usage,
     })
     if (verified) {
@@ -82,6 +84,7 @@ export class OpenCodeWebService {
         billingGuard: verified ? "VERIFIED_GO_ONLY" : dashboard.useBalance ? "PAYG_FALLBACK_ENABLED" : "UNVERIFIED",
         useBalance: dashboard.useBalance,
         ...(dashboard.useChinaProviders == null ? {} : { useChinaProviders: dashboard.useChinaProviders }),
+        ...(dashboard.allowTraining == null ? {} : { allowTraining: dashboard.allowTraining }),
         lastSyncedAt: syncedAt,
       })
       if (dashboard.usage) this.repository.updateUsage(accountId, dashboard.usage)
@@ -104,6 +107,19 @@ export class OpenCodeWebService {
       throw cause
     }
     this.repository.updateState(accountId, { useChinaProviders: enabled })
+    return this.repository.get(accountId)
+  }
+
+  async setAllowTraining(accountId: string, enabled: boolean, options: OpenCodeWebCallOptions = {}) {
+    const account = this.repository.getCredential(accountId)
+    if (!account) throw new OpenCodeWebError("Account not found", "PROTOCOL")
+    try {
+      await this.client.setAllowTraining(account.authCookie, account.workspaceId, enabled, options)
+    } catch (cause) {
+      if (cause instanceof OpenCodeWebError && cause.code === "AUTH") this.repository.markAuthError(accountId, true)
+      throw cause
+    }
+    this.repository.updateState(accountId, { allowTraining: enabled })
     return this.repository.get(accountId)
   }
 

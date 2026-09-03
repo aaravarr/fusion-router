@@ -53,6 +53,7 @@ export interface Account {
   hasManageSubscriptionButton?: boolean;
   useBalance?: boolean | null;
   useChinaProviders?: boolean;
+  allowTraining?: boolean;
   workspaceId?: string | null;
   goKeyId?: string | null;
   credentialSource?: string | null;

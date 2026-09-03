@@ -7,14 +7,14 @@ import { OpenCodeWebError as ClientError } from "./client"
 import type { OpenCodeWebClient } from "./client"
 
 const encryptionKey = Buffer.alloc(32, 3).toString("base64")
-const dashboard = { subscriptionExists: true, goSubscriptionId: "sub_go_1", isZenSubscribed: false, zenSubscriptionId: null, hasManageSubscriptionButton: true, useBalance: false as boolean | null, useChinaProviders: null, usage: { FIVE_HOUR: { usagePercent: 10, resetInSeconds: 100 }, WEEKLY: { usagePercent: 20, resetInSeconds: 200 }, MONTHLY: { usagePercent: 30, resetInSeconds: 300 } } }
+const dashboard = { subscriptionExists: true, goSubscriptionId: "sub_go_1", isZenSubscribed: false, zenSubscriptionId: null, hasManageSubscriptionButton: true, useBalance: false as boolean | null, useChinaProviders: null, allowTraining: null as boolean | null, usage: { FIVE_HOUR: { usagePercent: 10, resetInSeconds: 100 }, WEEKLY: { usagePercent: 20, resetInSeconds: 200 }, MONTHLY: { usagePercent: 30, resetInSeconds: 300 } } }
 
 function setup() {
   const db = createDatabase(":memory:"); const now = new Date().toISOString()
   db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
     .run("owner", "owner", "owner", "Owner", "USER", "hash", now, now)
   const repository = new AccountRepository("owner", db, new SecretVault(encryptionKey))
-  const client = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_1", name: "OpenCode to API", key: "sk-go-secret", userId: "usr", email: "a@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard), setChinaProviders: vi.fn().mockResolvedValue(undefined), referrals: vi.fn().mockResolvedValue(null), applyReferralReward: vi.fn().mockResolvedValue(undefined) } as unknown as OpenCodeWebClient
+  const client = { ensureManagedKey: vi.fn().mockResolvedValue({ id: "key_1", name: "OpenCode to API", key: "sk-go-secret", userId: "usr", email: "a@example.com", keyDisplay: "sk-..." }), dashboard: vi.fn().mockResolvedValue(dashboard), setChinaProviders: vi.fn().mockResolvedValue(undefined), setAllowTraining: vi.fn().mockResolvedValue(undefined), referrals: vi.fn().mockResolvedValue(null), applyReferralReward: vi.fn().mockResolvedValue(undefined) } as unknown as OpenCodeWebClient
   return { db, repository, client, service: new OpenCodeWebService("owner", repository, client) }
 }
 
@@ -50,6 +50,65 @@ describe("OpenCodeWebService", () => {
     repository.updateState(first!.id, { name: "手动名称" })
     const second = await service.report({ authCookie: "new-browser-cookie-secret", workspaceId: "wrk_repeat" })
     expect(second).toMatchObject({ name: "手动名称", extensionVersion: "2.0.0" })
+  })
+
+  it("report 持久化 dashboard 的 allowTraining，解析缺失时按上游默认记为关闭", async () => {
+    const { client, service } = setup()
+    vi.mocked(client.dashboard).mockResolvedValue({ ...dashboard, allowTraining: true })
+    const on = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_train_on" })
+    expect(on).toMatchObject({ allowTraining: true })
+    vi.mocked(client.dashboard).mockResolvedValue({ ...dashboard, allowTraining: null })
+    const unknown = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_train_unknown" })
+    expect(unknown).toMatchObject({ allowTraining: false })
+  })
+
+  it("refreshUsage 同步 allowTraining；上游页面缺失该字段时保留本地状态", async () => {
+    const { client, repository, service } = setup()
+    const account = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_train_sync" })
+    expect(account).toMatchObject({ allowTraining: false })
+    vi.mocked(client.dashboard).mockResolvedValue({ ...dashboard, allowTraining: true })
+    await service.refreshUsage(account!.id)
+    expect(repository.get(account!.id)).toMatchObject({ allowTraining: true })
+    vi.mocked(client.dashboard).mockResolvedValue({ ...dashboard, allowTraining: null })
+    await service.refreshUsage(account!.id)
+    expect(repository.get(account!.id)).toMatchObject({ allowTraining: true })
+  })
+})
+
+describe("OpenCodeWebService setAllowTraining", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  it("调用上游表单并持久化开启状态", async () => {
+    const { client, repository, service } = setup()
+    const account = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_train_set" })
+    const updated = await service.setAllowTraining(account!.id, true)
+    expect(client.setAllowTraining).toHaveBeenCalledWith("browser-cookie-secret", "wrk_train_set", true, {})
+    expect(updated).toMatchObject({ allowTraining: true })
+    expect(repository.get(account!.id)).toMatchObject({ allowTraining: true })
+    await service.setAllowTraining(account!.id, false)
+    expect(client.setAllowTraining).toHaveBeenLastCalledWith("browser-cookie-secret", "wrk_train_set", false, {})
+    expect(repository.get(account!.id)).toMatchObject({ allowTraining: false })
+  })
+
+  it("透传操作者 UA 给上游表单提交", async () => {
+    const { client, service } = setup()
+    const account = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_train_ua" })
+    const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0"
+    await service.setAllowTraining(account!.id, true, { userAgent: ua })
+    expect(client.setAllowTraining).toHaveBeenCalledWith("browser-cookie-secret", "wrk_train_ua", true, { userAgent: ua })
+  })
+
+  it("AUTH 失败标记凭据失效且不更新本地状态", async () => {
+    const { client, repository, service } = setup()
+    const account = await service.report({ authCookie: "browser-cookie-secret", workspaceId: "wrk_train_auth" })
+    vi.mocked(client.setAllowTraining).mockRejectedValue(new ClientError("OpenCode auth cookie has expired", "AUTH"))
+    await expect(service.setAllowTraining(account!.id, true)).rejects.toMatchObject({ code: "AUTH" })
+    expect(repository.get(account!.id)).toMatchObject({ authState: "REAUTH_REQUIRED", allowTraining: false })
+  })
+
+  it("账号不存在时抛 PROTOCOL", async () => {
+    const { service } = setup()
+    await expect(service.setAllowTraining("missing", true)).rejects.toMatchObject({ code: "PROTOCOL" })
   })
 })
 

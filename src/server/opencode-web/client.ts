@@ -31,6 +31,7 @@ export interface OpenCodeWebClientOptions {
 
 let cachedCreateAction: string | undefined
 let cachedProviderRoutingAction: string | undefined
+let cachedAllowTrainingAction: string | undefined
 let cachedApplyRewardAction: string | undefined
 
 export class OpenCodeWebClient {
@@ -128,6 +129,25 @@ export class OpenCodeWebClient {
     if (failed) throw new OpenCodeWebError(`OpenCode provider routing update failed (${response.status})`, response.status === 401 || response.status === 403 ? "AUTH" : "UPSTREAM")
   }
 
+  // 「允许使用请求数据进行训练的模型」开关（上游 providers 区独立表单，action 名 go.allowTraining.set）。
+  // 上游服务端按 form.get("allowTraining") === "true" 做显式布尔解析（sst/opencode console 源码实证），
+  // 因此提交值必须是 "true"/"false"，而不是 chinaProviders 链路沿用的原生 checkbox 值 "on"/"".
+  async setAllowTraining(authCookie: string, workspaceId: string, enabled: boolean, options: OpenCodeWebCallOptions = {}): Promise<void> {
+    const actionId = await this.discoverAllowTrainingAction()
+    const body = new URLSearchParams({ workspaceID: workspaceId, allowTraining: enabled ? "true" : "false" })
+    const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}`, {
+      method: "POST",
+      headers: this.headers(authCookie, { referer: `${BASE}/workspace/${workspaceId}/go`, contentType: "application/x-www-form-urlencoded", userAgent: options.userAgent }),
+      body,
+      redirect: "manual",
+      signal: AbortSignal.timeout(this.timeoutMs),
+    })
+    const flash = parseFlash(response.headers.get("set-cookie"))
+    const failed = response.status !== 302 || !flash || flash.error === true
+      || Boolean(flash.result && typeof flash.result === "object" && "error" in flash.result)
+    if (failed) throw new OpenCodeWebError(`OpenCode allow training update failed (${response.status})`, response.status === 401 || response.status === 403 ? "AUTH" : "UPSTREAM")
+  }
+
   async referrals(authCookie: string, workspaceId: string, options: OpenCodeWebCallOptions = {}): Promise<ParsedReferralSummary | null> {
     const html = await this.page(authCookie, workspaceId, "go", options)
     return parseReferralSummary(html)
@@ -171,13 +191,7 @@ export class OpenCodeWebClient {
 
   private async discoverApplyRewardAction(force: boolean): Promise<string> {
     if (!force && cachedApplyRewardAction) return cachedApplyRewardAction
-    const home = await this.fetchText(`${BASE}/`)
-    const entry = /(?:src|href)="(\/_build\/assets\/entry-client-[^"]+\.js)"/.exec(home)?.[1]
-    if (!entry) throw new OpenCodeWebError("OpenCode client entry asset was not found", "PROTOCOL")
-    const manifest = await this.fetchText(`${BASE}${entry}`)
-    const route = /src\/routes\/workspace\/\[id\]\/go\/index\.tsx[\s\S]{0,700}?import\([\s\S]*?"(\.\/index-[^"]+\.js)"/.exec(manifest)?.[1]
-    if (!route) throw new OpenCodeWebError("OpenCode Go route asset was not found", "PROTOCOL")
-    const chunk = await this.fetchText(new URL(route, `${BASE}${entry}`).toString())
+    const chunk = await this.fetchGoRouteChunk()
     const action = /createServerReference\("([a-f0-9]{64})"\);[\s\S]{0,200}?action\(\w+,\s*"go\.referral\.reward\.apply"\)/.exec(chunk)?.[1]
     if (!action) throw new OpenCodeWebError("OpenCode go.referral.reward.apply action was not found", "PROTOCOL")
     cachedApplyRewardAction = action
@@ -193,17 +207,31 @@ export class OpenCodeWebClient {
 
   private async discoverProviderRoutingAction(force = false): Promise<string> {
     if (!force && cachedProviderRoutingAction) return cachedProviderRoutingAction
+    const chunk = await this.fetchGoRouteChunk()
+    const action = /createServerReference\("([a-f0-9]{64})"\);\s*const\s+\w+\s*=\s*action\(\w+,\s*"go\.providerRouting\.set"\)/.exec(chunk)?.[1]
+    if (!action) throw new OpenCodeWebError("OpenCode go.providerRouting.set action was not found", "PROTOCOL")
+    cachedProviderRoutingAction = action
+    return action
+  }
+
+  private async discoverAllowTrainingAction(force = false): Promise<string> {
+    if (!force && cachedAllowTrainingAction) return cachedAllowTrainingAction
+    const chunk = await this.fetchGoRouteChunk()
+    const action = /createServerReference\("([a-f0-9]{64})"\);\s*const\s+\w+\s*=\s*action\(\w+,\s*"go\.allowTraining\.set"\)/.exec(chunk)?.[1]
+    if (!action) throw new OpenCodeWebError("OpenCode go.allowTraining.set action was not found", "PROTOCOL")
+    cachedAllowTrainingAction = action
+    return action
+  }
+
+  /** 抓取 workspace go 路由的客户端 chunk（providers 区所有表单 action 都在其中）。 */
+  private async fetchGoRouteChunk(): Promise<string> {
     const home = await this.fetchText(`${BASE}/`)
     const entry = /(?:src|href)="(\/_build\/assets\/entry-client-[^"]+\.js)"/.exec(home)?.[1]
     if (!entry) throw new OpenCodeWebError("OpenCode client entry asset was not found", "PROTOCOL")
     const manifest = await this.fetchText(`${BASE}${entry}`)
     const route = /src\/routes\/workspace\/\[id\]\/go\/index\.tsx[\s\S]{0,700}?import\([\s\S]*?"(\.\/index-[^"]+\.js)"/.exec(manifest)?.[1]
     if (!route) throw new OpenCodeWebError("OpenCode Go route asset was not found", "PROTOCOL")
-    const chunk = await this.fetchText(new URL(route, `${BASE}${entry}`).toString())
-    const action = /createServerReference\("([a-f0-9]{64})"\);\s*const\s+\w+\s*=\s*action\(\w+,\s*"go\.providerRouting\.set"\)/.exec(chunk)?.[1]
-    if (!action) throw new OpenCodeWebError("OpenCode go.providerRouting.set action was not found", "PROTOCOL")
-    cachedProviderRoutingAction = action
-    return action
+    return this.fetchText(new URL(route, `${BASE}${entry}`).toString())
   }
 
   private async discoverCreateAction(force: boolean): Promise<string> {
@@ -241,6 +269,7 @@ function parseFlash(value: string | null): { error?: boolean; result?: unknown }
 export function clearActionDiscoveryCacheForTests(): void {
   cachedCreateAction = undefined
   cachedProviderRoutingAction = undefined
+  cachedAllowTrainingAction = undefined
   cachedApplyRewardAction = undefined
 }
 

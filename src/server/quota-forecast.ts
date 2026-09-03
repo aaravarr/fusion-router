@@ -181,6 +181,7 @@ function mapAccount(row: Record<string, unknown>): AccountRecord {
     billingGuard: row.billing_guard as AccountRecord["billingGuard"],
     useBalance: row.use_balance === null ? null : Boolean(row.use_balance),
     useChinaProviders: Boolean(row.use_china_providers),
+    allowTraining: Boolean(row.allow_training),
     credentialVersion: Number(row.credential_version),
     lastUsageCheckAt: row.last_usage_check_at == null ? null : String(row.last_usage_check_at),
     nextUsageCheckAt: String(row.next_usage_check_at),

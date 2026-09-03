@@ -349,6 +349,27 @@ export function AccountsPage() {
     }
   }
 
+  async function setAllowTraining(account: Account, enabled: boolean) {
+    setBusyId(account.id);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      const response = await adminFetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ allowTraining: enabled }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "更新训练数据模型开关失败");
+      if (payload?.account) setSelected(payload.account as Account);
+      setActionNotice(enabled ? "已允许使用请求数据进行训练的模型" : "已禁止使用请求数据进行训练的模型");
+      await resource.refresh();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "更新训练数据模型开关失败");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
 
 
   function toggleAccountSelection(accountId: string) {
@@ -732,6 +753,7 @@ export function AccountsPage() {
         onRefresh={refreshAccount}
         onDelete={deleteAccount}
         onSetChinaProviders={setChinaProviders}
+        onSetAllowTraining={setAllowTraining}
         onCopyCredential={copyAccountCredential}
         busy={Boolean(selected && busyId === selected.id)}
       />
@@ -780,7 +802,7 @@ function ConnectorStep({ index, icon: Icon, title, description, children }: { in
   );
 }
 
-function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRefresh, onDelete, onSetChinaProviders, onCopyCredential, busy }: {
+function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRefresh, onDelete, onSetChinaProviders, onSetAllowTraining, onCopyCredential, busy }: {
   account: Account | null;
   onOpenChange: (open: boolean) => void;
   onPreferred: (account: Account) => Promise<void>;
@@ -788,6 +810,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
   onRefresh: (account: Account) => Promise<void>;
   onDelete: (account: Account) => Promise<void>;
   onSetChinaProviders: (account: Account, enabled: boolean) => Promise<void>;
+  onSetAllowTraining: (account: Account, enabled: boolean) => Promise<void>;
   onCopyCredential: (account: Account) => Promise<boolean>;
   busy: boolean;
 }) {
@@ -859,14 +882,23 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                       <DetailRow label="Use balance" value={account.useBalance === false ? "已关闭" : account.useBalance === true ? "已开启（禁止路由）" : "未知（禁止路由）"} />
                     </div>
                   </DetailSection>
-                  <DetailSection title="Provider 路由" description="控制 OpenCode Go 用于路由的提供商，是否启用部署在中国的模型。">
-                    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border bg-[#fafafa] px-3.5 py-3">
-                      <span className="min-w-0">
-                        <span className="block text-sm font-medium">启用部署在中国的模型</span>
-                        <span className="mt-1 block text-[11px] leading-4 text-muted-foreground">开启后模型路由可使用部署在中国的模型提供商。</span>
-                      </span>
-                      <input type="checkbox" className="size-4" checked={account.useChinaProviders === true} disabled={busy} onChange={(event) => void onSetChinaProviders(account, event.currentTarget.checked)} />
-                    </label>
+                  <DetailSection title="Provider 路由" description="控制 OpenCode Go 用于路由的提供商，与 OpenCode 控制台「提供商」设置区保持一致。">
+                    <div className="space-y-2.5">
+                      <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border bg-[#fafafa] px-3.5 py-3">
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">允许使用请求数据进行训练的模型</span>
+                          <span className="mt-1 block text-[11px] leading-4 text-muted-foreground">开启后模型路由可使用会使用请求数据进行训练的模型提供商。</span>
+                        </span>
+                        <input type="checkbox" className="size-4" checked={account.allowTraining === true} disabled={busy} onChange={(event) => void onSetAllowTraining(account, event.currentTarget.checked)} />
+                      </label>
+                      <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border bg-[#fafafa] px-3.5 py-3">
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">启用部署在中国的模型</span>
+                          <span className="mt-1 block text-[11px] leading-4 text-muted-foreground">开启后模型路由可使用部署在中国的模型提供商。</span>
+                        </span>
+                        <input type="checkbox" className="size-4" checked={account.useChinaProviders === true} disabled={busy} onChange={(event) => void onSetChinaProviders(account, event.currentTarget.checked)} />
+                      </label>
+                    </div>
                   </DetailSection>
                   <DetailSection title="邀请奖励" description="OpenCode Go 邀请计划发放的奖励，兑换后计入可用余额。">
                     <InviteRewardsSection account={account} adminFetch={adminFetch} onRefresh={onRefresh} />

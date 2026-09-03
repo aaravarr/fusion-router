@@ -12,6 +12,7 @@ const patchSchema = z.object({
   reason: z.string().trim().min(1).max(200).optional(),
   confirmSpendingBlocked: z.boolean().optional(),
   chinaProviders: z.boolean().optional(),
+  allowTraining: z.boolean().optional(),
 })
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -47,6 +48,17 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       await getOpenCodeWebService(user.id).setChinaProviders(id, value.chinaProviders, { userAgent: request.headers.get("user-agent") ?? undefined })
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "更新 OpenCode 提供商路由失败"
+      return Response.json({ error: { type: "opencode_action_failed", message } }, { status: cause instanceof Error && cause.message.includes("auth") ? 401 : 502 })
+    }
+  }
+  if (value.allowTraining !== undefined) {
+    if (existing.poolType !== "opencode-go") {
+      return Response.json({ error: { type: "validation_error", message: "该开关仅支持 OpenCode Go 账号" } }, { status: 400 })
+    }
+    try {
+      await getOpenCodeWebService(user.id).setAllowTraining(id, value.allowTraining, { userAgent: request.headers.get("user-agent") ?? undefined })
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "更新 OpenCode 训练数据模型开关失败"
       return Response.json({ error: { type: "opencode_action_failed", message } }, { status: cause instanceof Error && cause.message.includes("auth") ? 401 : 502 })
     }
   }

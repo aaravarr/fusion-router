@@ -63,6 +63,7 @@ export interface AccountRecord {
   billingGuard: BillingGuard
   useBalance: boolean | null
   useChinaProviders: boolean
+  allowTraining: boolean
   credentialVersion: number
   lastUsageCheckAt: string | null
   nextUsageCheckAt: string

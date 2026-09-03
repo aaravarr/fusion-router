@@ -38,6 +38,23 @@ describe("OpenCode Go 页面解析", () => {
     expect(parseGoDashboard(usageHtml)).toMatchObject({ subscriptionExists: false, goSubscriptionId: null, useBalance: null })
   })
 
+  it("解析 allowTraining 当前状态（hydration 数据，兼容序列化变体）", () => {
+    expect(parseGoDashboard(`${usageHtml},useBalance:false,allowTraining:true`)).toMatchObject({ allowTraining: true })
+    expect(parseGoDashboard(`${usageHtml},useBalance:false,allowTraining:false`)).toMatchObject({ allowTraining: false })
+    expect(parseGoDashboard(`${usageHtml},"allowTraining":true`)).toMatchObject({ allowTraining: true })
+    expect(parseGoDashboard(`${usageHtml},\\"allowTraining\\":false`)).toMatchObject({ allowTraining: false })
+    expect(parseGoDashboard(`${usageHtml},mine:!0,allowTraining:!0`)).toMatchObject({ allowTraining: true })
+    expect(parseGoDashboard(`${usageHtml},mine:!0,allowTraining:!1`)).toMatchObject({ allowTraining: false })
+    expect(parseGoDashboard(usageHtml)).toMatchObject({ allowTraining: null })
+  })
+
+  it("allowTraining 不读取 hidden input（其值为上游设计的反转目标值，非当前状态）", () => {
+    // 上游表单 <input type="hidden" name="allowTraining" value={sub().allowTraining ? "false" : "true"}>
+    // 当前为关闭时渲染 value="true"——若误读该值会把关闭误判为开启。
+    expect(parseGoDashboard('<input type="hidden" name="workspaceID"><input type="hidden" name="allowTraining" value="true">')).toMatchObject({ allowTraining: null })
+    expect(parseGoDashboard('<input type="hidden" name="allowTraining" value="false">,allowTraining:!0')).toMatchObject({ allowTraining: true })
+  })
+
   it("区分 Zen 与 Go 的订阅 ID", () => {
     expect(parseGoDashboard(`liteSubscriptionID:"sub_go",subscriptionID:"sub_zen"`)).toMatchObject({
       subscriptionExists: true,
