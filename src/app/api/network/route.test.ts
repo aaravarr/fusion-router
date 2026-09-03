@@ -82,4 +82,26 @@ describe("/api/network", () => {
     const response = await PUT(put({ groups: [bad] }))
     expect(response.status).toBe(400)
   })
+
+  it("只配代理地址的节点保存成功并回读 proxyUrl", async () => {
+    const g = { ...group("g1", []), mirrors: [{ id: "m", name: "M", url: "", proxyUrl: "socks5://127.0.0.1:1080", enabled: true }] }
+    const response = await PUT(put({ groups: [g] }))
+    expect(response.status).toBe(200)
+    const payload = (await response.json()) as { groups: Array<{ mirrors: Array<{ url: string; proxyUrl?: string }> }> }
+    expect(payload.groups[0].mirrors).toEqual([{ id: "m", name: "M", url: "", proxyUrl: "socks5://127.0.0.1:1080", enabled: true }])
+  })
+
+  it("镜像地址与代理地址都为空返回 400", async () => {
+    const g = { ...group("g1", []), mirrors: [{ id: "m", name: "M", url: "", enabled: true }] }
+    const response = await PUT(put({ groups: [g] }))
+    expect(response.status).toBe(400)
+    const payload = (await response.json()) as { error: { message: string } }
+    expect(payload.error.message).toContain("至少填一个")
+  })
+
+  it("非法代理地址返回 400", async () => {
+    const g = { ...group("g1", []), mirrors: [{ id: "m", name: "M", url: "", proxyUrl: "ftp://127.0.0.1:21", enabled: true }] }
+    const response = await PUT(put({ groups: [g] }))
+    expect(response.status).toBe(400)
+  })
 })

@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest"
-import { applyMirrorTarget, getSystemFallbackGroups, invalidateMirrorCacheForOwner, resolveMirrorUrlForContext, selectDomainMirror, selectDomainMirrorGroup, selectMirrorGroupTarget } from "./api-fetch"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { apiFetchWithMirrorContext, applyMirrorTarget, getProxyDispatcher, getSystemFallbackGroups, invalidateMirrorCacheForOwner, resolveMirrorPlanForContext, resolveMirrorUrlForContext, selectDomainMirror, selectDomainMirrorGroup, selectMirrorGroupTarget } from "./api-fetch"
 import { createDatabase, type AppDatabase } from "./db"
 import type { DomainMirrorConfig, DomainMirrorGroup } from "./settings"
 
@@ -61,6 +61,88 @@ describe("domain mirror selection", () => {
   it("expands $host to the original host before appending the request path", () => {
     expect(applyMirrorTarget("https://api.x.ai/v1/models?limit=10", { id: "m", name: "M", url: "https://mirror.ahao1.tech/$host", enabled: true }))
       .toBe("https://mirror.ahao1.tech/api.x.ai/v1/models?limit=10")
+  })
+
+  it("只配代理的节点不做 URL 替换，原样返回原始地址", () => {
+    expect(applyMirrorTarget("https://api.x.ai/v1/models?limit=10", { id: "m", name: "M", url: "", proxyUrl: "http://127.0.0.1:7890", enabled: true }))
+      .toBe("https://api.x.ai/v1/models?limit=10")
+  })
+})
+
+describe("mirror node proxyUrl", () => {
+  function setGlobalDatabase(value: AppDatabase | undefined) {
+    (globalThis as typeof globalThis & { __opencodeApiDb?: AppDatabase }).__opencodeApiDb = value
+  }
+  afterEach(() => { setGlobalDatabase(undefined); vi.unstubAllGlobals() })
+
+  function makeProxyDb(mirrors: unknown[]) {
+    const db = createDatabase(":memory:")
+    const now = new Date().toISOString()
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run("user-p", "p", "p", "P", "USER", "ACTIVE", "h", now, now)
+    db.prepare("INSERT INTO user_mirror_groups(id,owner_user_id,name,enabled,domains_json,account_ids_json,mirrors_json,rules_json,request_rules_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run("g-p", "user-p", "g-p", 1, JSON.stringify(["api.example.com"]), JSON.stringify([]), JSON.stringify(mirrors), JSON.stringify([]), null, now, now)
+    return db
+  }
+
+  // 镜像组按 owner 有 10s TTL 缓存：换库后必须失效，否则读到上一个用例的组
+  function useProxyDb(mirrors: unknown[]) {
+    setGlobalDatabase(makeProxyDb(mirrors))
+    invalidateMirrorCacheForOwner("user-p")
+  }
+
+  it("选中带代理节点时 plan 携带 proxyUrl，URL 仍按镜像地址重写", () => {
+    useProxyDb([{ id: "m", name: "M", url: "https://mirror.example.com/$host", proxyUrl: "http://127.0.0.1:7890", enabled: true }])
+    expect(resolveMirrorPlanForContext("https://api.example.com/v1/models", { ownerUserId: "user-p" }))
+      .toEqual({ url: "https://mirror.example.com/api.example.com/v1/models", proxyUrl: "http://127.0.0.1:7890" })
+  })
+
+  it("只配代理的节点：plan 保留原始 URL 并携带 proxyUrl", () => {
+    useProxyDb([{ id: "m", name: "M", url: "", proxyUrl: "socks5://127.0.0.1:1080", enabled: true }])
+    expect(resolveMirrorPlanForContext("https://api.example.com/v1/models?x=1", { ownerUserId: "user-p" }))
+      .toEqual({ url: "https://api.example.com/v1/models?x=1", proxyUrl: "socks5://127.0.0.1:1080" })
+  })
+
+  it("未配置代理的节点：plan 不含 proxyUrl", () => {
+    useProxyDb([{ id: "m", name: "M", url: "https://mirror.example.com", enabled: true }])
+    expect(resolveMirrorPlanForContext("https://api.example.com/x", { ownerUserId: "user-p" }))
+      .toEqual({ url: "https://mirror.example.com/x" })
+  })
+
+  it("getProxyDispatcher 按 proxyUrl 缓存复用同一实例", () => {
+    const a = getProxyDispatcher("http://127.0.0.1:7890")
+    expect(getProxyDispatcher("http://127.0.0.1:7890")).toBe(a)
+    expect(getProxyDispatcher("http://127.0.0.1:7891")).not.toBe(a)
+  })
+
+  it("apiFetchWithMirrorContext 命中代理节点时 fetch 收到重写 URL 与共享 dispatcher", async () => {
+    useProxyDb([{ id: "m", name: "M", url: "https://mirror.example.com/$host", proxyUrl: "http://127.0.0.1:7890", enabled: true }])
+    const spy = vi.fn(async () => new Response("ok"))
+    vi.stubGlobal("fetch", spy)
+    await apiFetchWithMirrorContext("https://api.example.com/v1/models", { method: "GET" }, { ownerUserId: "user-p" })
+    expect(spy).toHaveBeenCalledTimes(1)
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit & { dispatcher?: unknown }]
+    expect(url).toBe("https://mirror.example.com/api.example.com/v1/models")
+    expect(init.dispatcher).toBe(getProxyDispatcher("http://127.0.0.1:7890"))
+  })
+
+  it("apiFetchWithMirrorContext 命中只配代理的节点时 fetch 收到原始 URL 与 dispatcher", async () => {
+    useProxyDb([{ id: "m", name: "M", url: "", proxyUrl: "socks5://127.0.0.1:1080", enabled: true }])
+    const spy = vi.fn(async () => new Response("ok"))
+    vi.stubGlobal("fetch", spy)
+    await apiFetchWithMirrorContext("https://api.example.com/v1/models", { method: "GET" }, { ownerUserId: "user-p" })
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit & { dispatcher?: unknown }]
+    expect(url).toBe("https://api.example.com/v1/models")
+    expect(init.dispatcher).toBe(getProxyDispatcher("socks5://127.0.0.1:1080"))
+  })
+
+  it("apiFetchWithMirrorContext 无代理节点时不传 dispatcher", async () => {
+    useProxyDb([{ id: "m", name: "M", url: "https://mirror.example.com", enabled: true }])
+    const spy = vi.fn(async () => new Response("ok"))
+    vi.stubGlobal("fetch", spy)
+    await apiFetchWithMirrorContext("https://api.example.com/v1/models", { method: "GET" }, { ownerUserId: "user-p" })
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit & { dispatcher?: unknown }]
+    expect(init.dispatcher).toBeUndefined()
   })
 })
 describe("request mirror rules (body/header)", () => {

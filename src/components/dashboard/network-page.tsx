@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
-interface MirrorTarget { id: string; name: string; url: string; enabled: boolean }
+interface MirrorTarget { id: string; name: string; url: string; proxyUrl?: string; enabled: boolean }
 interface MirrorRule { id: string; pattern: string; mirrorId: string; enabled: boolean }
 interface RequestMirrorRule { id: string; enabled: boolean; source: "body" | "header"; field: string; operator: "equals" | "notEquals" | "contains" | "startsWith"; value: string }
 interface RequestMirrorRuleGroup { id: string; enabled: boolean; mirrorId: string; condition: "and" | "or"; rules: RequestMirrorRule[] }
@@ -241,7 +241,8 @@ function DomainMirrorsEditor({ value, editor, onChange }: { value: MirrorGroup[]
                   <div key={mirror.id} className="flex min-w-0 items-center gap-1.5 text-[11.5px]">
                     <span className={`size-[7px] shrink-0 rounded-full ${mirror.enabled ? "bg-success" : "bg-[#d6d6d4]"}`} aria-hidden="true" />
                     <span className="font-medium">{mirror.name}</span>
-                    <span className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground">{mirror.url}</span>
+                    <span className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground">{mirror.url || "（直连原始地址）"}</span>
+                    {mirror.proxyUrl ? <span className="shrink-0 rounded border bg-[#f7f7f5] px-1 py-px font-mono text-[9.5px] text-muted-foreground" title={mirror.proxyUrl}>代理</span> : null}
                   </div>
                 ))}
                 {!group.mirrors.length ? <span className="text-xs text-muted-foreground">无节点</span> : null}
@@ -277,6 +278,7 @@ function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group
   const [mirrors, setMirrors] = useState<MirrorTarget[]>(group?.mirrors ?? []);
   const [mirrorName, setMirrorName] = useState("");
   const [mirrorUrl, setMirrorUrl] = useState("");
+  const [mirrorProxyUrl, setMirrorProxyUrl] = useState("");
   const [rules, setRules] = useState<MirrorRule[]>(group?.rules ?? []);
   const [pattern, setPattern] = useState("");
   const [ruleMirrorId, setRuleMirrorId] = useState("");
@@ -293,7 +295,8 @@ function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group
     setDomains((current) => new Set([...current, domain])); setCustomDomain("");
   }
   function removeMirror(id: string) { setMirrors((current) => current.filter((mirror) => mirror.id !== id)); setRules((current) => current.filter((rule) => rule.mirrorId !== id)); setRequestRules((current) => current.filter((group) => group.mirrorId !== id)); if (ruleMirrorId === id) setRuleMirrorId(""); }
-  const valid = Boolean(name.trim() && domains.size && mirrors.length);
+  const mirrorIncomplete = mirrors.some((mirror) => !mirror.url.trim() && !(mirror.proxyUrl ?? "").trim());
+  const valid = Boolean(name.trim() && domains.size && mirrors.length && !mirrorIncomplete);
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[calc(100dvh-48px)] flex-col overflow-hidden p-0 sm:max-w-[860px]">
@@ -357,33 +360,42 @@ function MirrorGroupDialog({ group, groups, accounts, onClose, onSave }: { group
                 <span className="text-[11.5px] font-medium text-muted-foreground">{mirrors.length} 个节点</span>
               </Label>
               <div className="mt-1.5 space-y-0">
-                {mirrors.map((mirror) => (
-                  <div key={mirror.id} className="grid items-center gap-2 py-1.5 sm:grid-cols-[18px_1.2fr_1.6fr_26px]">
-                    <button
-                      type="button"
-                      className={cn("relative mx-auto grid size-[15px] place-items-center rounded-[3px] border-[1.5px] text-white before:absolute before:-inset-3 before:content-['']", mirror.enabled ? "border-accent-blue bg-accent-blue" : "border-[#d6d6d4] bg-white")}
-                      onClick={() => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, enabled: !item.enabled } : item))}
-                      aria-label={mirror.enabled ? "停用节点" : "启用节点"}
-                    >
-                      <Check className={cn("size-2.5", mirror.enabled ? "opacity-100" : "opacity-0")} strokeWidth={3} />
-                    </button>
-                    <Input className="h-8 text-xs" value={mirror.name} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, name: event.target.value } : item))} placeholder="节点名称" />
-                    <Input className="h-8 font-mono text-xs" value={mirror.url} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, url: event.target.value } : item))} placeholder="https://mirror.example.com/$host" />
-                    <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => removeMirror(mirror.id)} aria-label="删除节点"><Trash2 /></Button>
-                  </div>
-                ))}
-                <div className="grid items-center gap-2 border-t py-1.5 sm:grid-cols-[18px_1.2fr_1.6fr_auto]">
+                {mirrors.map((mirror) => {
+                  const missingBoth = !mirror.url.trim() && !(mirror.proxyUrl ?? "").trim();
+                  return (
+                    <div key={mirror.id} className="border-b border-dashed border-border/60 py-1.5 last:border-b-0">
+                      <div className="grid items-center gap-2 sm:grid-cols-[18px_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1.3fr)_26px]">
+                        <button
+                          type="button"
+                          className={cn("relative mx-auto grid size-[15px] place-items-center rounded-[3px] border-[1.5px] text-white before:absolute before:-inset-3 before:content-['']", mirror.enabled ? "border-accent-blue bg-accent-blue" : "border-[#d6d6d4] bg-white")}
+                          onClick={() => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, enabled: !item.enabled } : item))}
+                          aria-label={mirror.enabled ? "停用节点" : "启用节点"}
+                        >
+                          <Check className={cn("size-2.5", mirror.enabled ? "opacity-100" : "opacity-0")} strokeWidth={3} />
+                        </button>
+                        <Input className="h-8 text-xs" value={mirror.name} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, name: event.target.value } : item))} placeholder="节点名称" />
+                        <Input className={cn("h-8 font-mono text-xs", missingBoth && "border-destructive/60")} value={mirror.url} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, url: event.target.value } : item))} placeholder="镜像地址 https://mirror.example.com/$host" />
+                        <Input className={cn("h-8 font-mono text-xs", missingBoth && "border-destructive/60")} value={mirror.proxyUrl ?? ""} onChange={(event) => setMirrors((current) => current.map((item) => item.id === mirror.id ? { ...item, proxyUrl: event.target.value } : item))} placeholder="系统代理 http://127.0.0.1:7890 或 socks5://…" />
+                        <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => removeMirror(mirror.id)} aria-label="删除节点"><Trash2 /></Button>
+                      </div>
+                      {missingBoth ? <p className="mt-1 pl-[26px] text-[11px] text-destructive">镜像地址与代理地址至少填一个；只填代理时请求经代理直连原始上游</p> : null}
+                    </div>
+                  );
+                })}
+                <div className="grid items-center gap-2 border-t py-1.5 sm:grid-cols-[18px_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1.3fr)_auto]">
                   <span aria-hidden="true" />
                   <Input className="h-8 text-xs" value={mirrorName} onChange={(event) => setMirrorName(event.target.value)} placeholder="节点名称" />
-                  <Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="https://mirror.example.com/$host" />
+                  <Input className="h-8 font-mono text-xs" value={mirrorUrl} onChange={(event) => setMirrorUrl(event.target.value)} placeholder="镜像地址 https://mirror.example.com/$host" />
+                  <Input className="h-8 font-mono text-xs" value={mirrorProxyUrl} onChange={(event) => setMirrorProxyUrl(event.target.value)} placeholder="系统代理 http://127.0.0.1:7890 或 socks5://…" />
                   <button
                     type="button"
-                    onClick={() => { if (mirrorName.trim() && mirrorUrl.trim()) { setMirrors((current) => [...current, { id: newId("mirror"), name: mirrorName.trim(), url: mirrorUrl.trim(), enabled: true }]); setMirrorName(""); setMirrorUrl(""); } }}
+                    onClick={() => { const url = mirrorUrl.trim(); const proxy = mirrorProxyUrl.trim(); if (mirrorName.trim() && (url || proxy)) { setMirrors((current) => [...current, { id: newId("mirror"), name: mirrorName.trim(), url, ...(proxy ? { proxyUrl: proxy } : {}), enabled: true }]); setMirrorName(""); setMirrorUrl(""); setMirrorProxyUrl(""); } }}
                     className="inline-flex min-w-16 shrink-0 items-center gap-1.5 rounded border border-dashed border-accent-blue-soft-2 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap text-accent-blue transition-colors hover:bg-accent-blue-soft"
                   >
                     <Plus className="size-3.5" />添加
                   </button>
                 </div>
+                <p className="pt-1 text-[11px] leading-4.5 text-muted-foreground">镜像地址与系统代理地址至少填一个；两者同时配置时经代理访问镜像地址，只填代理时经代理直连原始上游。</p>
               </div>
             </div>
             <details className="overflow-hidden rounded-md border" open>

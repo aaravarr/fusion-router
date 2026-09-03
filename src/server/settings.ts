@@ -37,7 +37,10 @@ export type SystemSecretKey =
 export interface DomainMirrorTarget {
   id: string;
   name: string;
+  /** 镜像地址（支持 $host 占位符）。与 proxyUrl 至少填一个；为空时请求经代理直连原始上游，不做 URL 替换。 */
   url: string;
+  /** 系统代理地址（http/https/socks5，如 http://127.0.0.1:7890）。可选；配置后该节点的上游请求经此代理发出。 */
+  proxyUrl?: string;
   enabled: boolean;
 }
 
@@ -404,6 +407,17 @@ export function validateMirrorUrl(value: string, label: string): void {
   }
 }
 
+/** 系统代理地址校验：协议限定 undici ProxyAgent 原生支持的 http/https/socks5/socks；允许内嵌凭据。 */
+export function validateProxyUrl(value: string, label: string): void {
+  try {
+    const url = new URL(value)
+    if (!["http:", "https:", "socks5:", "socks:"].includes(url.protocol)) throw new Error("protocol")
+    if (!url.hostname) throw new Error("hostname")
+  } catch {
+    throw new Error(`${label} 的代理地址不是有效 URL（支持 http/https/socks5，如 http://127.0.0.1:7890）`)
+  }
+}
+
 export function validateMirrorPattern(pattern: string, label: string): void {
   try { new RegExp(pattern) } catch { throw new Error(`${label} 包含无效正则: ${pattern}`) }
   if (pattern.length > 500 || /\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) throw new Error(`${label} 包含可能导致性能问题的正则: ${pattern}`)
@@ -419,13 +433,17 @@ export function validateDomainMirrorGroups(input: DomainMirrorGroup[]): DomainMi
     const mirrorIds = new Set<string>()
     const mirrors = group.mirrors.map((mirror) => {
       const mirrorId = mirror.id.trim()
-      const urlValue = mirror.url.trim().replace(/\/$/, "")
+      const urlValue = (mirror.url ?? "").trim().replace(/\/$/, "")
+      const proxyUrl = (mirror.proxyUrl ?? "").trim().replace(/\/$/, "")
       if (!mirrorId || mirrorIds.has(mirrorId)) throw new Error(`镜像组 ${group.name || id} 的节点 ID 为空或重复`)
       mirrorIds.add(mirrorId)
-      validateMirrorUrl(urlValue, `镜像组 ${group.name || id}/${mirror.name || mirrorId}`)
-      return { id: mirrorId, name: mirror.name.trim() || mirrorId, url: urlValue, enabled: mirror.enabled !== false }
+      const label = `镜像组 ${group.name || id}/${mirror.name || mirrorId}`
+      if (!urlValue && !proxyUrl) throw new Error(`${label} 的镜像地址与代理地址至少填一个`)
+      if (urlValue) validateMirrorUrl(urlValue, label)
+      if (proxyUrl) validateProxyUrl(proxyUrl, label)
+      return { id: mirrorId, name: mirror.name.trim() || mirrorId, url: urlValue, ...(proxyUrl ? { proxyUrl } : {}), enabled: mirror.enabled !== false }
     })
-    if (!mirrors.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个镜像地址`)
+    if (!mirrors.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个镜像节点`)
     const domains = [...new Set(group.domains.map((domain) => domain.trim().toLowerCase()).filter(Boolean))]
     if (!domains.length) throw new Error(`镜像组 ${group.name || id} 至少需要一个原始域名`)
     const rules = group.rules.map((rule) => {
@@ -449,11 +467,11 @@ export function normalizeDomainMirrorMap(value: unknown): DomainMirrorMap {
     }
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue
     const config = raw as Partial<DomainMirrorConfig>
-    const mirrors = Array.isArray(config.mirrors) ? config.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && typeof item.url === "string")) : []
+    const mirrors = Array.isArray(config.mirrors) ? config.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && (typeof item.url === "string" || typeof item.proxyUrl === "string"))) : []
     if (!mirrors.length) continue
         const configMirrorIds = new Set(mirrors.map((item) => item.id))
     result[domain.toLowerCase()] = {
-      mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: item.url, enabled: item.enabled !== false })),
+      mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: typeof item.url === "string" ? item.url : "", ...(typeof item.proxyUrl === "string" && item.proxyUrl ? { proxyUrl: item.proxyUrl } : {}), enabled: item.enabled !== false })),
       accountAssignments: config.accountAssignments && typeof config.accountAssignments === "object" ? config.accountAssignments : {},
       rules: Array.isArray(config.rules) ? config.rules.filter((item): item is DomainMirrorRule => Boolean(item && typeof item.id === "string" && typeof item.pattern === "string" && typeof item.mirrorId === "string")) : [],
       requestRules: normalizeRequestMirrorRuleGroups(config.requestRules, configMirrorIds),
@@ -468,7 +486,7 @@ export function normalizeDomainMirrorGroups(value: unknown): DomainMirrorGroup[]
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return []
     const group = raw as Partial<DomainMirrorGroup>
     if (typeof group.id !== "string" || !group.id || !Array.isArray(group.domains) || !Array.isArray(group.mirrors)) return []
-    const mirrors = group.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && typeof item.url === "string"))
+    const mirrors = group.mirrors.filter((item): item is DomainMirrorTarget => Boolean(item && typeof item.id === "string" && (typeof item.url === "string" || typeof item.proxyUrl === "string")))
     if (!mirrors.length) return []
         const groupMirrorIds = new Set(mirrors.map((item) => item.id))
     return [{
@@ -477,7 +495,7 @@ export function normalizeDomainMirrorGroups(value: unknown): DomainMirrorGroup[]
       enabled: group.enabled !== false,
       domains: group.domains.filter((domain): domain is string => typeof domain === "string").map((domain) => domain.toLowerCase()),
       accountIds: Array.isArray(group.accountIds) ? group.accountIds.filter((id): id is string => typeof id === "string") : [],
-      mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: item.url, enabled: item.enabled !== false })),
+      mirrors: mirrors.map((item) => ({ id: item.id, name: typeof item.name === "string" ? item.name : item.id, url: typeof item.url === "string" ? item.url : "", ...(typeof item.proxyUrl === "string" && item.proxyUrl ? { proxyUrl: item.proxyUrl } : {}), enabled: item.enabled !== false })),
       rules: Array.isArray(group.rules) ? group.rules.filter((item): item is DomainMirrorRule => Boolean(item && typeof item.id === "string" && typeof item.pattern === "string" && typeof item.mirrorId === "string")) : [],
       requestRules: normalizeRequestMirrorRuleGroups(group.requestRules, groupMirrorIds),
     }]

@@ -13,6 +13,24 @@
 import type { DomainMirrorConfig, DomainMirrorGroup, DomainMirrorRule, DomainMirrorTarget, RequestMirrorRule, RequestMirrorRuleGroup, RequestMirrorSource } from "./settings"
 import { getDatabase } from "./db"
 import { createHash } from "node:crypto"
+import { ProxyAgent } from "undici"
+
+// undici dispatcher 不在标准 RequestInit 类型里；Node 全局 fetch 即 undici，运行时接受该字段。
+type FetchInit = RequestInit & { dispatcher?: import("undici").Dispatcher }
+
+// ProxyAgent 连接池按代理地址复用：同一 proxyUrl 全进程共享一个实例，避免每请求新建连接池。
+// 实例不主动 close——代理配置长期有效，进程退出时随全局 agent 一起回收。
+const proxyAgents = new Map<string, ProxyAgent>()
+
+/** 取某代理地址的共享 ProxyAgent（支持 http/https/socks5/socks，undici 原生）。 */
+export function getProxyDispatcher(proxyUrl: string): ProxyAgent {
+  let agent = proxyAgents.get(proxyUrl)
+  if (!agent) {
+    agent = new ProxyAgent(proxyUrl)
+    proxyAgents.set(proxyUrl, agent)
+  }
+  return agent
+}
 
 type Row = Record<string, unknown>
 
@@ -149,6 +167,8 @@ export function selectDomainMirrorGroup(groups: DomainMirrorGroup[], hostname: s
 }
 
 export function applyMirrorTarget(originalUrl: string, target: DomainMirrorTarget): string {
+  // 只配代理、不配镜像地址的节点：不做 URL 替换，请求经代理直达原始上游 host。
+  if (!target.url) return originalUrl
   const parsed = new URL(originalUrl)
   const mirror = new URL(target.url.replaceAll("$host", parsed.host))
   parsed.protocol = mirror.protocol
@@ -157,23 +177,36 @@ export function applyMirrorTarget(originalUrl: string, target: DomainMirrorTarge
   return parsed.toString()
 }
 
-export function resolveMirrorUrlForContext(originalUrl: string, context: MirrorSelectionContext = {}): string {
+/** 镜像解析结果：重写后的 URL + 可选的上游代理地址（选中节点配置了 proxyUrl 时携带）。 */
+export interface MirrorFetchPlan {
+  url: string
+  proxyUrl?: string
+}
+
+export function resolveMirrorPlanForContext(originalUrl: string, context: MirrorSelectionContext = {}): MirrorFetchPlan {
   try {
     const parsed = new URL(originalUrl)
     const owner = context.ownerUserId ?? context.account?.ownerUserId ?? null
     const groups = owner ? getMirrorGroupsForOwner(owner) : getSystemFallbackGroups()
-    if (groups.length === 0) return originalUrl
+    if (groups.length === 0) return { url: originalUrl }
     const hostname = parsed.hostname.toLowerCase()
     const accountId = context.account?.id
     const group = selectDomainMirrorGroup(groups, hostname, accountId)
     if (group) {
       const selected = selectMirrorGroupTarget(group, { ...context, shardKey: context.shardKey || accountId || hostname })
-      if (selected) return applyMirrorTarget(parsed.toString(), selected)
+      if (selected) {
+        const url = applyMirrorTarget(parsed.toString(), selected)
+        return selected.proxyUrl ? { url, proxyUrl: selected.proxyUrl } : { url }
+      }
     }
-    return originalUrl
+    return { url: originalUrl }
   } catch {
-    return originalUrl
+    return { url: originalUrl }
   }
+}
+
+export function resolveMirrorUrlForContext(originalUrl: string, context: MirrorSelectionContext = {}): string {
+  return resolveMirrorPlanForContext(originalUrl, context).url
 }
 
 // Drop-in replacement for global fetch — resolves mirrors then delegates.
@@ -183,12 +216,14 @@ export function apiFetch(input: string | URL | Request, init?: RequestInit): Pro
 
 export function apiFetchWithMirrorContext(input: string | URL | Request, init?: RequestInit, context: MirrorSelectionContext = {}): Promise<Response> {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
-  const resolved = resolveMirrorUrlForContext(url, context)
+  const plan = resolveMirrorPlanForContext(url, context)
+  const finalInit: FetchInit = { ...init }
+  if (plan.proxyUrl) finalInit.dispatcher = getProxyDispatcher(plan.proxyUrl)
   if (typeof input === "string" || input instanceof URL) {
-    return fetch(resolved, init as RequestInit)
+    return fetch(plan.url, finalInit as RequestInit)
   }
   // Request object — need to reconstruct with resolved URL
-  return fetch(new Request(resolved, input), init as RequestInit)
+  return fetch(new Request(plan.url, input), finalInit as RequestInit)
 }
 /** 归一化请求字段路径：支持点路径 a.b；body['model'] / body.model 归一化为 model。 */
 function normalizeRequestFieldPath(path: string): string {

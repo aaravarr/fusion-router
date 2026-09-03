@@ -90,6 +90,27 @@ describe("system settings", () => {
     expect(() => validateDomainMirrorGroups([{ ...group, rules: [{ ...group.rules[0], mirrorId: "missing" }] }])).toThrow(/不存在的镜像/)
   })
 
+  it("validates mirror node proxyUrl: 镜像/代理至少其一", () => {
+    const base = {
+      id: "g1", name: "G1", enabled: true, domains: ["api.example.com"], accountIds: [] as string[], rules: [] as never[],
+    }
+    // 只配镜像地址：维持原行为
+    expect(validateDomainMirrorGroups([{ ...base, mirrors: [{ id: "m1", name: "M1", url: "https://mirror.example.com/$host", enabled: true }] }])[0].mirrors)
+      .toEqual([{ id: "m1", name: "M1", url: "https://mirror.example.com/$host", enabled: true }])
+    // 只配代理地址：url 归一化为空串，proxyUrl 保留
+    expect(validateDomainMirrorGroups([{ ...base, mirrors: [{ id: "m2", name: "M2", url: "", proxyUrl: "socks5://127.0.0.1:1080", enabled: true }] }])[0].mirrors)
+      .toEqual([{ id: "m2", name: "M2", url: "", proxyUrl: "socks5://127.0.0.1:1080", enabled: true }])
+    // 两者同时配置
+    expect(validateDomainMirrorGroups([{ ...base, mirrors: [{ id: "m3", name: "M3", url: "https://mirror.example.com", proxyUrl: "http://127.0.0.1:7890/", enabled: true }] }])[0].mirrors)
+      .toEqual([{ id: "m3", name: "M3", url: "https://mirror.example.com", proxyUrl: "http://127.0.0.1:7890", enabled: true }])
+    // 两者都空 → 拒绝
+    expect(() => validateDomainMirrorGroups([{ ...base, mirrors: [{ id: "m4", name: "M4", url: "", enabled: true }] }])).toThrow(/至少填一个/)
+    expect(() => validateDomainMirrorGroups([{ ...base, mirrors: [{ id: "m4", name: "M4", url: "  ", proxyUrl: " ", enabled: true }] }])).toThrow(/至少填一个/)
+    // 不支持的代理协议 → 拒绝
+    expect(() => validateDomainMirrorGroups([{ ...base, mirrors: [{ id: "m5", name: "M5", url: "", proxyUrl: "ftp://127.0.0.1:21", enabled: true }] }])).toThrow(/代理地址/)
+    expect(() => validateDomainMirrorGroups([{ ...base, mirrors: [{ id: "m6", name: "M6", url: "", proxyUrl: "not-a-url", enabled: true }] }])).toThrow(/代理地址/)
+  })
+
   it("stores random secrets encrypted and supports explicit rotation", () => {
     const row = db
       .prepare("SELECT value_json FROM system_settings WHERE key = ?")
