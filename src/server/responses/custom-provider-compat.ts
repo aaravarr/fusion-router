@@ -2,6 +2,56 @@ type Obj = Record<string, unknown>
 const isObj = (value: unknown): value is Obj => Boolean(value && typeof value === "object" && !Array.isArray(value))
 
 /**
+ * 上游（opencode-go / Console Go 的 /v1/responses）校验 input 项的 call_id 长度
+ * 必须 <= 64（2026-09-03 生产实测：400 invalid_request_error
+ * `input[5].call_id` The length of the value must be `<= 64`）。
+ * Chat 客户端的 tool_call id 通常 30-40 字符可直接透传，但个别客户端会生成
+ * 超长复合 id（嵌套拼接等），透传即触发 400。长度按 UTF-8 字节计（上游 Go 服务
+ * 的 len() 语义），与 ASCII id 的字符数一致。
+ */
+export const RESPONSES_CALL_ID_MAX_LENGTH = 64
+
+const textEncoder = new TextEncoder()
+const utf8Length = (value: string): number => textEncoder.encode(value).length
+
+/** FNV-1a 32-bit（UTF-8 字节，Math.imul 实现）→ base36 定长 7 位：确定性、无依赖的短哈希。 */
+function stableCallIdHash(value: string): string {
+  let hash = 0x811c9dc5
+  for (const byte of textEncoder.encode(value)) {
+    hash ^= byte
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(36).padStart(7, "0")
+}
+
+/** 按字节安全截断（不切断多字节字符 / 代理对）。 */
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = ""
+  let bytes = 0
+  for (const char of value) {
+    const length = textEncoder.encode(char).length
+    if (bytes + length > maxBytes) break
+    result += char
+    bytes += length
+  }
+  return result
+}
+
+/**
+ * 把 tool_call id 收敛到上游限制的 64 字节内：
+ * - <= 64 字节：原样保留（不改写，保留可读性与客户端侧对应关系）；
+ * - > 64 字节：「截断前缀_短哈希」压缩到恰好 64 字节。
+ * 纯函数（同一原始值必得同一结果），因此同一条请求内 function_call 的
+ * id/call_id 与 function_call_output 的 call_id 天然保持一致对应。
+ */
+export function clampResponsesCallId<T>(id: T): T {
+  if (typeof id !== "string" || utf8Length(id) <= RESPONSES_CALL_ID_MAX_LENGTH) return id
+  const hash = stableCallIdHash(id) // 7 字节（base36 ASCII）
+  const prefix = truncateUtf8(id, RESPONSES_CALL_ID_MAX_LENGTH - hash.length - 1)
+  return `${prefix}_${hash}` as T
+}
+
+/**
  * 把 Chat Completions 的 content（字符串或 part 数组）映射为 Responses API 的
  * input content。Responses 上游（如 opencode-go）只接受 input_text / input_image
  * 等变体，直接透传 Chat 的 {type:"text"} / {type:"image_url"} 会导致
@@ -38,7 +88,7 @@ export function chatRequestToResponses(body: unknown): Obj {
   for (const message of Array.isArray(body.messages) ? body.messages : []) {
     if (!isObj(message)) continue
     if (message.role === "tool") {
-      input.push({ type: "function_call_output", call_id: message.tool_call_id, output: typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "") })
+      input.push({ type: "function_call_output", call_id: clampResponsesCallId(message.tool_call_id), output: typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "") })
       continue
     }
     const base: Obj = { role: message.role, content: chatContentToResponsesContent(message.content ?? "") }
@@ -46,7 +96,8 @@ export function chatRequestToResponses(body: unknown): Obj {
     if (Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
         if (!isObj(call) || !isObj(call.function)) continue
-        input.push({ type: "function_call", id: call.id, call_id: call.id, name: call.function.name, arguments: call.function.arguments ?? "{}" })
+        const callId = clampResponsesCallId(call.id)
+        input.push({ type: "function_call", id: callId, call_id: callId, name: call.function.name, arguments: call.function.arguments ?? "{}" })
       }
     }
   }
