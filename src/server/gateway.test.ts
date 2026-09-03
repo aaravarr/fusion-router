@@ -1015,3 +1015,184 @@ describe("gateway logging", () => {
     expect(response.headers.get("x-grok-fallback")).toBe("chat_completions")
   })
 })
+
+// muse-* 模型上游（opencode-go）只支持 /v1/responses（2026-09-03 生产实测：chat 一律 500）。
+// supportedInterfaces 只声明 responses，三种入口格式的上行与响应转换全部由此驱动。
+describe("opencode-go muse-* 强制原生 responses", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  const MUSE_MODEL = "muse-spark-1.2-contributor"
+  const responsesUpstreamPayload = {
+    id: "resp_muse_1", object: "response", status: "completed", model: MUSE_MODEL,
+    output: [{ id: "msg_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "ok-via-responses" }] }],
+    usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+  }
+  /** 捕获上行 URL/请求体并返回 responses 形态的上游响应。 */
+  const capturingFetcher = (sent: { url: string; body: Record<string, unknown> }) =>
+    vi.fn().mockImplementation(async (url: unknown, init: { body: Uint8Array }) => {
+      sent.url = String(url)
+      sent.body = JSON.parse(new TextDecoder().decode(init.body)) as Record<string, unknown>
+      return Response.json(responsesUpstreamPayload)
+    })
+
+  it("chat 入口 + muse：上行转为原生 /responses，响应转回 chat.completion", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const sent = { url: "", body: {} as Record<string, unknown> }
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: MUSE_MODEL, messages: [{ role: "user", content: "hi" }], max_tokens: 16 }),
+    })
+    const response = await new GatewayService(credentials, db, capturingFetcher(sent), hasher).handle(req, "chat/completions")
+    expect(response.status, await response.clone().text()).toBe(200)
+    // 上行打到原生 responses 端点，请求体为 responses 形态（input，无 messages）
+    expect(sent.url).toContain("/responses")
+    expect(sent.url).not.toContain("/chat/completions")
+    expect(sent.url).not.toContain("/messages")
+    expect(sent.body.messages).toBeUndefined()
+    expect(sent.body.input).toEqual([{ role: "user", content: "hi" }])
+    expect(sent.body.max_output_tokens).toBe(16)
+    // 客户端仍收到 chat.completion 形态
+    const payload = await response.json()
+    expect(payload).toMatchObject({
+      object: "chat.completion",
+      choices: [{ index: 0, message: { role: "assistant", content: "ok-via-responses" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    })
+    const row = db.prepare("SELECT upstream_endpoint, route_mode, route_reason, converted, transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.upstream_endpoint).toBe("responses")
+    expect(row.route_mode).toBe("responses")
+    expect(row.route_reason).toBe("chat_to_responses")
+    expect(row.converted).toBe(1)
+    expect(String(row.transform_summary || "")).toContain("chat->responses")
+  })
+
+  it("chat 入口 + muse（流式）：上行 /responses，SSE 逆向转回 chat chunk 流", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const sse = [
+      `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_muse_s", model: MUSE_MODEL } })}`,
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "he" })}`,
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "llo" })}`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_muse_s", model: MUSE_MODEL, output: [{ type: "message", content: [{ type: "output_text", text: "hello" }] }], usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } } })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n")
+    let sentUrl = ""
+    const fetcher = vi.fn().mockImplementation(async (url: unknown) => {
+      sentUrl = String(url)
+      return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+    })
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: MUSE_MODEL, stream: true, messages: [{ role: "user", content: "hi" }] }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(200)
+    expect(sentUrl).toContain("/responses")
+    const text = await response.text()
+    expect(text).toContain("chat.completion.chunk")
+    expect(text).toContain(`"content":"he"`)
+    expect(text).toContain(`"content":"llo"`)
+    expect(text).toContain(`"finish_reason":"stop"`)
+    expect(text).toContain(`"prompt_tokens":3`)
+    const row = db.prepare("SELECT upstream_endpoint, converted FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.upstream_endpoint).toBe("responses")
+    expect(row.converted).toBe(1)
+  })
+
+  it("messages 入口 + muse：经 messages->chat->responses 接力上行 /responses，响应转回 Anthropic messages", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const sent = { url: "", body: {} as Record<string, unknown> }
+    const req = new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: MUSE_MODEL, max_tokens: 16, system: "be brief",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, capturingFetcher(sent), hasher).handle(req, "messages")
+    expect(response.status, await response.clone().text()).toBe(200)
+    // 接力到原生 responses 端点（而非 /messages），请求体为 responses 形态
+    expect(sent.url).toContain("/responses")
+    expect(sent.url).not.toContain("/messages")
+    expect(sent.body.messages).toBeUndefined()
+    expect(sent.body.input).toEqual([{ role: "system", content: "be brief" }, { role: "user", content: "hi" }])
+    // 客户端收到 Anthropic messages 形态
+    expect(await response.json()).toMatchObject({
+      type: "message", role: "assistant", stop_reason: "end_turn",
+      content: [{ type: "text", text: "ok-via-responses" }],
+      usage: { input_tokens: 3, output_tokens: 2 },
+    })
+    expect(response.headers.get("x-messages-route")).toBe("responses")
+    const row = db.prepare("SELECT upstream_endpoint, route_reason, converted, transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.upstream_endpoint).toBe("responses")
+    expect(row.converted).toBe(1)
+    expect(String(row.transform_summary || "")).toContain("messages->chat->responses")
+  })
+
+  it("responses 入口 + muse：原生直通不再转 chat", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const sent = { url: "", body: {} as Record<string, unknown> }
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: MUSE_MODEL, input: "hi", max_output_tokens: 16 }),
+    })
+    const response = await new GatewayService(credentials, db, capturingFetcher(sent), hasher).handle(req, "responses")
+    expect(response.status, await response.clone().text()).toBe(200)
+    expect(sent.url).toContain("/responses")
+    expect(sent.url).not.toContain("/chat/completions")
+    expect(sent.body.input).toBe("hi")
+    expect(sent.body.messages).toBeUndefined()
+    expect(response.headers.get("x-responses-route")).toBe("responses")
+    const row = db.prepare("SELECT upstream_endpoint, route_reason, converted FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.upstream_endpoint).toBe("responses")
+    expect(row.converted).toBe(0)
+  })
+
+  it("chat 入口 + 非 muse 模型（deepseek-v4-flash）：行为不变，仍原生 /chat/completions", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const sent = { url: "", body: {} as Record<string, unknown> }
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "deepseek-v4-flash", messages: [{ role: "user", content: "hi" }] }),
+    })
+    const response = await new GatewayService(credentials, db, capturingFetcher(sent), hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(200)
+    // 非 muse：直行 chat/completions，body 保持 chat 形态（messages 字段在）
+    expect(sent.url).toContain("/chat/completions")
+    expect(sent.body.messages).toEqual([{ role: "user", content: "hi" }])
+    expect(sent.body.input).toBeUndefined()
+    const row = db.prepare("SELECT upstream_endpoint, converted FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.upstream_endpoint).toBe("chat/completions")
+    expect(row.converted).toBe(0)
+  })
+
+  it("chat 入口 + muse：上游 500 原样透传给客户端（不吞错误、不切号）", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    // 生产实测 muse 走 chat 的上游报错形态
+    const upstreamError = JSON.stringify({ type: "error", error: { type: "error", message: "Internal server error" } })
+    let sentUrl = ""
+    const fetcher = vi.fn().mockImplementation(async (url: unknown) => {
+      sentUrl = String(url)
+      return new Response(upstreamError, { status: 500, headers: { "content-type": "application/json" } })
+    })
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: MUSE_MODEL, messages: [{ role: "user", content: "hi" }] }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(500)
+    expect(await response.text()).toBe(upstreamError)
+    expect(sentUrl).toContain("/responses")
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    const attempt = db.prepare("SELECT status, decision, response_body FROM gateway_attempts ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(attempt.status).toBe(500)
+    expect(attempt.decision).toBe("RETURN_DIRECTLY")
+    expect(attempt.response_body).toBe(upstreamError)
+  })
+})

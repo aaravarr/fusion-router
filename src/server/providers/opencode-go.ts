@@ -9,9 +9,21 @@ import { apiFetchWithMirrorContext } from "../api-fetch"
 // still honor the cached remote list once available — never "any model".
 // GPT 系模型在 OpenCode Go 上游原生走 /v1/responses（官方文档 API 端点表）。
 // responses 入口遇到这些模型保持原生直通，避免转 chat 后兼容性下降。
-// 上游原生支持 /v1/responses 的模型白名单（实测确认，含 muse 家族）。
+// 上游原生支持 /v1/responses 的模型白名单（实测确认）。
 // 不在白名单的模型只走 chat/messages；responses 请求则经网关转 chat 兼容链路。
-const OPENCODE_GO_RESPONSES_MODELS = new Set(["gpt-5.6-luna", "muse-spark-1.2-contributor"])
+const OPENCODE_GO_RESPONSES_MODELS = new Set(["gpt-5.6-luna"])
+
+// muse-* 模型上游只支持 /v1/responses（2026-09-03 生产实测：muse-spark-1.2-contributor /
+// muse-spark-1.3-contributor 走 chat/completions 一律 HTTP 500
+// {"type":"error","error":{"type":"error","message":"Internal server error"}}，多账号一致复现；
+// 同模型 responses 原生直通则正常返回标准 responses 报文）。
+// 大小写不敏感的 muse- 前缀匹配，覆盖 muse-spark-1.2 / muse-spark-1.3-contributor 及后续变体。
+const MUSE_RESPONSES_ONLY_PATTERN = /^muse-/i
+
+/** muse-* 判定：命中即强制只走上游原生 /v1/responses（supportedInterfaces 只声明 responses）。 */
+export function isMuseResponsesOnlyModel(model: string): boolean {
+  return MUSE_RESPONSES_ONLY_PATTERN.test(model.trim())
+}
 
 /** OpenCode Go 官方上游地址（原 system_settings.opencode_upstream_base_url 的默认值，现已收敛为常量）。 */
 export const OPENCODE_GO_UPSTREAM_BASE_URL = "https://opencode.ai/zen/go/v1"
@@ -106,6 +118,10 @@ export class OpenCodeGoProvider implements Provider {
   }
 
   supportedInterfaces(model?: string): readonly import("../messages/route-decision").InterfaceFormat[] {
+    // muse-* 上游只支持 /v1/responses：只声明 responses，responses 入口原生直通；
+    // chat 入口由网关经 chat->responses 转换上行（响应逆向转回 chat），
+    // messages 入口经 messages->chat->responses 接力（响应同理逆向），不再原样上行。
+    if (model && isMuseResponsesOnlyModel(model)) return ["responses"] as const
     // GPT 系模型原生支持 responses；其余模型走 chat/messages（chat 是所有模型的通用兜底）。
     if (model && OPENCODE_GO_RESPONSES_MODELS.has(model)) {
       return ["responses", "chat", "messages"] as const

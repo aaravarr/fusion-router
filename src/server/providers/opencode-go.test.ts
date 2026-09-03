@@ -1,16 +1,27 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { ensureProvidersRegistered, tryGetProvider } from "./index"
-import { OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL } from "./opencode-go"
+import { isMuseResponsesOnlyModel, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL } from "./opencode-go"
 
-describe("opencode-go supportedInterfaces（responses 白名单）", () => {
+describe("opencode-go supportedInterfaces（responses 白名单 + muse 强制 responses）", () => {
   beforeEach(() => { ensureProvidersRegistered() })
 
   const provider = () => tryGetProvider("opencode-go")!
 
-  it("muse-spark-1.2-contributor：原生支持 responses（加入白名单后不再转 chat）", () => {
-    const ifs = provider().supportedInterfaces!("muse-spark-1.2-contributor")
-    expect(ifs).toContain("responses")
-    expect(ifs).toContain("chat")
+  it("muse-spark-1.2-contributor：只声明 responses（上游仅支持 /v1/responses，chat/messages 入口交给网关转换链）", () => {
+    expect(provider().supportedInterfaces!("muse-spark-1.2-contributor")).toEqual(["responses"])
+  })
+
+  it("muse 前缀变体全部命中：muse-spark-1.2 / muse-spark-1.3-contributor / 大小写 / 未来型号", () => {
+    for (const model of ["muse-spark-1.2", "muse-spark-1.3-contributor", "Muse-Spark-1.2", "MUSE-9.9-ultra", " muse-spark-1.2 "]) {
+      expect(provider().supportedInterfaces!(model), model).toEqual(["responses"])
+    }
+  })
+
+  it("非 muse 前缀不误伤：muse 无连字符 / 含 muse 子串 / 空串", () => {
+    for (const model of ["muse", "musex-1", "not-muse-1", "glm-5.2", ""]) {
+      expect(isMuseResponsesOnlyModel(model), model).toBe(false)
+      expect(provider().supportedInterfaces!(model), model).toEqual(["chat", "messages"])
+    }
   })
 
   it("gpt-5.6-luna：仍原生支持 responses（白名单回归）", () => {
