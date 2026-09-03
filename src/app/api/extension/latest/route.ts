@@ -1,5 +1,5 @@
-import { fetch as undiciFetch, ProxyAgent, Agent } from "undici";
-import { resolveMirrorUrl } from "@/server/api-fetch";
+import { fetch as undiciFetch, Agent, type Dispatcher } from "undici";
+import { getProxyDispatcher, resolveMirrorUrl } from "@/server/api-fetch";
 
 export const runtime = "nodejs";
 // 路由级 ISR：5 分钟内复用同一份 GitHub 响应，避免每次请求都打 GitHub API。
@@ -18,11 +18,15 @@ interface GitHubRelease {
 }
 
 // API 请求直连 api.github.com；部署环境如需系统代理，可通过 https_proxy/http_proxy 环境变量配置。
-function dispatcher() {
+// dispatcher 走进程级缓存：代理复用 api-fetch 的共享 ProxyAgent 池（bodyTimeout: 0），
+// 无代理时共享一个直连 Agent，均避免每请求新建连接池。
+let directAgent: Agent | undefined;
+function dispatcher(): Dispatcher {
   const proxy =
     process.env.https_proxy || process.env.HTTPS_PROXY
     || process.env.http_proxy || process.env.HTTP_PROXY;
-  return proxy ? new ProxyAgent(proxy) : new Agent();
+  if (proxy) return getProxyDispatcher(proxy);
+  return (directAgent ??= new Agent());
 }
 
 export async function GET(): Promise<Response> {

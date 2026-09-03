@@ -40,6 +40,7 @@ yarn-error.log*
 
 # design mockups & local session artifacts
 /design-mockups/
+.bench-proxy/
 /_docs/
 /hijack-report.md
 /site-extract*

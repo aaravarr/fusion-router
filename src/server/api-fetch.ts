@@ -26,7 +26,10 @@ const proxyAgents = new Map<string, ProxyAgent>()
 export function getProxyDispatcher(proxyUrl: string): ProxyAgent {
   let agent = proxyAgents.get(proxyUrl)
   if (!agent) {
-    agent = new ProxyAgent(proxyUrl)
+    // bodyTimeout: 0 关闭 undici 默认 300s 响应体超时：SSE 长流（如 reasoning 模型长时间思考）
+    // 可能数分钟无字节，网关做流式转发必须容忍；headersTimeout 保持默认即可。
+    // connections/pipelining 不压小——基准实测 undici 7.28 默认（无上限）并发流性能最优。
+    agent = new ProxyAgent({ uri: proxyUrl, bodyTimeout: 0 })
     proxyAgents.set(proxyUrl, agent)
   }
   return agent
