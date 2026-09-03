@@ -155,6 +155,68 @@ describe("OpenCode referral 兑换", () => {
   })
 })
 
+describe("OpenCode chinaProviders 开关提交格式", () => {
+  beforeEach(() => clearActionDiscoveryCacheForTests())
+
+  const goChunk = `const setGoProviderRouting_action=createServerReference("${hash}"); const setGoProviderRouting=action(setGoProviderRouting_action,"go.providerRouting.set")`
+
+  const discoveryFetcher = (onServer: (url: string, init: RequestInit | undefined) => Response) => {
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url === "https://opencode.ai/") return new Response('<script src="/_build/assets/entry-client-demo.js"></script>')
+      if (url.endsWith("entry-client-demo.js")) return new Response('src/routes/workspace/[id]/go/index.tsx import("./index-go.js")')
+      if (url.endsWith("index-go.js")) return new Response(goChunk)
+      if (url.startsWith("https://opencode.ai/_server?id=")) return onServer(url, init)
+      return new Response(null, { status: 404 })
+    })
+    return fetcher as unknown as typeof fetch
+  }
+
+  const flashOk = () => new Response(null, { status: 302, headers: { "set-cookie": `flash=${encodeURIComponent(JSON.stringify({ result: { data: null } }))}; Path=/` } })
+
+  it("开启时提交 useChinaProviders=true（上游按 === \"true\" 解析，\"on\" 会被误判为 false）", async () => {
+    const fetcher = discoveryFetcher((url, init) => {
+      expect(url).toContain(`id=${hash}`)
+      const body = String(init?.body)
+      expect(body).toContain("workspaceID=wrk_abc")
+      expect(body).toContain("useChinaProviders=true")
+      expect(body).not.toContain("useChinaProviders=on")
+      return flashOk()
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setChinaProviders("cookie", "wrk_abc", true)).resolves.toBeUndefined()
+  })
+
+  it("关闭时提交 useChinaProviders=false（不再是空串）", async () => {
+    const fetcher = discoveryFetcher((_url, init) => {
+      const body = String(init?.body)
+      expect(body).toContain("useChinaProviders=false")
+      return flashOk()
+    })
+    await expect(new OpenCodeWebClient({ fetch: fetcher }).setChinaProviders("cookie", "wrk_abc", false)).resolves.toBeUndefined()
+  })
+
+  it("302 但缺少 flash 时失败关闭；上游业务错误抛 UPSTREAM", async () => {
+    const noFlash = discoveryFetcher(() => new Response(null, { status: 302 }))
+    await expect(new OpenCodeWebClient({ fetch: noFlash }).setChinaProviders("cookie", "wrk_abc", true)).rejects.toMatchObject({ code: "UPSTREAM" } satisfies Partial<OpenCodeWebError>)
+    const flashErr = discoveryFetcher(() => new Response(null, { status: 302, headers: { "set-cookie": `flash=${encodeURIComponent(JSON.stringify({ error: true, result: { error: "nope" } }))}; Path=/` } }))
+    await expect(new OpenCodeWebClient({ fetch: flashErr }).setChinaProviders("cookie", "wrk_abc", true)).rejects.toMatchObject({ code: "UPSTREAM" } satisfies Partial<OpenCodeWebError>)
+  })
+
+  it("传入 userAgent 时 /_server 请求携带操作者 UA；不传用网关默认", async () => {
+    const operatorUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0"
+    const seen: Array<string | null> = []
+    const fetcher = discoveryFetcher((_url, init) => {
+      seen.push(new Headers(init?.headers).get("user-agent"))
+      return flashOk()
+    })
+    const client = new OpenCodeWebClient({ fetch: fetcher })
+    await client.setChinaProviders("cookie", "wrk_abc", true, { userAgent: operatorUA })
+    clearActionDiscoveryCacheForTests()
+    await client.setChinaProviders("cookie", "wrk_abc", false)
+    expect(seen).toEqual([operatorUA, OPENCODE_WEB_DEFAULT_USER_AGENT])
+  })
+})
+
 describe("OpenCode allowTraining 开关", () => {
   beforeEach(() => clearActionDiscoveryCacheForTests())
 

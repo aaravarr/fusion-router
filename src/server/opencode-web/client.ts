@@ -113,9 +113,12 @@ export class OpenCodeWebClient {
     return headers
   }
 
+  // 上游服务端按 form.get("useChinaProviders") === "true" 做显式布尔解析（sst/opencode console
+  // lite-section.tsx 实证，2026-07-31 起即如此），曾误用原生 checkbox 值 "on"/""——"on" 会被上游
+  // 静默解析为 false，导致「开启」实际写成关闭。提交值必须是 "true"/"false"。
   async setChinaProviders(authCookie: string, workspaceId: string, enabled: boolean, options: OpenCodeWebCallOptions = {}): Promise<void> {
     const actionId = await this.discoverProviderRoutingAction()
-    const body = new URLSearchParams({ workspaceID: workspaceId, useChinaProviders: enabled ? "on" : "" })
+    const body = new URLSearchParams({ workspaceID: workspaceId, useChinaProviders: enabled ? "true" : "false" })
     const response = await this.fetcher(`${BASE}/_server?id=${encodeURIComponent(actionId)}`, {
       method: "POST",
       headers: this.headers(authCookie, { referer: `${BASE}/workspace/${workspaceId}/go`, contentType: "application/x-www-form-urlencoded", userAgent: options.userAgent }),
@@ -131,7 +134,7 @@ export class OpenCodeWebClient {
 
   // 「允许使用请求数据进行训练的模型」开关（上游 providers 区独立表单，action 名 go.allowTraining.set）。
   // 上游服务端按 form.get("allowTraining") === "true" 做显式布尔解析（sst/opencode console 源码实证），
-  // 因此提交值必须是 "true"/"false"，而不是 chinaProviders 链路沿用的原生 checkbox 值 "on"/"".
+  // 与 setChinaProviders 一致提交 "true"/"false"。
   async setAllowTraining(authCookie: string, workspaceId: string, enabled: boolean, options: OpenCodeWebCallOptions = {}): Promise<void> {
     const actionId = await this.discoverAllowTrainingAction()
     const body = new URLSearchParams({ workspaceID: workspaceId, allowTraining: enabled ? "true" : "false" })
