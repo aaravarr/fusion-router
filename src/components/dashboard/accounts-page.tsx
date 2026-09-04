@@ -116,6 +116,12 @@ function poolOf(account: Account) {
   return account.poolType || "opencode-go";
 }
 
+/** GLM 套餐档位（lite/pro/max…）：来自 quota_windows 的 extra.level（monitor/usage/quota/limit）。 */
+function glmPlanLevel(account: Account): string | null {
+  const extra = (getQuota(account, "fiveHour") ?? getQuota(account, "weekly"))?.extra as Record<string, unknown> | undefined;
+  return typeof extra?.level === "string" && extra.level ? extra.level : null;
+}
+
 export function AccountsPage() {
   const { adminFetch } = useAdmin();
   const confirm = useConfirm();
@@ -134,6 +140,8 @@ export function AccountsPage() {
   const [kimiOauthOpen, setKimiOauthOpen] = useState(false);
   const [kimiRefreshOpen, setKimiRefreshOpen] = useState(false);
   const [kimiApiKeyOpen, setKimiApiKeyOpen] = useState(false);
+  const [glmOauthOpen, setGlmOauthOpen] = useState(false);
+  const [glmApiKeyOpen, setGlmApiKeyOpen] = useState(false);
   const [openDesignGoOpen, setOpenDesignGoOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -523,6 +531,14 @@ export function AccountsPage() {
                   <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setKimiRefreshOpen(true)}><FileUp />Refresh Token</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+            ) : poolFilter === "glm-coding" ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><Button size="sm"><KeyRound data-icon="inline-start" />连接 GLM 账号</Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-auto min-w-44">
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setGlmApiKeyOpen(true)}><KeyRound />API Key</DropdownMenuItem>
+                  <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setGlmOauthOpen(true)}><KeyRound />GLM OAuth 登录</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : poolFilter === "open-design-go" ? (
               <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload data-icon="inline-start" />导入 OpenDesign Go</Button>
             ) : null}
@@ -618,6 +634,8 @@ export function AccountsPage() {
               })}><Upload />导入 xAI 账号</Button>
             ) : poolFilter === "kimi-code" ? (
               <Button size="sm" onClick={() => setKimiApiKeyOpen(true)}><KeyRound />Kimi API Key</Button>
+            ) : poolFilter === "glm-coding" ? (
+              <Button size="sm" onClick={() => setGlmApiKeyOpen(true)}><KeyRound />GLM API Key</Button>
             ) : poolFilter === "openai" ? (
               <Button size="sm" onClick={() => setOpenaiOauthOpen(true)}><KeyRound />OpenAI OAuth 登录</Button>
             ) : poolFilter === "open-design-go" ? (
@@ -744,6 +762,8 @@ export function AccountsPage() {
       <KimiOauthLoginDialog open={kimiOauthOpen} onOpenChange={setKimiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiRefreshTokenDialog open={kimiRefreshOpen} onOpenChange={setKimiRefreshOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <KimiApiKeyDialog open={kimiApiKeyOpen} onOpenChange={setKimiApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
+      <GlmOauthLoginDialog open={glmOauthOpen} onOpenChange={setGlmOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
+      <GlmApiKeyDialog open={glmApiKeyOpen} onOpenChange={setGlmApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <TokenLineImportDialog spec={tokenImport} open={Boolean(tokenImport)} onOpenChange={(open) => { if (!open) setTokenImport(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
       <OpenDesignGoImportDialog open={openDesignGoOpen} onOpenChange={setOpenDesignGoOpen} onCreated={() => { setJobVersion((value) => value + 1); void resource.refresh(); setActionNotice("OpenDesign Go 账号已导入"); }} />
      <AccountDetailSheet
@@ -919,6 +939,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                   <div className="divide-y rounded-md border">
                     <DetailRow label="号池类型" value={getPoolLabel(account.poolType, account.poolLabel)} title={account.poolLabel || account.poolType || undefined} />
                     <DetailRow label="凭据状态" value={account.authState === "VALID" ? "有效" : account.authState || "未知"} />
+                    {poolOf(account) === "glm-coding" ? <DetailRow label="套餐档位" value={glmPlanLevel(account) || "未返回"} mono title="来自 GLM monitor/usage/quota/limit 的 level 字段" /> : null}
                     <DetailRow label="路由状态" value={account.routeState || "未知"} />
                     {account.routeReason ? <DetailRow label="状态原因" value={account.routeReason} /> : null}
                     {account.blockedUntil ? <DetailRow label="预计恢复" value={formatDate(account.blockedUntil)} mono /> : null}
@@ -1591,6 +1612,254 @@ function KimiApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; on
           />
           {error ? <p className="text-destructive">{error}</p> : null}
           {success ? <p className="text-success">验证通过，账号已写入 kimi-code 号池。</p> : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
+          <Button onClick={() => void onSubmit()} disabled={busy || !apiKey.trim()}>{busy ? "验证中…" : "验证并录入"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * GLM Coding OAuth 登录（ZCode server-mediated 设备流）。
+ * 契约：start → {sessionId, authorizeUrl, intervalSec, expiresInSeconds}；
+ * poll → {status: pending|expired|failed|success}；取消用 DELETE。
+ * authorize_url 的 redirect 指向 zcode.z.ai 自有回调，浏览器无需回到本站，
+ * 授权完成后后台自动兑换 coding-plan API key 并建号。
+ */
+function GlmOauthLoginDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const { adminFetch } = useAdmin();
+  const [region, setRegion] = useState<"cn" | "global">("cn");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  const [expiresInMinutes, setExpiresInMinutes] = useState<number | null>(null);
+  const [status, setStatus] = useState<"idle" | "waiting" | "success">("idle");
+  const pollRef = useRef<number | null>(null);
+  const sessionRef = useRef<string | null>(null);
+  const succeededRef = useRef(false);
+
+  useEffect(() => () => {
+    if (pollRef.current) window.clearTimeout(pollRef.current);
+    pollRef.current = null;
+  }, []);
+
+  function stopPolling() {
+    if (pollRef.current) window.clearTimeout(pollRef.current);
+    pollRef.current = null;
+  }
+
+  function reset() {
+    stopPolling();
+    sessionRef.current = null;
+    succeededRef.current = false;
+    setRegion("cn");
+    setLoading(false);
+    setError(null);
+    setAuthorizeUrl(null);
+    setExpiresInMinutes(null);
+    setStatus("idle");
+  }
+
+  function close(next: boolean) {
+    if (!next) {
+      // 中途放弃：取消服务端会话（ready 只出现一次，避免白白消费授权）。
+      const sessionId = sessionRef.current;
+      if (sessionId && !succeededRef.current) {
+        void adminFetch("/api/admin/accounts/glm-oauth/poll", {
+          method: "DELETE",
+          body: JSON.stringify({ sessionId }),
+        }).catch(() => undefined);
+      }
+      reset();
+    }
+    onOpenChange(next);
+  }
+
+  async function startAuthorization() {
+    if (status === "waiting") return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await adminFetch("/api/admin/accounts/glm-oauth/start", {
+        method: "POST",
+        body: JSON.stringify({ region }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || "启动 GLM OAuth 失败");
+      sessionRef.current = payload.sessionId;
+      succeededRef.current = false;
+      setAuthorizeUrl(payload.authorizeUrl);
+      setExpiresInMinutes(Number(payload.expiresInSeconds) > 0 ? Math.max(1, Math.round(Number(payload.expiresInSeconds) / 60)) : null);
+      setStatus("waiting");
+      window.open(payload.authorizeUrl, "_blank", "noopener,noreferrer");
+      const poll = async (id: string) => {
+        try {
+          const pollResp = await adminFetch("/api/admin/accounts/glm-oauth/poll", {
+            method: "POST",
+            body: JSON.stringify({ sessionId: id }),
+          });
+          const pollPayload = await pollResp.json().catch(() => ({}));
+          if (!pollResp.ok) throw new Error(pollPayload?.error?.message || "轮询 GLM OAuth 失败");
+          if (pollPayload.status === "success") {
+            succeededRef.current = true;
+            setStatus("success");
+            onCreated();
+            window.setTimeout(() => close(false), 900);
+            return;
+          }
+          if (pollPayload.status === "expired") throw new Error("授权流程已过期，请重新发起");
+          if (pollPayload.status === "failed") throw new Error(pollPayload.description || "授权失败，请重试");
+          // pending：按服务端返回的节奏继续轮询。
+          const waitSec = Math.max(1, Number(pollPayload.intervalSec || 2));
+          pollRef.current = window.setTimeout(() => void poll(id), waitSec * 1000);
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : "轮询 GLM OAuth 失败");
+          setStatus("idle");
+        }
+      };
+      const waitSec = Math.max(1, Number(payload.intervalSec || 2));
+      pollRef.current = window.setTimeout(() => void poll(payload.sessionId), waitSec * 1000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "启动 GLM OAuth 失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>GLM OAuth 登录</DialogTitle>
+          <DialogDescription>
+            ZCode 设备码授权。在浏览器完成智谱 / Z.AI 登录后，后台会自动兑换长期 coding-plan API key 并写入号池。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          {!authorizeUrl ? (
+            <div className="space-y-2">
+              <label className="text-xs font-medium">区域</label>
+              <Select value={region} onValueChange={(value) => setRegion(value === "global" ? "global" : "cn")}>
+                <SelectTrigger className="w-full bg-white text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cn">国内（open.bigmodel.cn）</SelectItem>
+                  <SelectItem value="global">国际（api.z.ai）</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] leading-4 text-muted-foreground">选择 Coding Plan 账号所在区域，授权页会由 zcode.z.ai 中转打开。</p>
+            </div>
+          ) : (
+            <div className="rounded-md border bg-muted/30 p-3">
+              <p className="text-xs text-muted-foreground">授权链接{expiresInMinutes ? `（约 ${expiresInMinutes} 分钟内有效）` : ""}</p>
+              <a className="mt-1 inline-block max-w-full truncate text-xs text-info underline" href={authorizeUrl} target="_blank" rel="noreferrer" title={authorizeUrl}>
+                {authorizeUrl}
+              </a>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => window.open(authorizeUrl, "_blank", "noopener,noreferrer")}>重新打开授权页</Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void copyToClipboard(authorizeUrl)}>复制链接</Button>
+              </div>
+            </div>
+          )}
+          {loading ? <p className="text-muted-foreground">正在生成授权链接…</p> : null}
+          {error ? <p className="text-destructive">{error}</p> : null}
+          {status === "waiting" ? <p className="text-muted-foreground">等待浏览器授权完成，授权后将自动兑换 API key…</p> : null}
+          {status === "success" ? <p className="text-success">授权成功，已兑换 coding-plan API key 并写入号池。</p> : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => close(false)}>关闭</Button>
+          {!authorizeUrl ? (
+            <Button onClick={() => void startAuthorization()} disabled={loading}>
+              <KeyRound data-icon="inline-start" />{loading ? "正在生成" : "生成并打开授权链接"}
+            </Button>
+          ) : null}
+          {authorizeUrl && status !== "success" && status !== "waiting" ? (
+            <Button onClick={() => void startAuthorization()} disabled={loading}>重新发起</Button>
+          ) : null}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * GLM Coding Plan API Key 录入。契约：POST glm-apikey {apiKey, region} →
+ * 200 {status:"success", account, level}；key 无效 400、上游不可达 502。
+ * 用裸 fetch：adminFetch 会把 401 当会话过期跳登录页，业务校验错误必须留在对话框内。
+ */
+function GlmApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const [apiKey, setApiKey] = useState("");
+  const [region, setRegion] = useState<"cn" | "global">("cn");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [level, setLevel] = useState<string | null>(null);
+
+  async function onSubmit() {
+    setBusy(true);
+    setError(null);
+    setSuccess(false);
+    setLevel(null);
+    try {
+      const response = await fetch("/api/admin/accounts/glm-apikey", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: apiKey.trim(), region }),
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || "录入 GLM API Key 失败");
+      if (payload?.error) throw new Error(payload.error.message || "录入 GLM API Key 失败");
+      setSuccess(true);
+      setLevel(typeof payload?.level === "string" && payload.level ? payload.level : null);
+      onCreated();
+      window.setTimeout(() => onOpenChange(false), 800);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "录入失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); if (!next) { setApiKey(""); setError(null); setSuccess(false); setLevel(null); } }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>录入 GLM API Key</DialogTitle>
+          <DialogDescription>
+            粘贴 GLM Coding Plan 的 API Key（{"{id}.{secret}"} 形态，来自 bigmodel.cn / z.ai 控制台的 API Keys 页）。
+            后台会先实测 quota/limit 验证 Key 有效性，通过后直接写入 glm-coding 号池，无需 OAuth。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <Input
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="id.secret"
+            className="font-mono"
+            spellCheck={false}
+            autoFocus
+          />
+          <div className="space-y-2">
+            <label className="text-xs font-medium">区域</label>
+            <Select value={region} onValueChange={(value) => setRegion(value === "global" ? "global" : "cn")} disabled={busy}>
+              <SelectTrigger className="w-full bg-white text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="cn">国内（open.bigmodel.cn）</SelectItem>
+                <SelectItem value="global">国际（api.z.ai）</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] leading-4 text-muted-foreground">请与 Key 所属平台一致，区域决定推理与用量查询的域名。</p>
+          </div>
+          {error ? <p className="text-destructive">{error}</p> : null}
+          {success ? <p className="text-success">验证通过，账号已写入 glm-coding 号池。{level ? `套餐档位：${level}。` : ""}</p> : null}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>

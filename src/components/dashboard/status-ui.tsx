@@ -83,6 +83,7 @@ export function PoolTypeBadge({ poolType, label }: { poolType?: string | null; l
   const isOpenAI = type === "openai";
   const isGrok = type === "xai-grok";
   const isKimi = type === "kimi-code";
+  const isGlm = type === "glm-coding";
   return (
     <Badge
       variant="outline"
@@ -93,7 +94,9 @@ export function PoolTypeBadge({ poolType, label }: { poolType?: string | null; l
             ? "border-emerald/30 bg-emerald-soft text-emerald-deep"
             : isKimi
               ? "border-orange-300/40 bg-orange-50 text-orange-700"
-              : "border-info/20 bg-info-soft text-info"
+              : isGlm
+                ? "border-indigo-300/40 bg-indigo-50 text-indigo-700"
+                : "border-info/20 bg-info-soft text-info"
       }`}
     >
       {poolDisplayLabel(poolType, label).text}
@@ -180,6 +183,10 @@ export function BillingSafetyBadge({ account }: { account: Account }) {
   }
   if (poolType === "kimi-code") {
     return <Badge variant="outline" className="h-5 rounded-sm border-orange-300/40 bg-orange-50 px-1.5 text-[11px] text-orange-700">Kimi OAuth</Badge>;
+  }
+  if (poolType === "glm-coding") {
+    // coding-plan API key 只能消耗套餐内额度，无按量扣费风险。
+    return <Badge variant="outline" className="h-5 rounded-sm border-indigo-300/40 bg-indigo-50 px-1.5 text-[11px] text-indigo-700">Coding Plan</Badge>;
   }
   if (poolType === "openai") {
     return <Badge variant="outline" className="h-5 rounded-sm border-violet/20 bg-violet-soft px-1.5 text-[11px] text-violet-deep">OpenAI Codex</Badge>;

@@ -49,6 +49,16 @@ export const PROVIDER_DOMAIN_PRESETS: DomainPresetGroup[] = [
     ],
   },
   {
+    poolType: "glm-coding",
+    label: "GLM Coding Plan",
+    domains: [
+      { domain: "zcode.z.ai", label: "zcode.z.ai", description: "GLM Coding OAuth 设备流（cli/init、cli/poll 授权中转）。" },
+      { domain: "open.bigmodel.cn", label: "open.bigmodel.cn", description: "国内推理端点（chat/responses/messages）与用量 quota/limit 探测。" },
+      { domain: "bigmodel.cn", label: "bigmodel.cn", description: "国内 biz API：OAuth 兑换 coding-plan API key。" },
+      { domain: "api.z.ai", label: "api.z.ai", description: "国际版推理 / 用量 / biz 兑换（与国内同构）。" },
+    ],
+  },
+  {
     poolType: "github",
     label: "GitHub",
     domains: [
