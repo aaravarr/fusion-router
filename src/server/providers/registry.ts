@@ -55,6 +55,16 @@ export const POOL_TYPE_METADATA: Partial<Record<PoolType, PoolTypeMeta>> = {
     quotaKinds: ["MONTHLY"] as readonly QuotaKind[],
     credentialFields: [],
   },
+  "glm-coding": {
+    type: "glm-coding",
+    label: "GLM Coding Plan",
+    description: "智谱 GLM Coding Plan（ZCode 指纹）。Upstream: open.bigmodel.cn / api.z.ai（cn/global）。凭据为 coding-plan API key（OAuth 自动兑换或手建）。原生格式: Chat / Messages / Responses。Quota: monitor usage（5h + weekly）",
+    quotaKinds: ["FIVE_HOUR", "WEEKLY"] as readonly QuotaKind[],
+    credentialFields: [
+      { key: "apiKey", label: "API Key", required: true, type: "password" },
+      { key: "region", label: "Region (cn/global，默认 cn)", required: false, type: "text" },
+    ],
+  },
 }
 
 // ─── Registry ────────────────────────────────────────────────────────────

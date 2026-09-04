@@ -80,6 +80,7 @@ const POOL_FILTERS = [
   { key: "xai-grok", label: "xAI Grok" },
   { key: "kimi-code", label: "Kimi Code" },
   { key: "open-design-go", label: "OpenDesign Go" },
+  { key: "glm-coding", label: "GLM Coding Plan" },
 ] as const;
 
 const STATUS_FILTERS = [

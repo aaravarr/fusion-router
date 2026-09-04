@@ -41,6 +41,7 @@ const fallbackPoolTypeOptions: { value: string; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "xai-grok", label: "xAI Grok" },
   { value: "kimi-code", label: "Kimi Code" },
+  { value: "glm-coding", label: "GLM Coding Plan" },
 ];
 
 const rangeHours: Record<RangeKey, number> = { "1h": 1, "6h": 6, "24h": 24, "7d": 168, "30d": 720 };

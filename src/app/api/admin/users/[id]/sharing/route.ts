@@ -4,7 +4,7 @@ import { requireAdministrator } from "../../../_auth";
 
 export const runtime = "nodejs";
 
-const SHARABLE_POOL_TYPES = new Set(["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go", "custom:*"]);
+const SHARABLE_POOL_TYPES = new Set(["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go", "glm-coding", "custom:*"]);
 
 const schema = z.object({
   enabled: z.boolean(),

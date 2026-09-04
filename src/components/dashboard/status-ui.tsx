@@ -8,6 +8,7 @@ export const POOL_TYPE_META: Record<string, { label: string; description: string
   "xai-grok": { label: "xAI Grok", description: "xAI 免费 OAuth，滚动 24h 100 万 token", quotaKinds: ["rolling24h"] },
   "kimi-code": { label: "Kimi Code", description: "Kimi Code 设备码 OAuth，5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
   "open-design-go": { label: "OpenDesign Go", description: "OpenDesign Go 订阅（OpenAI 兼容），按月计费，凭据来自 ~/.amr/config.json", quotaKinds: ["monthly"] },
+  "glm-coding": { label: "GLM Coding Plan", description: "智谱 GLM Coding Plan（ZCode 指纹），5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
 };
 
 export function getPoolQuotaKinds(poolType?: string | null) {

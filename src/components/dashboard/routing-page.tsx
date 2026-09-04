@@ -39,7 +39,7 @@ interface ProviderModelCatalog {
 }
 interface ProviderModelsPayload { catalogs?: ProviderModelCatalog[] }
 
-const POOL_OPTIONS = ["opencode-go", "openai", "xai-grok", "kimi-code"] as const;
+const POOL_OPTIONS = ["opencode-go", "openai", "xai-grok", "kimi-code", "glm-coding"] as const;
 
 interface PoolTypeOptionItem { type: string; label: string }
 

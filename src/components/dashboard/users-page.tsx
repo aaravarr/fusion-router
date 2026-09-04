@@ -63,6 +63,7 @@ const SHARING_POOL_OPTIONS = [
   { value: "xai-grok", label: "xAI Grok", desc: "xAI Grok 池 · 管理员名下 5 个账号 · 免费 OAuth，滚动 24h" },
   { value: "kimi-code", label: "Kimi Code", desc: "Kimi Code 池 · 管理员名下 3 个账号 · 设备码 OAuth，5h + weekly 额度" },
   { value: "open-design-go", label: "OpenDesign Go", desc: "OpenDesign Go 池 · 管理员名下 1 个账号 · OpenAI 兼容订阅，按月计费" },
+  { value: "glm-coding", label: "GLM Coding Plan", desc: "GLM Coding Plan 池 · coding-plan API key（OAuth 自动兑换/手建），5h + weekly 额度" },
   { value: "custom:*", label: "全部自定义 Provider", desc: "自定义 Provider 池 · 管理员名下 6 个账号 · 自定义 API Key 上游" },
 ];
 

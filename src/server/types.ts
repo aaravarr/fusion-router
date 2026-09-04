@@ -6,7 +6,7 @@ export const BILLING_GUARDS = ["VERIFIED_GO_ONLY", "PAYG_FALLBACK_ENABLED", "UNV
 const _ROLLING_24H = "ROLLING_24H"
 export const QUOTA_KINDS = ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD", "UNKNOWN_GO_LIMIT", _ROLLING_24H, "PROVIDER_RATE_LIMIT"] as const
 
-export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go"] as const
+export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go", "glm-coding"] as const
 export type BuiltinPoolType = (typeof POOL_TYPES)[number]
 export type PoolType = BuiltinPoolType | `custom:${string}`
 
@@ -111,6 +111,16 @@ export interface ProviderAccountData {
   region?: string
   domainName?: string
   userLevel?: string
+  /** glm-coding：凭据来源（"oauth" = ZCode 设备流自动兑换 | "apikey" = 控制台手建）。 */
+  authMode?: string
+  /** glm-coding：每账号生成一次并持久化的 hex 设备 ID（ZCode 指纹 X-Device-Mid）。 */
+  deviceMid?: string
+  /** glm-coding：ZCode plan JWT（OAuth 附带，元数据留存）。 */
+  zcodeJwt?: string
+  /** glm-coding：OAuth user_id（external_id 去重键之一）。 */
+  glmUserId?: string
+  /** glm-coding：monitor usage 返回的套餐等级（如 pro）。 */
+  glmLevel?: string
 }
 
 export interface ModelRouteRule {
