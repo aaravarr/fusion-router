@@ -25,6 +25,20 @@ export function isMuseResponsesOnlyModel(model: string): boolean {
   return MUSE_RESPONSES_ONLY_PATTERN.test(model.trim())
 }
 
+// 上游 /messages 端点不支持的模型清单（精确匹配，大小写不敏感）。
+// 证据：omen-alpha —— 2026-09-04 生产实测，带图与纯文本的 messages 原生请求
+// 一律 HTTP 500 {"type":"error","error":{"type":"error","message":"Internal server error"}}
+// （落点日志 messages-native/reason:direct，多账号一致）；同模型 chat 原生正常
+// （含多模态图片），responses 经网关 opencode_go_responses_to_chat 转换链亦正常。
+// 注意：仅 omen-alpha 一例有实测证据，不要泛化为 omen-* 前缀；
+// 后续新增型号须先实测确认再追加到此列表。
+const OPENCODE_GO_MESSAGES_UNSUPPORTED_MODELS = new Set(["omen-alpha"])
+
+/** 上游不支持 /messages 的模型判定：精确匹配（大小写不敏感），命中即从 supportedInterfaces 摘掉 messages。 */
+export function isMessagesUnsupportedModel(model: string): boolean {
+  return OPENCODE_GO_MESSAGES_UNSUPPORTED_MODELS.has(model.trim().toLowerCase())
+}
+
 /** OpenCode Go 官方上游地址（原 system_settings.opencode_upstream_base_url 的默认值，现已收敛为常量）。 */
 export const OPENCODE_GO_UPSTREAM_BASE_URL = "https://opencode.ai/zen/go/v1"
 
@@ -122,6 +136,10 @@ export class OpenCodeGoProvider implements Provider {
     // chat 入口由网关经 chat->responses 转换上行（响应逆向转回 chat），
     // messages 入口经 messages->chat->responses 接力（响应同理逆向），不再原样上行。
     if (model && isMuseResponsesOnlyModel(model)) return ["responses"] as const
+    // 上游 /messages 端点不支持的模型（如 omen-alpha）：摘掉 messages 只声明 chat，
+    // messages 入口由网关经 messages->chat 转换接力上行（含 image 块映射），
+    // chat 入口仍原生直通；responses 维持非白名单转 chat 的既有行为。
+    if (model && isMessagesUnsupportedModel(model)) return ["chat"] as const
     // GPT 系模型原生支持 responses；其余模型走 chat/messages（chat 是所有模型的通用兜底）。
     if (model && OPENCODE_GO_RESPONSES_MODELS.has(model)) {
       return ["responses", "chat", "messages"] as const

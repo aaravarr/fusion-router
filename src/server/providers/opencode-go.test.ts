@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { ensureProvidersRegistered, tryGetProvider } from "./index"
-import { isMuseResponsesOnlyModel, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL } from "./opencode-go"
+import { isMessagesUnsupportedModel, isMuseResponsesOnlyModel, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL } from "./opencode-go"
+import { decideUpstreamRoute } from "../messages/route-decision"
+import { messagesRequestToChat } from "../messages/convert"
 
 describe("opencode-go supportedInterfaces（responses 白名单 + muse 强制 responses）", () => {
   beforeEach(() => { ensureProvidersRegistered() })
@@ -39,6 +41,96 @@ describe("opencode-go supportedInterfaces（responses 白名单 + muse 强制 re
     const ifs = provider().supportedInterfaces!(undefined)
     expect(ifs).not.toContain("responses")
     expect(ifs).toEqual(["chat", "messages"])
+  })
+})
+
+// omen-alpha：上游 /messages 端点不支持（2026-09-04 生产实测 500，多账号一致）；
+// 摘掉 messages 只声明 chat，messages 入口由网关 messages->chat 接力，chat 原生不受影响。
+describe("opencode-go supportedInterfaces（omen-alpha 上游不支持 messages）", () => {
+  beforeEach(() => { ensureProvidersRegistered() })
+
+  const provider = () => tryGetProvider("opencode-go")!
+
+  it("omen-alpha：只声明 chat，不含 messages / responses", () => {
+    const ifs = provider().supportedInterfaces!("omen-alpha")
+    expect(ifs).toEqual(["chat"])
+    expect(ifs).not.toContain("messages")
+    expect(ifs).not.toContain("responses")
+  })
+
+  it("精确匹配且大小写不敏感：omen-alpha 命中，omen-* 前缀不泛化", () => {
+    for (const hit of ["omen-alpha", "Omen-Alpha", " OMEN-ALPHA "]) {
+      expect(isMessagesUnsupportedModel(hit), hit).toBe(true)
+      expect(provider().supportedInterfaces!(hit), hit).toEqual(["chat"])
+    }
+    // 无实测证据的 omen-* 变体不得误伤，仍保留 messages 原生
+    for (const miss of ["omen-beta", "omen-alpha-2", "omen", "omen-alpha-x", "glm-5.2", "muse-spark-1.2"]) {
+      expect(isMessagesUnsupportedModel(miss), miss).toBe(false)
+    }
+  })
+
+  it("omen-alpha messages 入口：决策管线自动接力 messages->chat 上行至 chat/completions", () => {
+    const route = decideUpstreamRoute("messages", provider().supportedInterfaces!("omen-alpha"))
+    expect(route).toMatchObject({
+      upstreamEndpoint: "chat/completions",
+      requestChain: ["messages->chat"],
+      native: false,
+      reason: "messages_to_chat",
+    })
+  })
+
+  it("omen-alpha messages 入口含 image 块：经 messages->chat 转换后图片保真为 image_url part", () => {
+    const route = decideUpstreamRoute("messages", provider().supportedInterfaces!("omen-alpha"))!
+    expect(route.requestChain).toEqual(["messages->chat"])
+    const chatBody = messagesRequestToChat({
+      model: "omen-alpha",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "描述这张图" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+            { type: "image", source: { type: "url", url: "https://example.com/pic.jpg" } },
+          ],
+        },
+      ],
+    })
+    const content = (chatBody.messages as Array<{ role: string; content: unknown }>)[0].content
+    expect(content).toEqual([
+      { type: "text", text: "描述这张图" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+      { type: "image_url", image_url: { url: "https://example.com/pic.jpg" } },
+    ])
+  })
+
+  it("omen-alpha chat 入口：仍原生直通，不做转换", () => {
+    const route = decideUpstreamRoute("chat", provider().supportedInterfaces!("omen-alpha"))
+    expect(route).toMatchObject({ upstreamEndpoint: "chat/completions", requestChain: [], native: true, reason: "chat_native" })
+  })
+
+  it("omen-alpha responses 入口：维持非白名单既有行为，经 responses->chat 上行", () => {
+    const route = decideUpstreamRoute("responses", provider().supportedInterfaces!("omen-alpha"))
+    expect(route).toMatchObject({
+      upstreamEndpoint: "chat/completions",
+      requestChain: ["responses->chat"],
+      native: false,
+      reason: "responses_to_chat",
+    })
+  })
+
+  it("其他模型回归不破：非 omen/muse 模型 messages 仍原生直通", () => {
+    for (const model of ["kimi-k3", "glm-5.2", "deepseek-v4-flash"]) {
+      expect(provider().supportedInterfaces!(model), model).toEqual(["chat", "messages"])
+      const route = decideUpstreamRoute("messages", provider().supportedInterfaces!(model))!
+      expect(route.native, model).toBe(true)
+      expect(route.upstreamEndpoint, model).toBe("messages")
+      expect(route.reason, model).toBe("messages_native")
+    }
+    // muse 案例不受影响：仍只声明 responses，messages 入口走 messages->chat->responses 接力
+    expect(provider().supportedInterfaces!("muse-spark-1.3-contributor")).toEqual(["responses"])
+    expect(decideUpstreamRoute("messages", provider().supportedInterfaces!("muse-spark-1.3-contributor")))
+      .toMatchObject({ upstreamEndpoint: "responses", requestChain: ["messages->chat", "chat->responses"] })
   })
 })
 
