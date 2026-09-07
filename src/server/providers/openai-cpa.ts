@@ -52,13 +52,34 @@ const OPENAI_REFRESH_FATAL_CODES = new Set(["refresh_token_reused", "invalid_gra
 const REFRESH_BACKOFF_BASE_MS = 10_000
 const REFRESH_BACKOFF_MAX_MS = 10 * 60_000
 
-// CLIProxyAPI codex 转发约束：body 删除这些字段（其余原样透传 responses 形态）。
+// CLIProxyAPI codex 转发约束（internal/translator/codex/openai，2026-09-08 源码核实）：
+// responses 入口 ConvertOpenAIResponsesRequestToCodex 强制 stream=true、store=false、
+// parallel_tool_calls=true、include=["reasoning.encrypted_content"]，删除 token 上限与
+// 采样参数（max_output_tokens/max_completion_tokens/temperature/top_p）、
+// service_tier（仅保留 "priority"）、truncation/prompt_cache_options/
+// prompt_cache_retention（含嵌套 prompt_cache_breakpoint）、context_management、user，
+// input 为字符串时包装为 [{type:"message",role:"user",
+// content:[{type:"input_text",text}]}]，system role 转 developer。
+// chat 入口 ConvertOpenAIRequestToCodex 从 {"instructions":""} 白名单重建，
+// temperature/top_p/top_k/max_tokens/max_completion_tokens/stream_options/include_usage
+// 一律不带，store=false 强制。
+// 网关侧取交集实现（删除类 + store/input 规范化全做；parallel_tool_calls/include 强制
+// 与 system→developer 转换暂不做：前者会覆盖客户端显式意图，后者超出参数规范化范畴）。
 const CODEX_BODY_STRIP_KEYS = [
   "previous_response_id",
   "generate",
   "prompt_cache_retention",
+  "prompt_cache_options",
   "safety_identifier",
   "stream_options",
+  "include_usage",
+  "max_output_tokens",
+  "max_completion_tokens",
+  "temperature",
+  "top_p",
+  "truncation",
+  "context_management",
+  "user",
 ] as const
 
 // Windows with limit_window_seconds <= 21600 (6h) are classified as 5h;
@@ -396,10 +417,13 @@ function identifyExhaustedWindow(
 }
 
 /**
- * CLIProxyAPI codex 转发约束（2026-09-07 源码核实）：强制 stream:true；
- * instructions 为 null/缺失时置 ""；删除 previous_response_id / generate /
- * prompt_cache_retention / safety_identifier / stream_options。
+ * CLIProxyAPI codex 转发约束（2026-09-08 源码核实，见 CODEX_BODY_STRIP_KEYS 注释）：
+ * 强制 stream:true、store:false；instructions 为 null/缺失时置 ""；input 为字符串时
+ * 包装为标准列表形态 [{type:"message",role:"user",content:[{type:"input_text",text}]}]；
+ * service_tier 仅保留 "priority"；删除 strip 清单字段。
  * 非 JSON body 原样透传。
+ * 覆盖两条入口：responses 原生直通与 chat→responses 转换（网关转换后统一经
+ * buildForwardTarget 走到这里）。
  */
 export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null): Uint8Array<ArrayBuffer> | null {
   if (!body || body.byteLength === 0) return body
@@ -412,6 +436,15 @@ export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return body
   const record = { ...(parsed as Record<string, unknown>) }
   record.stream = true
+  record.store = false
+  if (typeof record.input === "string") {
+    record.input = [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: record.input }],
+    }]
+  }
+  if (record.service_tier !== "priority") delete record.service_tier
   if (record.instructions === null || record.instructions === undefined) record.instructions = ""
   for (const key of CODEX_BODY_STRIP_KEYS) delete record[key]
   return new TextEncoder().encode(JSON.stringify(record)) as Uint8Array<ArrayBuffer>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { chatImagePartToResponsesImagePart, chatRequestToResponses, clampResponsesCallId, responsesJsonToChatCompletion, responsesSseToChatStream } from "./custom-provider-compat"
+import { chatImagePartToResponsesImagePart, chatRequestToResponses, clampResponsesCallId, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./custom-provider-compat"
 import { messagesRequestToChat } from "../messages/convert"
 
 describe("custom provider protocol compatibility", () => {
@@ -117,6 +117,47 @@ describe("custom provider protocol compatibility", () => {
     const output = await new Response(responsesSseToChatStream(stream)).text()
     expect(output).toContain('"reasoning_content":"thinking"')
     expect(output).toContain('"content":"answer"')
+  })
+})
+
+describe("responsesSseToJson（chat 非流式聚合）", () => {
+  const completedFixture = [
+    'data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.4-mini"}}\n\n',
+    'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+    'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4-mini","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi there"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}\n\n',
+    'data: [DONE]\n\n',
+  ].join("")
+
+  it("优先取 response.completed 的 response 对象", () => {
+    expect(responsesSseToJson(completedFixture)).toMatchObject({
+      id: "resp_1",
+      status: "completed",
+      usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+    })
+  })
+
+  it("无 completed 时回退最后一个带 response 的事件", () => {
+    const raw = [
+      'data: {"type":"response.created","response":{"id":"resp_1"}}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+    ].join("")
+    expect(responsesSseToJson(raw)).toEqual({ id: "resp_1" })
+  })
+
+  it("空流/[DONE]/乱码 → null（调用方回 invalid_upstream_response）", () => {
+    expect(responsesSseToJson("")).toBeNull()
+    expect(responsesSseToJson("data: [DONE]\n\n")).toBeNull()
+    expect(responsesSseToJson("not sse at all")).toBeNull()
+    expect(responsesSseToJson('data: {"type":"response.output_text.delta","delta":"hi"}\n\n')).toBeNull()
+  })
+
+  it("聚合结果经 responsesJsonToChatCompletion 转出完整 chat JSON（含 usage）", () => {
+    const aggregated = responsesSseToJson(completedFixture)
+    expect(responsesJsonToChatCompletion({ ...aggregated, id: "resp_1", model: "gpt-5.4-mini" })).toMatchObject({
+      object: "chat.completion",
+      choices: [{ message: { role: "assistant", content: "hi there" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    })
   })
 })
 

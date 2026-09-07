@@ -17,7 +17,7 @@ import { injectDefaultServerTools, normalizeToolsInBody } from "./responses/tool
 import { getProxyDispatcher, resolveMirrorPlanForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
-import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream } from "./responses/custom-provider-compat"
+import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
 import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
 import { chatJsonToMessages, chatSseToMessagesStream, messagesRequestToChat } from "./messages/convert"
@@ -882,6 +882,30 @@ upstream = await this.fetcher(mirrorPlan2.url, {
           }
           // 以缓冲报文重建 upstream，后续 processResponses / 直通路径照常处理。
           upstream = new Response(raw, { status: upstream.status, statusText: upstream.statusText, headers: upstream.headers })
+        }
+        if (processChat && attemptResponsesToChat && !stream && contentType.includes("text/event-stream") && upstream.body) {
+          // chat 非流式经 chat->responses 上行：上游恒为 SSE（body stream 被强制 true），
+          // 需聚合 response.completed 再一次性返回 chat JSON，而非把 SSE 流透给非流式客户端。
+          const raw = await upstream.text()
+          const aggregated = responsesSseToJson(raw)
+          const converted: unknown = aggregated
+            ? responsesJsonToChatCompletion(aggregated)
+            : { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }
+          const body = JSON.stringify(converted)
+          routing.markSuccess(selection.account.id)
+          if (provider?.extractQuotaFromResponse) {
+            const qw = provider.extractQuotaFromResponse(upstream.headers)
+            if (qw) this.recordPassiveQuota(selection.account.id, qw)
+          }
+          const status = upstream.status
+          const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+          if (!parts.some((p) => p.startsWith("aggregate:"))) parts.push("aggregate:sse-to-chat-json")
+          routeMeta.transformSummary = parts.join(" | ")
+          this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
+          this.finalizeRequest(requestId, { status, outcome: "SUCCESS", attempts: attemptNumber, ok: 1, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, usage: extractUsage(converted), accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: body.length, logSettings, requestBodyJson, responseBody: logging ? converted : undefined, responseTruncated: false, meta, ...routeMeta })
+          const headers = responseHeaders(upstream.headers)
+          headers.set("content-type", "application/json")
+          return new Response(body, { status, headers })
         }
         if (contentType.includes("text/event-stream") && upstream.body) {
           const reader = upstream.body.getReader()

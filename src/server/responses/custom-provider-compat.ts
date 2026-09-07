@@ -167,6 +167,29 @@ export function responsesJsonToChatCompletion(payload: unknown): Obj {
   }
 }
 
+/**
+ * 把上游 responses SSE 全文聚合成单个 response 对象（供 chat 非流式聚合）：
+ * 优先取 `response.completed` 事件的 response；缺失时回退最后一个带 response 的事件；
+ * 无任何可用事件（空流/[DONE]/乱码）返回 null，调用方回 invalid_upstream_response。
+ */
+export function responsesSseToJson(rawText: string): Obj | null {
+  let fallback: Obj | null = null
+  for (const event of rawText.split(/\r?\n\r?\n/)) {
+    const raw = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
+    if (!raw || raw === "[DONE]") continue
+    let data: unknown
+    try {
+      data = JSON.parse(raw)
+    } catch {
+      continue
+    }
+    if (!isObj(data) || !isObj(data.response)) continue
+    fallback = data.response
+    if (String(data.type ?? "") === "response.completed") return data.response
+  }
+  return fallback
+}
+
 function chatChunk(data: Obj, state: { id: string; model?: unknown; created: number }): Obj | null {
   const type = String(data.type ?? "")
   const base = { id: state.id, object: "chat.completion.chunk", created: state.created, model: state.model }

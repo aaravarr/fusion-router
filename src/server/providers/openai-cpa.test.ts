@@ -342,7 +342,60 @@ describe("normalizeCodexResponsesBody（CLIProxyAPI body 契约）", () => {
       input: [{ type: "message", role: "user", content: "hi" }],
       instructions: "inst",
       stream: true,
+      store: false,
     })
+  })
+
+  it("生产三报错 payload 规范化：input 字符串包装 / store 强制 false / include_usage 剥离", () => {
+    // 报错1：{"detail":"Input must be a list"}——input 字符串包装为标准列表形态
+    const stringInput = decode(normalizeCodexResponsesBody(encode({
+      model: "gpt-5.4-mini",
+      input: "Hello, who are you?",
+      stream: true,
+    })))
+    expect(stringInput.input).toEqual([{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Hello, who are you?" }],
+    }])
+    // 列表 input 不动
+    const listInput = [{ type: "message", role: "user", content: "hi" }]
+    expect(decode(normalizeCodexResponsesBody(encode({ model: "gpt-5.4-mini", input: listInput }))).input).toEqual(listInput)
+
+    // 报错2：{"detail":"Store must be set to false"}——store 无条件强制 false
+    expect(decode(normalizeCodexResponsesBody(encode({ model: "gpt-5.4-mini", input: [], store: true }))).store).toBe(false)
+    expect(decode(normalizeCodexResponsesBody(encode({ model: "gpt-5.4-mini", input: [] }))).store).toBe(false)
+
+    // 报错3：{"detail":"Unsupported parameter: include_usage"}——顶层与 stream_options 内一并剥离
+    const usageStripped = decode(normalizeCodexResponsesBody(encode({
+      model: "gpt-5.4-mini",
+      input: [],
+      include_usage: true,
+      stream_options: { include_usage: true },
+    })))
+    expect(usageStripped.include_usage).toBeUndefined()
+    expect(usageStripped.stream_options).toBeUndefined()
+  })
+
+  it("CLIProxyAPI 不支持参数一并剥离：max_output_tokens/采样参数/service_tier", () => {
+    const out = decode(normalizeCodexResponsesBody(encode({
+      model: "gpt-5.4-mini",
+      input: [],
+      max_output_tokens: 1024,
+      max_completion_tokens: 512,
+      temperature: 0.7,
+      top_p: 0.9,
+      truncation: "auto",
+      prompt_cache_options: {},
+      context_management: {},
+      user: "u-1",
+      service_tier: "default",
+    })))
+    for (const key of ["max_output_tokens", "max_completion_tokens", "temperature", "top_p", "truncation", "prompt_cache_options", "context_management", "user", "service_tier"]) {
+      expect(out[key]).toBeUndefined()
+    }
+    // service_tier 仅保留 priority（CLIProxyAPI 同款）
+    expect(decode(normalizeCodexResponsesBody(encode({ model: "gpt-5.4-mini", input: [], service_tier: "priority" }))).service_tier).toBe("priority")
   })
 
   it("非 JSON / 数组 / 空 body 原样透传", () => {
