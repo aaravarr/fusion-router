@@ -6,6 +6,7 @@ import { CustomProviderRepository } from "./custom-providers"
 import { classifyGoUsageLimit, computeBackoffMs, GatewayService, planSameAccountRetry, type CredentialProvider } from "./gateway"
 import { RoutingService } from "./routing"
 import { getSystemSettings, initializeSystemSettings, updateSystemSettings } from "./settings"
+import { OPENROUTER_CACHE_KEY } from "./mcp/openrouter-models"
 
 const encryptionKey = Buffer.alloc(32, 8).toString("base64")
 const ownerUserId = "user-1"
@@ -1252,6 +1253,94 @@ describe("opencode-go muse-* 强制原生 responses", () => {
     expect(attempt.status).toBe(500)
     expect(attempt.decision).toBe("RETURN_DIRECTLY")
     expect(attempt.response_body).toBe(upstreamError)
+  })
+
+  // 2026-09-07 生产 400（dac712f2）：muse 纯文本模型 chat 入口带图，剥图未触发
+  // （OpenRouter 目录无池内专用 id → modelSupportsImage null 放行），chat->responses
+  // 产出 input_image 被上游拒绝。修复后：provider 硬声明 muse-* 不支持图片，
+  // 图片在转换链路上游前已被 rewriteImagesToText 剥为文本占位。
+  it("chat 入口 + muse + image_url part：剥图为文本占位后上行 /responses，无 input_image", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const sent = { url: "", body: {} as Record<string, unknown> }
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: MUSE_MODEL,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "看这个" }, { type: "image_url", image_url: { url: "https://example.com/shot-84.png" } }] },
+          { role: "assistant", content: "看到了" },
+          { role: "user", content: [{ type: "text", text: "还有这个" }, { type: "image_url", image_url: { url: "https://example.com/shot-86.png" } }] },
+        ],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, capturingFetcher(sent), hasher).handle(req, "chat/completions")
+    expect(response.status, await response.clone().text()).toBe(200)
+    // 仍走 chat->responses 转换上行原生 /responses
+    expect(sent.url).toContain("/responses")
+    const input = sent.body.input as Array<{ role?: string; content?: unknown }>
+    expect(Array.isArray(input)).toBe(true)
+    const allParts = input.flatMap((item) => Array.isArray(item.content) ? item.content as Array<Record<string, unknown>> : [])
+    // 转换后无任何 input_image（生产 400 的直接成因被消除）
+    expect(allParts.filter((p) => p && String(p.type) === "input_image")).toEqual([])
+    // 图片位置为文本占位（与既有 [图片: url] 惯例一致），文本 part 无损保留
+    expect(allParts).toContainEqual({ type: "input_text", text: "[图片: https://example.com/shot-84.png]" })
+    expect(allParts).toContainEqual({ type: "input_text", text: "[图片: https://example.com/shot-86.png]" })
+    expect(allParts).toContainEqual({ type: "input_text", text: "看这个" })
+    const row = db.prepare("SELECT upstream_endpoint, route_reason, converted FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.upstream_endpoint).toBe("responses")
+    expect(row.route_reason).toBe("chat_to_responses")
+    expect(row.converted).toBe(1)
+  })
+})
+
+// 别伤多模态：omen-alpha（opencode-go 池，supportedInterfaces 只声明 chat）带图请求
+// 必须原生保真上行——muse 硬声明不得误伤其他模型的图片通路。
+describe("opencode-go 带图请求多模态回归（omen-alpha 图片保真）", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  it("chat 入口 + omen-alpha + image_url part：原生 /chat/completions，图片 part 原样保真", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    // omen-alpha 不在 bootstrap 目录：routing 依全局 provider_model_cache 判能力，增量补播。
+    const cacheRow = getDatabase().prepare("SELECT models_json FROM provider_model_cache WHERE pool_type='opencode-go'").get() as { models_json: string } | undefined
+    const cached = cacheRow ? (JSON.parse(cacheRow.models_json) as string[]) : []
+    if (!cached.includes("omen-alpha")) {
+      getDatabase().prepare("REPLACE INTO provider_model_cache(pool_type,models_json,source,updated_at) VALUES ('opencode-go',?,'DEFAULT',?)")
+        .run(JSON.stringify([...cached, "omen-alpha"]), new Date().toISOString())
+    }
+    // 播种 OpenRouter 模态缓存（避免真实网络）：omen-alpha 目录确认支持图片。
+    db.prepare("INSERT INTO system_settings(key, value_json, is_secret, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
+      .run(OPENROUTER_CACHE_KEY, JSON.stringify({ fetchedAt: new Date().toISOString(), models: { "omen-alpha": ["text", "image"] } }), new Date().toISOString())
+    const sent = { url: "", body: {} as Record<string, unknown> }
+    const imagePart = { type: "image_url", image_url: { url: "https://example.com/omen.png" } }
+    const fetcher = vi.fn().mockImplementation(async (url: unknown, init: { body: Uint8Array }) => {
+      sent.url = String(url)
+      sent.body = JSON.parse(new TextDecoder().decode(init.body)) as Record<string, unknown>
+      return Response.json({
+        id: "chatcmpl_omen", object: "chat.completion", model: "omen-alpha",
+        choices: [{ index: 0, message: { role: "assistant", content: "图已收到" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+      })
+    })
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "omen-alpha",
+        messages: [{ role: "user", content: [{ type: "text", text: "描述这张图" }, imagePart] }],
+      }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status, await response.clone().text()).toBe(200)
+    // 原生 chat 直通，不经转换
+    expect(sent.url).toContain("/chat/completions")
+    expect(sent.url).not.toContain("/responses")
+    const messages = sent.body.messages as Array<{ role: string; content: unknown }>
+    // 图片 part 逐字节保真（未被剥成文本占位）
+    expect(messages[0].content).toEqual([{ type: "text", text: "描述这张图" }, imagePart])
+    const row = db.prepare("SELECT upstream_endpoint, converted FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.upstream_endpoint).toBe("chat/completions")
+    expect(row.converted).toBe(0)
   })
 })
 

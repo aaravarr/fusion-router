@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { ensureProvidersRegistered, tryGetProvider } from "./index"
-import { isMessagesUnsupportedModel, isMuseResponsesOnlyModel, MUSE_RATE_LIMIT_MAX_RETRIES, MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL, PASSTHROUGH_HEADERS } from "./opencode-go"
+import { isMessagesUnsupportedModel, isMuseResponsesOnlyModel, MUSE_RATE_LIMIT_MAX_RETRIES, MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL, opencodeGoImageSupportDeclaration, PASSTHROUGH_HEADERS } from "./opencode-go"
 import { decideUpstreamRoute } from "../messages/route-decision"
 import { messagesRequestToChat } from "../messages/convert"
 
@@ -41,6 +41,23 @@ describe("opencode-go supportedInterfaces（responses 白名单 + muse 强制 re
     const ifs = provider().supportedInterfaces!(undefined)
     expect(ifs).not.toContain("responses")
     expect(ifs).toEqual(["chat", "messages"])
+  })
+})
+
+// muse-* 纯文本模型：图片输入能力硬声明（2026-09-07 生产 400 dac712f2：
+// OpenRouter 目录查不到池内专用 id → modelSupportsImage 返回 null 放行 →
+// chat->responses 产出 input_image 被上游拒绝）。硬声明与 isMuseResponsesOnlyModel 同源。
+describe("opencode-go 图片输入能力硬声明（muse-* 纯文本）", () => {
+  it("muse-* 各变体一律硬声明不支持图片（false）", () => {
+    for (const model of ["muse-spark-1.3-contributor", "muse-spark-1.2-contributor", "muse-spark-1.2", "Muse-Spark-9.9", "MUSE-X", " muse-spark-1.2 "]) {
+      expect(opencodeGoImageSupportDeclaration(model), model).toBe(false)
+    }
+  })
+
+  it("非 muse 模型无硬声明（null），交由 OpenRouter 目录兜底", () => {
+    for (const model of ["omen-alpha", "deepseek-v4-flash", "qwen3.7-plus", "gpt-5.6-luna", "muse", "musex-1", "not-muse-1", ""]) {
+      expect(opencodeGoImageSupportDeclaration(model), model).toBeNull()
+    }
   })
 })
 

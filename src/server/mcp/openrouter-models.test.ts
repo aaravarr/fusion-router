@@ -104,6 +104,40 @@ describe("modelSupportsImage", () => {
     expect(await modelSupportsImage("mimo-v2.5", db, failFetch)).toBe(true)
     db.close()
   })
+
+  // 2026-09-07 生产 400（dac712f2）：muse-spark-1.3-contributor 为池内专用 id，
+  // OpenRouter 目录查不到 → 旧逻辑返回 null（未知放行）→ 剥图未触发 → 上游拒绝 input_image。
+  it("muse-* 经 provider 硬声明返回 false（不依赖 OpenRouter 目录）", async () => {
+    const db = makeDb()
+    for (const m of ["muse-spark-1.3-contributor", "muse-spark-1.2-contributor", "muse-spark-1.2", "Muse-Spark-9.9"]) {
+      expect(await modelSupportsImage(m, db, mockFetch(OR_PAYLOAD)), m).toBe(false)
+    }
+    db.close()
+  })
+
+  it("muse 硬声明优先于 OpenRouter 目录（目录即使标 image 也不采信）", async () => {
+    const db = makeDb()
+    const payloadWithMuse = {
+      data: [{ id: "meta/muse-spark-1.3-contributor", architecture: { input_modalities: ["text", "image"] } }],
+    }
+    expect(await modelSupportsImage("muse-spark-1.3-contributor", db, mockFetch(payloadWithMuse))).toBe(false)
+    db.close()
+  })
+
+  it("muse 硬声明在 OpenRouter 拉取前短路（无网络也生效）", async () => {
+    const db = makeDb()
+    const failFetch = vi.fn(async () => { throw new Error("network down") }) as unknown as typeof fetch
+    expect(await modelSupportsImage("muse-spark-1.3-contributor", db, failFetch)).toBe(false)
+    expect(failFetch).not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it("其他模型不受影响：未知模型仍 null 放行，多模态目录判定不变", async () => {
+    const db = makeDb()
+    expect(await modelSupportsImage("omen-alpha", db, mockFetch(OR_PAYLOAD))).toBeNull()
+    expect(await modelSupportsImage("qwen3.7-plus", db, mockFetch(OR_PAYLOAD))).toBe(true)
+    db.close()
+  })
 })
 
 describe("hasImageInBody", () => {
