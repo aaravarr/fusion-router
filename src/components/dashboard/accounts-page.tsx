@@ -81,6 +81,7 @@ const POOL_FILTERS = [
   { key: "kimi-code", label: "Kimi Code" },
   { key: "open-design-go", label: "OpenDesign Go" },
   { key: "glm-coding", label: "GLM Coding Plan" },
+  { key: "command-code", label: "Command Code" },
 ] as const;
 
 const STATUS_FILTERS = [
@@ -122,6 +123,12 @@ function glmPlanLevel(account: Account): string | null {
   return typeof extra?.level === "string" && extra.level ? extra.level : null;
 }
 
+/** Command Code 套餐标识：来自 quota_windows 的 extra.plan（/alpha/usage/summary，契约待实测）。 */
+function commandCodePlan(account: Account): string | null {
+  const extra = (getQuota(account, "fiveHour") ?? getQuota(account, "weekly"))?.extra as Record<string, unknown> | undefined;
+  return typeof extra?.plan === "string" && extra.plan ? extra.plan : null;
+}
+
 export function AccountsPage() {
   const { adminFetch } = useAdmin();
   const confirm = useConfirm();
@@ -142,6 +149,7 @@ export function AccountsPage() {
   const [kimiApiKeyOpen, setKimiApiKeyOpen] = useState(false);
   const [glmOauthOpen, setGlmOauthOpen] = useState(false);
   const [glmApiKeyOpen, setGlmApiKeyOpen] = useState(false);
+  const [commandCodeApiKeyOpen, setCommandCodeApiKeyOpen] = useState(false);
   const [openDesignGoOpen, setOpenDesignGoOpen] = useState(false);
   const [jobVersion, setJobVersion] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -539,6 +547,8 @@ export function AccountsPage() {
                   <DropdownMenuItem className="whitespace-nowrap" onSelect={() => setGlmOauthOpen(true)}><KeyRound />GLM OAuth 登录</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+            ) : poolFilter === "command-code" ? (
+              <Button size="sm" onClick={() => setCommandCodeApiKeyOpen(true)}><KeyRound data-icon="inline-start" />Command Code API Key</Button>
             ) : poolFilter === "open-design-go" ? (
               <Button size="sm" onClick={() => setOpenDesignGoOpen(true)}><Upload data-icon="inline-start" />导入 OpenDesign Go</Button>
             ) : null}
@@ -636,6 +646,8 @@ export function AccountsPage() {
               <Button size="sm" onClick={() => setKimiApiKeyOpen(true)}><KeyRound />Kimi API Key</Button>
             ) : poolFilter === "glm-coding" ? (
               <Button size="sm" onClick={() => setGlmApiKeyOpen(true)}><KeyRound />GLM API Key</Button>
+            ) : poolFilter === "command-code" ? (
+              <Button size="sm" onClick={() => setCommandCodeApiKeyOpen(true)}><KeyRound />Command Code API Key</Button>
             ) : poolFilter === "openai" ? (
               <Button size="sm" onClick={() => setOpenaiOauthOpen(true)}><KeyRound />OpenAI OAuth 登录</Button>
             ) : poolFilter === "open-design-go" ? (
@@ -764,6 +776,7 @@ export function AccountsPage() {
       <KimiApiKeyDialog open={kimiApiKeyOpen} onOpenChange={setKimiApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <GlmOauthLoginDialog open={glmOauthOpen} onOpenChange={setGlmOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <GlmApiKeyDialog open={glmApiKeyOpen} onOpenChange={setGlmApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
+      <CommandCodeApiKeyDialog open={commandCodeApiKeyOpen} onOpenChange={setCommandCodeApiKeyOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
       <TokenLineImportDialog spec={tokenImport} open={Boolean(tokenImport)} onOpenChange={(open) => { if (!open) setTokenImport(null); }} onCreated={() => setJobVersion((value) => value + 1)} />
       <OpenDesignGoImportDialog open={openDesignGoOpen} onOpenChange={setOpenDesignGoOpen} onCreated={() => { setJobVersion((value) => value + 1); void resource.refresh(); setActionNotice("OpenDesign Go 账号已导入"); }} />
      <AccountDetailSheet
@@ -940,6 +953,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                     <DetailRow label="号池类型" value={getPoolLabel(account.poolType, account.poolLabel)} title={account.poolLabel || account.poolType || undefined} />
                     <DetailRow label="凭据状态" value={account.authState === "VALID" ? "有效" : account.authState || "未知"} />
                     {poolOf(account) === "glm-coding" ? <DetailRow label="套餐档位" value={glmPlanLevel(account) || "未返回"} mono title="来自 GLM monitor/usage/quota/limit 的 level 字段" /> : null}
+                    {poolOf(account) === "command-code" ? <DetailRow label="套餐" value={commandCodePlan(account) || "未返回"} mono title="来自 Command Code /alpha/usage/summary 的 plan 字段" /> : null}
                     <DetailRow label="路由状态" value={account.routeState || "未知"} />
                     {account.routeReason ? <DetailRow label="状态原因" value={account.routeReason} /> : null}
                     {account.blockedUntil ? <DetailRow label="预计恢复" value={formatDate(account.blockedUntil)} mono /> : null}
@@ -1860,6 +1874,86 @@ function GlmApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onO
           </div>
           {error ? <p className="text-destructive">{error}</p> : null}
           {success ? <p className="text-success">验证通过，账号已写入 glm-coding 号池。{level ? `套餐档位：${level}。` : ""}</p> : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
+          <Button onClick={() => void onSubmit()} disabled={busy || !apiKey.trim()}>{busy ? "验证中…" : "验证并录入"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Command Code（GOAT 套餐）API Key 录入。契约：POST command-code-apikey {apiKey} →
+ * 200 {status:"success", account, plan, verified}；key 无效 400、上游不可达 502。
+ * 用裸 fetch：adminFetch 会把 401 当会话过期跳登录页，业务校验错误必须留在对话框内。
+ * 单 base 单 key（user_...），无区域切换；/alpha 验证接口未开放时后台降级为格式校验（verified=false）。
+ */
+function CommandCodeApiKeyDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (open: boolean) => void; onCreated: () => void }) {
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [plan, setPlan] = useState<string | null>(null);
+  const [verified, setVerified] = useState<boolean | null>(null);
+
+  async function onSubmit() {
+    setBusy(true);
+    setError(null);
+    setSuccess(false);
+    setPlan(null);
+    setVerified(null);
+    try {
+      const response = await fetch("/api/admin/accounts/command-code-apikey", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || "录入 Command Code API Key 失败");
+      if (payload?.error) throw new Error(payload.error.message || "录入 Command Code API Key 失败");
+      setSuccess(true);
+      setPlan(typeof payload?.plan === "string" && payload.plan ? payload.plan : null);
+      setVerified(typeof payload?.verified === "boolean" ? payload.verified : null);
+      onCreated();
+      window.setTimeout(() => onOpenChange(false), 800);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "录入失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); if (!next) { setApiKey(""); setError(null); setSuccess(false); setPlan(null); setVerified(null); } }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>录入 Command Code API Key</DialogTitle>
+          <DialogDescription>
+            粘贴 Command Code Studio 创建的 API Key（user_... 形态，长期有效）。
+            后台会先实测 /alpha/whoami 验证 Key 有效性，通过后直接写入 command-code 号池。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <Input
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="user_..."
+            className="font-mono"
+            spellCheck={false}
+            autoFocus
+          />
+          {error ? <p className="text-destructive">{error}</p> : null}
+          {success ? (
+            <p className="text-success">
+              {verified === false
+                ? "验证接口未开放，已按格式校验录入 command-code 号池。"
+                : `验证通过，账号已写入 command-code 号池。${plan ? `套餐：${plan}。` : ""}`}
+            </p>
+          ) : null}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>

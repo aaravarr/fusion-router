@@ -5,6 +5,7 @@ import { XAIGrokProvider } from "./xai-grok"
 import { KimiCodeProvider } from "./kimi-code"
 import { OpenDesignGoProvider } from "./open-design-go"
 import { GlmCodingProvider } from "./glm-coding"
+import { CommandCodeProvider } from "./command-code"
 import { CustomProvider } from "./custom"
 import { getCustomProviderByPoolType } from "../custom-providers"
 
@@ -23,6 +24,7 @@ export function ensureProvidersRegistered(): void {
   registry.register(new KimiCodeProvider())
   registry.register(new OpenDesignGoProvider())
   registry.register(new GlmCodingProvider())
+  registry.register(new CommandCodeProvider())
 }
 
 // Trigger registration on module load

@@ -59,6 +59,14 @@ export const PROVIDER_DOMAIN_PRESETS: DomainPresetGroup[] = [
     ],
   },
   {
+    poolType: "command-code",
+    label: "Command Code",
+    domains: [
+      { domain: "api.commandcode.ai", label: "api.commandcode.ai", description: "Command Code 推理端点（/provider/v1）与用量/whoami 管理面（/alpha/*）。" },
+      { domain: "commandcode.ai", label: "commandcode.ai", description: "Command Code 官网 / Studio 控制台（API key 创建入口）。" },
+    ],
+  },
+  {
     poolType: "github",
     label: "GitHub",
     domains: [

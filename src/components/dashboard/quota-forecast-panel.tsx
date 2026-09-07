@@ -16,6 +16,7 @@ const poolOptions = [
   { value: "xai-grok", label: "xAI Grok" },
   { value: "kimi-code", label: "Kimi Code" },
   { value: "glm-coding", label: "GLM Coding Plan" },
+  { value: "command-code", label: "Command Code" },
 ] as const;
 
 const chartConfig: ChartConfig = {

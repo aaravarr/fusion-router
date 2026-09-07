@@ -6,7 +6,7 @@ export const BILLING_GUARDS = ["VERIFIED_GO_ONLY", "PAYG_FALLBACK_ENABLED", "UNV
 const _ROLLING_24H = "ROLLING_24H"
 export const QUOTA_KINDS = ["PERMANENT", "FIVE_HOUR", "WEEKLY", "MONTHLY", "CUSTOM_PERIOD", "UNKNOWN_GO_LIMIT", _ROLLING_24H, "PROVIDER_RATE_LIMIT"] as const
 
-export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go", "glm-coding"] as const
+export const POOL_TYPES = ["opencode-go", "openai", "xai-grok", "kimi-code", "open-design-go", "glm-coding", "command-code"] as const
 export type BuiltinPoolType = (typeof POOL_TYPES)[number]
 export type PoolType = BuiltinPoolType | `custom:${string}`
 
@@ -121,6 +121,12 @@ export interface ProviderAccountData {
   glmUserId?: string
   /** glm-coding：monitor usage 返回的套餐等级（如 pro）。 */
   glmLevel?: string
+  /** command-code：/alpha/whoami 验证是否成功（"true"/"false"；/alpha 未开放时降级录入为 "false"）。 */
+  commandCodeVerified?: string
+  /** command-code：/alpha/whoami 返回的套餐标识（契约待实测）。 */
+  commandCodePlan?: string
+  /** command-code：/alpha/whoami 返回的用户 ID（契约待实测）。 */
+  commandCodeUserId?: string
 }
 
 export interface ModelRouteRule {

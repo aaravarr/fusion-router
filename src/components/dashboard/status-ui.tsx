@@ -9,6 +9,7 @@ export const POOL_TYPE_META: Record<string, { label: string; description: string
   "kimi-code": { label: "Kimi Code", description: "Kimi Code 设备码 OAuth，5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
   "open-design-go": { label: "OpenDesign Go", description: "OpenDesign Go 订阅（OpenAI 兼容），按月计费，凭据来自 ~/.amr/config.json", quotaKinds: ["monthly"] },
   "glm-coding": { label: "GLM Coding Plan", description: "智谱 GLM Coding Plan（ZCode 指纹），5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
+  "command-code": { label: "Command Code", description: "Command Code GOAT 套餐（Studio API key），5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
 };
 
 export function getPoolQuotaKinds(poolType?: string | null) {
@@ -84,6 +85,7 @@ export function PoolTypeBadge({ poolType, label }: { poolType?: string | null; l
   const isGrok = type === "xai-grok";
   const isKimi = type === "kimi-code";
   const isGlm = type === "glm-coding";
+  const isCommandCode = type === "command-code";
   return (
     <Badge
       variant="outline"
@@ -96,7 +98,9 @@ export function PoolTypeBadge({ poolType, label }: { poolType?: string | null; l
               ? "border-orange-300/40 bg-orange-50 text-orange-700"
               : isGlm
                 ? "border-indigo-300/40 bg-indigo-50 text-indigo-700"
-                : "border-info/20 bg-info-soft text-info"
+                : isCommandCode
+                  ? "border-cyan-300/40 bg-cyan-50 text-cyan-700"
+                  : "border-info/20 bg-info-soft text-info"
       }`}
     >
       {poolDisplayLabel(poolType, label).text}
@@ -187,6 +191,10 @@ export function BillingSafetyBadge({ account }: { account: Account }) {
   if (poolType === "glm-coding") {
     // coding-plan API key 只能消耗套餐内额度，无按量扣费风险。
     return <Badge variant="outline" className="h-5 rounded-sm border-indigo-300/40 bg-indigo-50 px-1.5 text-[11px] text-indigo-700">Coding Plan</Badge>;
+  }
+  if (poolType === "command-code") {
+    // GOAT 套餐 API key 只能消耗套餐内额度（5h/weekly 窗口 + 月度 credits），无按量扣费风险。
+    return <Badge variant="outline" className="h-5 rounded-sm border-cyan-300/40 bg-cyan-50 px-1.5 text-[11px] text-cyan-700">GOAT Plan</Badge>;
   }
   if (poolType === "openai") {
     return <Badge variant="outline" className="h-5 rounded-sm border-violet/20 bg-violet-soft px-1.5 text-[11px] text-violet-deep">OpenAI Codex</Badge>;
