@@ -71,7 +71,12 @@ function nestedRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
-function parseIdentity(idToken: string, accessToken: string): Omit<OpenAIOAuthToken, "accessToken" | "refreshToken" | "idToken" | "expiresAt" | "expiresIn" | "tokenType" | "scope"> {
+/**
+ * id_token 不验签、base64url 解 payload 取身份（CLIProxyAPI 契约，2026-09-07 核实）：
+ * email、https://api.openai.com/auth.chatgpt_account_id（AccountID）、chatgpt_plan_type。
+ * access_token 兜底（同为 JWT 时携带相同 auth claims）。供 provider/导入链复用。
+ */
+export function parseOpenAIIdentity(idToken: string, accessToken: string): Omit<OpenAIOAuthToken, "accessToken" | "refreshToken" | "idToken" | "expiresAt" | "expiresIn" | "tokenType" | "scope"> {
   const claims = decodeJwtClaims(idToken) ?? decodeJwtClaims(accessToken) ?? {}
   const auth = nestedRecord(claims["https://api.openai.com/auth"])
   const organizations = Array.isArray(auth.organizations) ? auth.organizations.map(nestedRecord) : []
@@ -109,6 +114,9 @@ export function startOpenAIOAuthSession(ownerUserId: string): { sessionId: strin
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
+    // CLIProxyAPI 契约（2026-09-07 源码核实）：prompt=login 强制重新登录，
+    // 避免浏览器已有会话静默复用导致录入错号。
+    prompt: "login",
     id_token_add_organizations: "true",
     codex_cli_simplified_flow: "true",
   })
@@ -157,7 +165,7 @@ export async function completeOpenAIOAuthSession(ownerUserId: string, sessionId:
     expiresAt: Math.floor(Date.now() / 1000) + expiresIn,
     tokenType: typeof payload?.token_type === "string" ? payload.token_type : "Bearer",
     scope: typeof payload?.scope === "string" ? payload.scope : "",
-    ...parseIdentity(idToken, accessToken),
+    ...parseOpenAIIdentity(idToken, accessToken),
   }
 }
 

@@ -36,6 +36,7 @@ export async function POST(request: Request) {
       token: token.accessToken,
       refreshToken: token.refreshToken,
       expiresAt: String(token.expiresAt),
+      expiresIn: String(token.expiresIn),
       clientId: OPENAI_OAUTH_CLIENT_ID,
       tokenType: token.tokenType,
     }

@@ -1,9 +1,17 @@
 /**
- * OpenAI Codex Provider
+ * OpenAI Codex Provider（CLIProxyAPI 契约对齐版）
  *
- * Unified pool for OpenAI Codex accounts: Personal Access Tokens (at-*) and
- * OAuth accounts with refresh tokens. Refresh is applied automatically when
- * refreshToken is present. Upstream: chatgpt.com/backend-api/codex.
+ * 统一号池：OpenAI Codex OAuth 账号（refresh token 自动刷新）与 Personal
+ * Access Token（at-*，无刷新）。上游：chatgpt.com/backend-api/codex。
+ *
+ * 契约来源：CLIProxyAPI（Go 项目，OpenAI 官方支持的接入方式）源码，2026-09-07 核实。
+ * 关键对齐点（逐项注释标注）：
+ *  - cloaking 指纹头：codex-tui UA + Originator（强制伪装，不透传客户端 UA）
+ *  - OAuth 凭据推理必带 Chatgpt-Account-Id
+ *  - 刷新提前 24h（RefreshLead）；refresh_token_reused/401 → revoked 墓碑停止刷新
+ *  - usage_limit_reached → credentialScoped 冷却（resets_at/resets_in_seconds）
+ *  - "model is at capacity" → 429 换号；401/authentication_error → 判死切号
+ *  - body 规范化：stream:true、instructions 兜底 ""、删除指定字段
  */
 
 import type {
@@ -19,14 +27,39 @@ import type { PoolType } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
 import { apiFetch, apiFetchWithMirrorContext } from "../api-fetch"
-import { OPENAI_OAUTH_CLIENT_ID, OPENAI_OAUTH_TOKEN_URL } from "../openai-oauth"
+import { OPENAI_OAUTH_CLIENT_ID, OPENAI_OAUTH_TOKEN_URL, parseOpenAIIdentity } from "../openai-oauth"
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
 const CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 const OPENAI_PAT_WHOAMI_URL = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
 const CODEX_UPSTREAM_BASE_URL = "https://chatgpt.com/backend-api/codex"
-const CODEX_USER_AGENT = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+
+// CLIProxyAPI cloaking 指纹头（2026-09-07 源码核实）：UA 与 Originator 必须
+// 是同一套 codex-tui 组合（CLIProxyAPI 强制伪装 Codex CLI 官方 TUI 客户端），
+// 客户端 UA 一律不透传。
+const CODEX_CLOAK_USER_AGENT = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+const CODEX_CLOAK_ORIGINATOR = "codex-tui"
+
+// CLIProxyAPI RefreshLead = 24h：access_token 距过期不足 24h 即提前刷新。
+const OPENAI_REFRESH_LEAD_SECONDS = 24 * 3600
+// CLIProxyAPI 刷新 grant：grant_type=refresh_token&client_id&refresh_token&scope="openid profile email"。
+const OPENAI_REFRESH_SCOPE = "openid profile email"
+// token 端点返回这些 error.code（或 401）= refresh_token 已被吊销/复用，凭据判死。
+const OPENAI_REFRESH_FATAL_CODES = new Set(["refresh_token_reused", "invalid_grant"])
+
+// 刷新瞬时失败（网络/5xx）指数退避：保留旧 token，10s×2^n（封顶 10min）后再试。
+const REFRESH_BACKOFF_BASE_MS = 10_000
+const REFRESH_BACKOFF_MAX_MS = 10 * 60_000
+
+// CLIProxyAPI codex 转发约束：body 删除这些字段（其余原样透传 responses 形态）。
+const CODEX_BODY_STRIP_KEYS = [
+  "previous_response_id",
+  "generate",
+  "prompt_cache_retention",
+  "safety_identifier",
+  "stream_options",
+] as const
 
 // Windows with limit_window_seconds <= 21600 (6h) are classified as 5h;
 // anything larger is weekly.
@@ -47,39 +80,97 @@ const CODEX_MODELS = [
 
 const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
 
+/**
+ * refresh_token 被上游拒绝（401 / refresh_token_reused / invalid_grant）时抛出，
+ * 表示凭据已失效、需要重新登录。与网络/5xx 抖动区分：provider 据此写 revokedAt
+ * 墓碑并停止刷新调度，而不是拿死 token 反复白刷（CLIProxyAPI revoked 语义）。
+ */
+export class OpenAITokenRevokedError extends Error {
+  readonly status: number | null
+
+  constructor(message: string, status: number | null = null) {
+    super(message)
+    this.name = "OpenAITokenRevokedError"
+    this.status = status
+  }
+}
+
+// ─── Token Endpoint ──────────────────────────────────────────────────────
+
+export interface OpenAIRefreshedToken {
+  accessToken: string
+  refreshToken: string
+  idToken: string
+  /** access_token 过期时刻（unix 秒，字符串——与既有凭据存储格式一致）。 */
+  expiresAt: string
+  expiresIn: number
+  /** id_token 解出的 ChatGPT AccountID（https://api.openai.com/auth.chatgpt_account_id）。 */
+  chatgptAccountId: string
+  email: string
+  planType: string
+}
+
+/**
+ * 用 refresh_token 换新 access_token（CLIProxyAPI 契约：POST
+ * auth.openai.com/oauth/token，x-www-form-urlencoded + Accept: application/json，
+ * 携带 scope="openid profile email"）。token 响应 {access_token, refresh_token,
+ * id_token, token_type, expires_in}；id_token 不验签、base64url 解 payload 取身份。
+ * 401 / refresh_token_reused / invalid_grant → OpenAITokenRevokedError（凭据判死）。
+ */
 export async function exchangeOpenAIRefreshToken(
   refreshToken: string,
   clientId = OPENAI_OAUTH_CLIENT_ID,
-): Promise<{
-  accessToken: string
-  refreshToken: string
-  expiresAt: string
-}> {
+): Promise<OpenAIRefreshedToken> {
   const resp = await apiFetch(OPENAI_OAUTH_TOKEN_URL, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
       client_id: clientId || OPENAI_OAUTH_CLIENT_ID,
+      scope: OPENAI_REFRESH_SCOPE,
     }).toString(),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
   const body = await resp.text()
-  if (!resp.ok) throw new Error(`OpenAI refresh token 刷新失败（HTTP ${resp.status}）`)
-  const token = JSON.parse(body) as { access_token?: string; refresh_token?: string; expires_in?: number }
+  if (!resp.ok) {
+    let errorCode = ""
+    try {
+      const parsed = JSON.parse(body) as { error?: unknown }
+      errorCode = typeof parsed.error === "string" ? parsed.error : ""
+    } catch { /* 非 JSON 错误体 */ }
+    if (resp.status === 401 || OPENAI_REFRESH_FATAL_CODES.has(errorCode)) {
+      throw new OpenAITokenRevokedError(
+        `OpenAI refresh_token 已被上游拒绝（${errorCode || `HTTP ${resp.status}`}），凭据失效需重新登录`,
+        resp.status,
+      )
+    }
+    throw new Error(`OpenAI refresh token 刷新失败（HTTP ${resp.status}）`)
+  }
+  const token = JSON.parse(body) as {
+    access_token?: string
+    refresh_token?: string
+    id_token?: string
+    expires_in?: number
+  }
   if (!token.access_token) throw new Error("OpenAI refresh token 响应缺少 access_token")
+  const expiresIn = Math.max(1, Number(token.expires_in) || 3600)
+  const identity = parseOpenAIIdentity(token.id_token ?? "", token.access_token)
   return {
     accessToken: token.access_token,
     refreshToken: token.refresh_token || refreshToken,
-    expiresAt: String(Math.floor(Date.now() / 1000) + (token.expires_in ?? 3600)),
+    idToken: token.id_token ?? "",
+    expiresAt: String(Math.floor(Date.now() / 1000) + expiresIn),
+    expiresIn,
+    chatgptAccountId: identity.chatgptAccountId,
+    email: identity.email,
+    planType: identity.planType,
   }
 }
 
-
-// Headers forwarded from the incoming request to the upstream.
+// Headers forwarded from the incoming request to the upstream. 注意 accept 不在
+// 其中：body 强制 stream:true，Accept 固定 text/event-stream（CLIProxyAPI 契约）。
 const PASSTHROUGH_HEADERS = [
-  "accept",
   "accept-language",
   "conversation_id",
   "session_id",
@@ -114,6 +205,15 @@ interface WhoamiResponseBody {
   chatgpt_plan_type?: string
 }
 
+/** Codex 后端结构化错误（顶层 error / 流内 response.error 两种嵌套，见 extractCodexError）。 */
+interface CodexErrorInfo {
+  type: string
+  code: string
+  message: string
+  resetsAt: unknown
+  resetsInSeconds: unknown
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 function classifyWindowBySeconds(limitWindowSeconds: number): QuotaKind {
@@ -136,6 +236,96 @@ function parseNumberFromHeader(value: string | null): number | null {
   if (value === null) return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function retryAfterSecondsFromHeader(value: string | null): number | null {
+  if (!value) return null
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return Math.max(0, Math.ceil(numeric))
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : Math.max(0, Math.ceil((parsed - Date.now()) / 1000))
+}
+
+/**
+ * 从错误体（HTTP 429 body 或 SSE error/response.failed 事件的 data JSON）提取
+ * Codex 结构化错误。按优先级查找：顶层 error 链 → response.error 链 → 顶层自身
+ * （仅当带 code/message/resets 字段；裸事件名如 response.failed 不算错误）。
+ */
+export function extractCodexError(body: string): CodexErrorInfo | null {
+  if (!body) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+  const root = parsed as Record<string, unknown>
+  // error 为纯字符串的形态（{"error":"invalid or expired token"}）归一化为 message。
+  const candidates: unknown[] = [typeof root.error === "string" ? { message: root.error } : root.error]
+  const response = root.response
+  if (response && typeof response === "object" && !Array.isArray(response)) {
+    candidates.push((response as Record<string, unknown>).error)
+  }
+  candidates.push(root)
+
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    let current: unknown = candidate
+    for (let depth = 0; current && typeof current === "object" && !Array.isArray(current) && depth < 3; depth += 1) {
+      const record = current as Record<string, unknown>
+      const type = typeof record.type === "string" ? record.type : ""
+      const code = typeof record.code === "string" ? record.code : ""
+      const message = typeof record.message === "string" ? record.message : ""
+      const hasResetFields = record.resets_at !== undefined || record.resets_in_seconds !== undefined
+      const looksLikeError = Boolean(code || message || hasResetFields || (type && candidate !== root))
+      if (looksLikeError) {
+        return { type, code, message, resetsAt: record.resets_at, resetsInSeconds: record.resets_in_seconds }
+      }
+      current = record.error
+    }
+  }
+  return null
+}
+
+/** CLIProxyAPI：error.type = usage_limit_reached → credentialScoped 冷却。 */
+function isUsageLimitReached(error: CodexErrorInfo): boolean {
+  const marker = `${error.type} ${error.code}`.toLowerCase()
+  if (marker.includes("usage_limit_reached")) return true
+  return /usage limit (?:has been )?reached/.test(error.message.toLowerCase())
+}
+
+/** CLIProxyAPI："model is at capacity" → 429 可换号重试。 */
+function isModelAtCapacity(error: CodexErrorInfo | null, body: string): boolean {
+  if (error && /at capacity/.test(`${error.type} ${error.code} ${error.message}`.toLowerCase())) return true
+  return body.toLowerCase().includes("model is at capacity")
+}
+
+/** CLIProxyAPI：401 / authentication_error / invalid or expired token → 凭据判死切号。 */
+function isCodexAuthError(error: CodexErrorInfo): boolean {
+  const marker = `${error.type} ${error.code}`.toLowerCase()
+  if (marker.includes("authentication_error") || marker.includes("invalid_token")) return true
+  return /invalid or expired (?:token|credential)/.test(error.message.toLowerCase())
+}
+
+/** usage_limit_reached 冷却时长：优先 resets_in_seconds，再 resets_at（unix s/ms/ISO）。 */
+function codexUsageLimitCooldownSeconds(error: CodexErrorInfo): number | null {
+  const inSeconds = Number(error.resetsInSeconds)
+  if (Number.isFinite(inSeconds) && inSeconds > 0) return Math.ceil(inSeconds)
+  const at = error.resetsAt
+  if (typeof at === "number" && Number.isFinite(at) && at > 0) {
+    const ms = at > 1_000_000_000_000 ? at : at * 1000
+    return Math.max(0, Math.ceil((ms - Date.now()) / 1000))
+  }
+  if (typeof at === "string" && at.trim()) {
+    const numeric = Number(at)
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return codexUsageLimitCooldownSeconds({ ...error, resetsAt: numeric, resetsInSeconds: undefined })
+    }
+    const parsed = Date.parse(at)
+    if (!Number.isNaN(parsed)) return Math.max(0, Math.ceil((parsed - Date.now()) / 1000))
+  }
+  return null
 }
 
 /**
@@ -181,59 +371,115 @@ function identifyExhaustedWindow(
   }
 }
 
+/**
+ * CLIProxyAPI codex 转发约束（2026-09-07 源码核实）：强制 stream:true；
+ * instructions 为 null/缺失时置 ""；删除 previous_response_id / generate /
+ * prompt_cache_retention / safety_identifier / stream_options。
+ * 非 JSON body 原样透传。
+ */
+export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null): Uint8Array<ArrayBuffer> | null {
+  if (!body || body.byteLength === 0) return body
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body))
+  } catch {
+    return body
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return body
+  const record = { ...(parsed as Record<string, unknown>) }
+  record.stream = true
+  if (record.instructions === null || record.instructions === undefined) record.instructions = ""
+  for (const key of CODEX_BODY_STRIP_KEYS) delete record[key]
+  return new TextEncoder().encode(JSON.stringify(record)) as Uint8Array<ArrayBuffer>
+}
+
 // ─── Provider ────────────────────────────────────────────────────────────
 
 export class OpenAICPAProvider implements Provider {
   readonly poolType: PoolType = "openai"
   readonly displayName = "OpenAI"
 
-  constructor() {}
-
   private readonly vault = new SecretVault()
+
+  /** 并发去重：同一账号的进行中刷新共享一个 Promise（refresh_token 轮换制，并发刷新会触发 refresh_token_reused 误杀）。 */
+  private readonly refreshInflight = new Map<string, Promise<ProviderCredential>>()
+  /** 瞬时失败退避状态（内存即可，对齐 CLIProxyAPI 的运行时刷新调度）。 */
+  private readonly refreshBackoff = new Map<string, { failures: number; nextAttemptAtMs: number }>()
 
   // ── Token Refresh ─────────────────────────────────────────────────────
 
-  private async refreshTokenIfNeeded(credential: ProviderCredential, accountId: string): Promise<ProviderCredential> {
+  private refreshTokenIfNeeded(credential: ProviderCredential, accountId: string): Promise<ProviderCredential> {
+    const inflight = this.refreshInflight.get(accountId)
+    if (inflight) return inflight
+    const task = this.doRefreshTokenIfNeeded(credential, accountId)
+    this.refreshInflight.set(accountId, task)
+    const cleanup = () => {
+      if (this.refreshInflight.get(accountId) === task) this.refreshInflight.delete(accountId)
+    }
+    task.then(cleanup, cleanup)
+    return task
+  }
+
+  private async doRefreshTokenIfNeeded(credential: ProviderCredential, accountId: string): Promise<ProviderCredential> {
     const db = getDatabase()
     const row = db.prepare("SELECT credential_data_ciphertext, credential_version FROM provider_credentials WHERE account_id = ?").get(accountId) as { credential_data_ciphertext: string; credential_version: number } | undefined
     if (!row) return credential
-    const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as Record<string, string>
+    const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as ProviderAccountData
 
-    // No refresh_token → AT token, no refresh needed.
+    // No refresh_token → PAT / 纯 access token，无法刷新。
     if (!data.refreshToken) return credential
 
-    // Check if token is expired or about to expire (within 3 minutes).
-    const expiresAt = data.expiresAt ? Number(data.expiresAt) : 0
+    // revoked 墓碑：凭据已判死，停止刷新调度（双保险，getCredential 已拦截）。
+    if (data.revokedAt) {
+      throw new OpenAITokenRevokedError(`OpenAI 账号凭据已失效（refresh_token 被拒绝，需重新登录），account=${accountId}`)
+    }
+
+    const expiresAtSec = Number(data.expiresAt)
+    const hasExpiry = Number.isFinite(expiresAtSec) && expiresAtSec > 0
     const now = Date.now()
-    if (expiresAt && now < (expiresAt - 180) * 1000) return credential // Still valid
+    // CLIProxyAPI RefreshLead=24h：距过期超过 24h 直接用现有 token；
+    // expiresAt 缺失/非法（旧数据）时按“需要刷新”处理，刷新后回填。
+    if (data.token && hasExpiry && now < (expiresAtSec - OPENAI_REFRESH_LEAD_SECONDS) * 1000) return credential
 
-    // Refresh the token
+    // 瞬时故障退避窗口内：直接用旧 token，避免每次请求都轰炸 token 端点。
+    const backoff = this.refreshBackoff.get(accountId)
+    if (backoff && now < backoff.nextAttemptAtMs) return credential
+
     try {
-      const resp = await apiFetch(OPENAI_OAUTH_TOKEN_URL, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: data.refreshToken,
-          client_id: data.clientId || OPENAI_OAUTH_CLIENT_ID,
-        }).toString(),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      })
-      if (!resp.ok) return credential // If refresh fails, try with current token
-      const tokenResp = await resp.json() as { access_token?: string; refresh_token?: string; expires_in?: number }
-      if (!tokenResp.access_token) return credential
-
-      // Update stored credentials
-      data.token = tokenResp.access_token
-      if (tokenResp.refresh_token) data.refreshToken = tokenResp.refresh_token
-      if (tokenResp.expires_in) data.expiresAt = String(Math.floor(now / 1000) + tokenResp.expires_in)
+      const refreshed = await exchangeOpenAIRefreshToken(data.refreshToken, data.clientId || OPENAI_OAUTH_CLIENT_ID)
+      data.token = refreshed.accessToken
+      // 上游每次刷新都轮换 refresh_token；响应缺失时保留旧值（exchange 已兜底）。
+      data.refreshToken = refreshed.refreshToken
+      data.expiresAt = refreshed.expiresAt
+      data.expiresIn = String(refreshed.expiresIn)
+      if (refreshed.idToken) data.idToken = refreshed.idToken
+      if (refreshed.chatgptAccountId) data.chatgptAccountId = refreshed.chatgptAccountId
+      if (refreshed.email) data.email = refreshed.email
+      if (refreshed.planType) data.planType = refreshed.planType
+      delete data.revokedAt
       db.prepare("UPDATE provider_credentials SET credential_data_ciphertext=?, credential_version=credential_version+1, updated_at=? WHERE account_id=?")
         .run(this.vault.encrypt(JSON.stringify(data)), new Date().toISOString(), accountId)
+      this.refreshBackoff.delete(accountId)
 
-      const extraHeaders = credential.extraHeaders ?? {}
-      return { token: tokenResp.access_token, extraHeaders, credentialVersion: row.credential_version + 1 }
-    } catch {
-      return credential // If refresh fails, try with current token
+      const extraHeaders = { ...(credential.extraHeaders ?? {}) }
+      if (refreshed.chatgptAccountId) extraHeaders["chatgpt-account-id"] = refreshed.chatgptAccountId
+      return { token: refreshed.accessToken, extraHeaders, credentialVersion: row.credential_version + 1 }
+    } catch (cause) {
+      // refresh_token 被上游拒绝（401/refresh_token_reused/invalid_grant）：
+      // 写 revokedAt 墓碑、清空 token、停止刷新调度，需重新登录（CLIProxyAPI revoked 语义）。
+      if (cause instanceof OpenAITokenRevokedError) {
+        data.token = ""
+        data.revokedAt = new Date().toISOString()
+        db.prepare("UPDATE provider_credentials SET credential_data_ciphertext=?, credential_version=credential_version+1, updated_at=? WHERE account_id=?")
+          .run(this.vault.encrypt(JSON.stringify(data)), new Date().toISOString(), accountId)
+        this.refreshBackoff.delete(accountId)
+        throw cause
+      }
+      // 网络/5xx 抖动：指数退避 + 保留旧 token 静默降级，不误杀账号。
+      const failures = (backoff?.failures ?? 0) + 1
+      const delayMs = Math.min(REFRESH_BACKOFF_MAX_MS, REFRESH_BACKOFF_BASE_MS * 2 ** (failures - 1))
+      this.refreshBackoff.set(accountId, { failures, nextAttemptAtMs: now + delayMs })
+      return credential
     }
   }
 
@@ -252,14 +498,19 @@ export class OpenAICPAProvider implements Provider {
     const decrypted = this.vault.decrypt(row.credential_data_ciphertext)
     const data = JSON.parse(decrypted) as ProviderAccountData
 
+    // revoked 墓碑：refresh_token 已被判死，直接报「需重新登录」，不再拿死 token 白刷。
+    if (data.revokedAt) {
+      throw new OpenAITokenRevokedError(
+        `OpenAI 账号凭据已失效（refresh_token 于 ${data.revokedAt} 被拒绝，需重新登录），account=${account.id}`,
+      )
+    }
     if (!data.token) {
-      throw new Error(`No token in provider credentials for account ${account.id}`)
+      throw new OpenAITokenRevokedError(`OpenAI 账号缺少 access token，account=${account.id}`)
     }
 
-    const chatgptAccountId = data.chatgptAccountId ?? ""
     const extraHeaders: Record<string, string> = {}
-    if (chatgptAccountId) {
-      extraHeaders["chatgpt-account-id"] = chatgptAccountId
+    if (data.chatgptAccountId) {
+      extraHeaders["chatgpt-account-id"] = data.chatgptAccountId
     }
 
     const credential: ProviderCredential = {
@@ -272,19 +523,58 @@ export class OpenAICPAProvider implements Provider {
     return this.refreshTokenIfNeeded(credential, account.id)
   }
 
+  /** best-effort 回填 whoami 发现的身份信息（PAT/CPA 导入缺 id_token 时补齐 ChatGPT AccountID）。 */
+  private backfillCredentialIdentity(accountId: string, identity: { chatgptAccountId?: string; email?: string; planType?: string }): void {
+    try {
+      const db = getDatabase()
+      const row = db.prepare("SELECT credential_data_ciphertext FROM provider_credentials WHERE account_id = ?").get(accountId) as { credential_data_ciphertext: string } | undefined
+      if (!row) return
+      const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as ProviderAccountData
+      let changed = false
+      if (identity.chatgptAccountId && !data.chatgptAccountId) {
+        data.chatgptAccountId = identity.chatgptAccountId
+        changed = true
+      }
+      if (identity.email && !data.email) {
+        data.email = identity.email
+        changed = true
+      }
+      if (identity.planType && !data.planType) {
+        data.planType = identity.planType
+        changed = true
+      }
+      if (changed) {
+        db.prepare("UPDATE provider_credentials SET credential_data_ciphertext=?, credential_version=credential_version+1, updated_at=? WHERE account_id=?")
+          .run(this.vault.encrypt(JSON.stringify(data)), new Date().toISOString(), accountId)
+      }
+    } catch {
+      // best-effort：回填失败不影响校验结果
+    }
+  }
+
   async validateCredential(
     account: AccountRecord,
   ): Promise<{ valid: boolean; email?: string; planType?: string; extra?: Record<string, unknown> }> {
-    const credential = await this.getCredential(account)
+    let credential: ProviderCredential
+    try {
+      credential = await this.getCredential(account)
+    } catch (cause) {
+      if (cause instanceof OpenAITokenRevokedError) return { valid: false }
+      throw cause
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${credential.token}`,
+      accept: "application/json",
+      originator: CODEX_CLOAK_ORIGINATOR,
+      "user-agent": CODEX_CLOAK_USER_AGENT,
+    }
+    const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"]
+    if (chatgptAccountId) headers["chatgpt-account-id"] = chatgptAccountId
 
     const resp = await apiFetchWithMirrorContext(OPENAI_PAT_WHOAMI_URL, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        accept: "application/json",
-        originator: "codex_cli_rs",
-        "user-agent": CODEX_USER_AGENT,
-      },
+      headers,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     }, { account })
 
@@ -292,10 +582,16 @@ export class OpenAICPAProvider implements Provider {
       return { valid: false }
     }
     if (!resp.ok) {
-      return { valid: false }
+      // 网络/5xx/404 抖动不证明凭据无效（对齐 kimi/glm「不误杀」语义）。
+      return { valid: true }
     }
 
     const body = (await resp.json()) as WhoamiResponseBody
+    this.backfillCredentialIdentity(account.id, {
+      chatgptAccountId: body.chatgpt_account_id,
+      email: body.email,
+      planType: body.chatgpt_plan_type,
+    })
 
     return {
       valid: true,
@@ -319,15 +615,22 @@ export class OpenAICPAProvider implements Provider {
   }
 
   async refreshQuota(accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
+    void accountId
     const credential = await this.getCredential(account)
-    const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"] ?? accountId
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${credential.token}`,
+      accept: "application/json",
+      originator: CODEX_CLOAK_ORIGINATOR,
+      "user-agent": CODEX_CLOAK_USER_AGENT,
+    }
+    // Chatgpt-Account-Id 仅当凭据里真实存在时才带（内部账号 UUID 不是合法值，不再兜底）。
+    const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"]
+    if (chatgptAccountId) headers["chatgpt-account-id"] = chatgptAccountId
 
     const resp = await apiFetchWithMirrorContext(CHATGPT_USAGE_URL, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "chatgpt-account-id": chatgptAccountId,
-      },
+      headers,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     }, { account })
 
@@ -461,20 +764,9 @@ export class OpenAICPAProvider implements Provider {
     _account: AccountRecord,
   ): ForwardTarget {
     const baseUrl = this.getUpstreamBaseUrl(_account)
-    const url = `${baseUrl}/${input.endpoint}`
+    const url = `${baseUrl}/${input.endpoint.replace(/^\/+/, "")}`
 
     const headers = new Headers()
-    headers.set("Authorization", `Bearer ${credential.token}`)
-
-    const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"]
-    if (chatgptAccountId) {
-      headers.set("chatgpt-account-id", chatgptAccountId)
-    }
-
-    headers.set("codex-beta", "codex-1")
-    headers.set("originator", "Codex Desktop")
-    headers.set("user-agent", CODEX_USER_AGENT)
-
     if (input.method.toUpperCase() !== "GET") {
       headers.set("content-type", "application/json")
     }
@@ -484,62 +776,107 @@ export class OpenAICPAProvider implements Provider {
       if (value) headers.set(name, value)
     }
 
+    // CLIProxyAPI cloaking（强制伪装，2026-09-07 源码核实）：passthrough 之后
+    // 统一断言指纹头——客户端 UA/originator 一律不透传，UA 与 Originator 必须
+    // 是同一套 codex-tui 组合；body 已强制 stream:true，Accept 固定 SSE。
+    headers.set("user-agent", CODEX_CLOAK_USER_AGENT)
+    headers.set("originator", CODEX_CLOAK_ORIGINATOR)
+    headers.set("accept", "text/event-stream")
+    headers.set("Authorization", `Bearer ${credential.token}`)
+
+    // Chatgpt-Account-Id：OAuth 凭据必带（CLIProxyAPI 契约）；PAT 无此值时不带。
+    const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"]
+    if (chatgptAccountId) {
+      headers.set("chatgpt-account-id", chatgptAccountId)
+    }
+
     return {
       url,
       headers,
-      body: input.body,
+      body: input.method.toUpperCase() === "GET" ? input.body : normalizeCodexResponsesBody(input.body),
     }
   }
 
   // ── Error Classification ───────────────────────────────────────────────
 
+  /**
+   * CLIProxyAPI 错误分类契约（2026-09-07 源码核实）：
+   *  - 401 / authentication_error / invalid or expired token → 判死切号
+   *    （permanentlyDisableAccount：网关落 CREDENTIAL_INVALID 墓碑，需重新登录/重新导入）。
+   *  - 429 + error.type=usage_limit_reached → credentialScoped 冷却
+   *    （按 resets_at/resets_in_seconds 算冷却时间）。
+   *  - 429 + "model is at capacity" → 可换号重试（瞬态容量，成功即清窗）。
+   *  - 流内 error/response.failed 事件同样映射（gateway 提取内嵌 status 后走同一入口）。
+   */
   classifyError(status: number, body: string, headers: Headers): UpstreamErrorClassification | null {
-    if (status === 429) {
-      return this.classify429(body, headers)
-    }
-    if (status === 401 || status === 403) {
+    const codexError = extractCodexError(body)
+
+    if (status === 401 || (codexError && isCodexAuthError(codexError))) {
       return {
-        shouldSwitchAccount: false,
-        errorType: "AuthenticationError",
+        shouldSwitchAccount: true,
+        permanentlyDisableAccount: true,
+        errorType: "CREDENTIAL_INVALID",
       }
+    }
+    if (status === 429) {
+      return this.classify429(body, headers, codexError)
     }
     return null
   }
 
-  private classify429(body: string, headers: Headers): UpstreamErrorClassification | null {
-    let parsed: UsageResponseBody
+  private classify429(body: string, headers: Headers, codexError: CodexErrorInfo | null): UpstreamErrorClassification {
+    // 1) usage_limit_reached：credentialScoped 冷却（CLIProxyAPI 语义）。
+    //    Codex 不告知窗口类型，按冷却时长 best-effort 归入 5h/周窗展示。
+    if (codexError && isUsageLimitReached(codexError)) {
+      const retryAfterSeconds =
+        codexUsageLimitCooldownSeconds(codexError)
+        ?? retryAfterSecondsFromHeader(headers.get("retry-after"))
+        ?? 300
+      return {
+        shouldSwitchAccount: true,
+        quotaKind: classifyWindowBySeconds(retryAfterSeconds),
+        retryAfterSeconds,
+        errorType: "OPENAI_USAGE_LIMIT_REACHED",
+      }
+    }
+
+    // 2) 模型容量不足：换号重试（瞬态，非配额耗尽；PROVIDER_RATE_LIMIT 窗成功即清）。
+    if (isModelAtCapacity(codexError, body)) {
+      return {
+        shouldSwitchAccount: true,
+        quotaKind: "PROVIDER_RATE_LIMIT",
+        retryAfterSeconds: retryAfterSecondsFromHeader(headers.get("retry-after")),
+        errorType: "OPENAI_MODEL_AT_CAPACITY",
+      }
+    }
+
+    // 3) 旧版 wham envelope：rate_limit_reached + primary/secondary_window。
+    let parsed: UsageResponseBody | null = null
     try {
       parsed = JSON.parse(body) as UsageResponseBody
     } catch {
-      // Non-JSON 429 body — treat as a generic rate limit and switch account.
-      const retryAfterHeader = headers.get("retry-after")
+      parsed = null
+    }
+    if (parsed?.rate_limit_reached) {
+      const { quotaKind, resetAfterSeconds } = identifyExhaustedWindow(
+        parsed.rate_limit?.primary_window,
+        parsed.rate_limit?.secondary_window,
+      )
+      const retryAfterSeconds = retryAfterSecondsFromHeader(headers.get("retry-after")) ?? resetAfterSeconds
       return {
         shouldSwitchAccount: true,
-        quotaKind: "FIVE_HOUR",
-        retryAfterSeconds: retryAfterHeader ? parseInt(retryAfterHeader, 10) : null,
+        quotaKind,
+        retryAfterSeconds,
         errorType: "RateLimitError",
       }
     }
 
-    // Only switch account when upstream explicitly signals rate_limit_reached.
-    if (!parsed.rate_limit_reached) {
-      return null
-    }
-
-    const { quotaKind, resetAfterSeconds } = identifyExhaustedWindow(
-      parsed.rate_limit?.primary_window,
-      parsed.rate_limit?.secondary_window,
-    )
-
-    // Prefer the retry-after header; fall back to the window's reset_after_seconds.
-    const retryAfterHeader = headers.get("retry-after")
-    const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : resetAfterSeconds
-
+    // 4) 其余 429：瞬时限流，换号重试（透传 retry-after）。
     return {
       shouldSwitchAccount: true,
-      quotaKind,
-      retryAfterSeconds,
-      errorType: "RateLimitError",
+      quotaKind: "PROVIDER_RATE_LIMIT",
+      retryAfterSeconds: retryAfterSecondsFromHeader(headers.get("retry-after")),
+      errorType: "OPENAI_RATE_LIMITED",
     }
   }
 

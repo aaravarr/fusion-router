@@ -484,6 +484,16 @@ export function AccountsPage() {
                     className="whitespace-nowrap"
                     onSelect={() => setTokenImport({
                       poolType: "openai",
+                      format: "cpa-json",
+                      title: "导入 OpenAI CPA JSON",
+                      description: "兼容 CLIProxyAPI codex auth JSON（access_token/refresh_token/id_token，可含 account_id）。后台自动识别 ChatGPT 账号并写入统一 OpenAI 号池。",
+                      placeholder: "粘贴 CPA JSON（单个对象、数组或 JSONL 均可）",
+                    })}
+                  ><FileUp />CPA JSON</DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="whitespace-nowrap"
+                    onSelect={() => setTokenImport({
+                      poolType: "openai",
                       format: "refresh-token",
                       title: "导入 OpenAI OAuth Refresh Token",
                       description: "每行一个 OAuth refresh token。后台会刷新 access_token 并写入统一 OpenAI 号池。",

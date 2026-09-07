@@ -7,6 +7,7 @@ import type { PoolType } from "./types"
 import { convertSsoToBuild, decodeJwtClaims, jwtClaimString } from "./xai-sso-device"
 import { exchangeXaiRefreshToken } from "./providers/xai-grok"
 import { exchangeOpenAIRefreshToken } from "./providers/openai-cpa"
+import { OPENAI_OAUTH_CLIENT_ID, parseOpenAIIdentity } from "./openai-oauth"
 import { refreshKimiAccessToken, KIMI_CODE_CLIENT_ID } from "./kimi-oauth"
 import { tryGetProvider } from "./providers"
 
@@ -29,6 +30,10 @@ interface ImportSeed {
   subject?: string
   ssoToken?: string
   concurrency?: number
+  /** openai：ChatGPT AccountID（推理必带 Chatgpt-Account-Id 头，CLIProxyAPI 契约）。 */
+  chatgptAccountId?: string
+  /** openai：chatgpt_plan_type（plus/team 等）。 */
+  planType?: string
 }
 
 interface ImportJobRow {
@@ -119,6 +124,9 @@ function seedFromCredential(record: JsonRecord, poolType: PoolType, fallbackLabe
     email,
     subject: firstString(record, "sub", "subject", "user_id", "principal_id"),
     concurrency: typeof record.concurrency === "number" ? record.concurrency : undefined,
+    // CLIProxyAPI codex auth JSON 导出的 account_id 即 ChatGPT AccountID。
+    chatgptAccountId: firstString(record, "chatgpt_account_id", "chatgptAccountId", "account_id"),
+    planType: firstString(record, "plan_type", "chatgpt_plan_type", "planType"),
   }
 }
 
@@ -140,7 +148,8 @@ function parseSub2Api(input: string, selectedPool: PoolType): ImportSeed[] {
 }
 
 function parseCpaJson(input: string, selectedPool: PoolType): ImportSeed[] {
-  if (selectedPool !== "xai-grok") throw new Error("CPA JSON 当前仅用于 xAI Grok 号池")
+  // CLIProxyAPI（CPA）auth JSON 导出：xAI Grok 与 OpenAI（codex）两个号池通用解析。
+  if (selectedPool !== "xai-grok" && selectedPool !== "openai") throw new Error("CPA JSON 当前仅用于 xAI Grok 或 OpenAI 号池")
   const parsed = parseJsonOrSequence(input)
   const root = recordValue(parsed)
   const topLevelValues = Array.isArray(parsed)
@@ -154,7 +163,8 @@ function parseCpaJson(input: string, selectedPool: PoolType): ImportSeed[] {
     const wrapper = recordValue(value)
     return Array.isArray(wrapper.accounts) ? wrapper.accounts : [value]
   })
-  const seeds = values.map((raw, index) => seedFromCredential(recordValue(raw), "xai-grok", `xAI 账号 #${index + 1}`))
+  const labelPrefix = selectedPool === "openai" ? "OpenAI 账号" : "xAI 账号"
+  const seeds = values.map((raw, index) => seedFromCredential(recordValue(raw), selectedPool, `${labelPrefix} #${index + 1}`))
     .filter((seed) => seed.accessToken || seed.refreshToken)
   if (!seeds.length) throw new Error("CPA JSON 中没有 access_token 或 refresh_token")
   return seeds
@@ -305,15 +315,36 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
   if (!seed.accessToken && seed.refreshToken && seed.poolType === "openai") {
     updateItem(db, jobId, index, "RUNNING", "正在刷新 OpenAI OAuth 凭据")
     const result = await exchangeOpenAIRefreshToken(seed.refreshToken, seed.clientId)
+    // 兑换响应的 id_token 解出 ChatGPT AccountID / email / planType（CLIProxyAPI 契约），
+    // 与刷新后的 token、过期时间一并入库——Chatgpt-Account-Id 头是推理必带字段。
     seed = {
       ...seed,
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
       expiresAt: result.expiresAt,
-      clientId: seed.clientId || "app_EMoamEEZ73f0CkXaXp7hrann",
+      expiresIn: String(result.expiresIn),
+      idToken: result.idToken || seed.idToken,
+      clientId: seed.clientId || OPENAI_OAUTH_CLIENT_ID,
+      chatgptAccountId: result.chatgptAccountId || seed.chatgptAccountId,
+      planType: result.planType || seed.planType,
+      email: result.email || seed.email,
     }
   }
-  if (!seed.accessToken) throw new Error("凭据缺少可用的 access_token")
+  // openai：access_token/id_token 是 JWT 时兜底解出 ChatGPT AccountID
+  // （覆盖 access-token / CPA JSON 自带双 token 未经兑换的导入路径）。
+  if (seed.poolType === "openai" && !seed.chatgptAccountId && (seed.idToken || seed.accessToken)) {
+    const identity = parseOpenAIIdentity(seed.idToken ?? "", seed.accessToken ?? "")
+    if (identity.chatgptAccountId || identity.planType || identity.email) {
+      seed = {
+        ...seed,
+        chatgptAccountId: identity.chatgptAccountId || seed.chatgptAccountId,
+        planType: seed.planType || identity.planType,
+        email: seed.email || identity.email,
+      }
+    }
+  }
+  const accessToken = seed.accessToken
+  if (!accessToken) throw new Error("凭据缺少可用的 access_token")
 
   const identity = decodeIdentity(seed)
   const accountName = identity.email || seed.label
@@ -325,7 +356,7 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
     externalId: externalId(seed, identity.email, identity.subject),
   })
   updateItem(db, jobId, index, "RUNNING", "正在保存加密凭据", account.id, undefined, accountCreated)
-  const credentialData: Record<string, string> = { token: seed.accessToken }
+  const credentialData: Record<string, string> = { token: accessToken }
   if (seed.refreshToken) credentialData.refreshToken = seed.refreshToken
   if (seed.clientId) credentialData.clientId = seed.clientId
   if (seed.expiresAt) credentialData.expiresAt = seed.expiresAt
@@ -334,6 +365,11 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
   if (seed.idToken) credentialData.idToken = seed.idToken
   if (seed.tokenType) credentialData.tokenType = seed.tokenType
   if (seed.scope) credentialData.scope = seed.scope
+  // openai：ChatGPT AccountID（推理必带 Chatgpt-Account-Id 头）与套餐类型随凭据持久化。
+  if (seed.poolType === "openai") {
+    if (seed.chatgptAccountId) credentialData.chatgptAccountId = seed.chatgptAccountId
+    if (seed.planType) credentialData.planType = seed.planType
+  }
   credentials.upsert({ accountId: account.id, poolType: seed.poolType, credentialData })
   if (seed.concurrency && seed.concurrency > 0) accounts.updateState(account.id, { maxConcurrency: Math.min(64, seed.concurrency) })
 

@@ -172,7 +172,8 @@ export async function POST(request: Request) {
         errors.push({ name: acct.name, message: "No access_token or api_key in credentials" })
         continue
       }
-      const chatgptAccountId = String(credentials.chatgpt_account_id ?? "")
+      // CLIProxyAPI codex auth JSON 的 account_id 即 ChatGPT AccountID（推理必带 Chatgpt-Account-Id 头）。
+      const chatgptAccountId = String(credentials.chatgpt_account_id ?? credentials.account_id ?? "")
       const email = String(credentials.email ?? "")
       const planType = String(credentials.plan_type ?? "")
 

@@ -88,7 +88,7 @@ export interface AccountCredential extends AccountRecord {
 
 export interface ProviderAccountData {
   // Generic encrypted credential storage for non-OpenCode providers
-  // For openai (AT token or OAuth): { token, refreshToken?, expiresAt?, clientId?, chatgptAccountId, planType }
+  // For openai (AT token or OAuth): { token, refreshToken?, expiresAt?, expiresIn?, clientId?, chatgptAccountId, planType, idToken?, revokedAt? }
   // For xai-grok (xAI free OAuth): { token, refreshToken, expiresAt, clientId, email, subscriptionTier, entitlementStatus }
   // For kimi-code (Kimi Code OAuth device flow): { token, refreshToken, expiresAt, expiresIn, clientId, email, subject }
   token?: string
@@ -101,9 +101,11 @@ export interface ProviderAccountData {
   subscriptionTier?: string
   entitlementStatus?: string
   extraHeaders?: Record<string, string>
-  /** kimi-code：token 有效期秒数，用于按官方 defaultRefreshThreshold 提前刷新。 */
+  /** kimi-code/openai：token 有效期秒数（提前刷新阈值计算依据）。 */
   expiresIn?: string
-  /** kimi-code：refresh_token 被上游拒绝的时间（ISO）。存在即凭据已失效，需重新登录。 */
+  /** openai：OAuth id_token（不验签，解 payload 取 ChatGPT AccountID/套餐，CPA 导入与刷新后留存）。 */
+  idToken?: string
+  /** kimi-code/openai：refresh_token 被上游拒绝的时间（ISO）。存在即凭据已失效，需重新登录。 */
   revokedAt?: string
   /** kimi-code：/me 返回的账号信息（best-effort 补充）。 */
   kimiUserId?: string

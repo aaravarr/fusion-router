@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { SecretVault } from "./crypto"
-import { createDatabase } from "./db"
+import { createDatabase, getDatabase, type AppDatabase } from "./db"
 import { parseImportInput, pauseImportJob, resumeImportJob, retryImportJobItem, rollbackImportJob, runImportJob, startImportJobRunner } from "./import-jobs"
-import { AccountRepository } from "./repository"
+import { AccountRepository, ProviderCredentialRepository } from "./repository"
 import { XAIGrokProvider } from "./providers/xai-grok"
+import { OpenAICPAProvider } from "./providers/openai-cpa"
 
 const encryptionKey = Buffer.alloc(32, 7).toString("base64")
 
 beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+function openaiTestJwt(payload: Record<string, unknown>): string {
+  return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`
+}
 
 describe("provider account imports", () => {
   it("解析 Sub2API Grok OAuth 账号", () => {
@@ -37,6 +42,38 @@ describe("provider account imports", () => {
       { refreshToken: "one" },
       { refreshToken: "two" },
     ])
+  })
+
+  it("解析 CLIProxyAPI codex auth JSON 到 openai 池（account_id → chatgptAccountId）", () => {
+    // CLIProxyAPI codex 凭据导出形态（type=codex，expired 为 ISO 过期时间）。
+    const seeds = parseImportInput("openai", "cpa-json", JSON.stringify({
+      type: "codex",
+      access_token: "at-cpa",
+      refresh_token: "rt-cpa",
+      id_token: "id-token",
+      account_id: "chatgpt-acct-cpa",
+      email: "cpa@example.com",
+      expired: "2026-09-20T00:00:00.000Z",
+    }))
+    expect(seeds).toHaveLength(1)
+    expect(seeds[0]).toMatchObject({
+      poolType: "openai",
+      accessToken: "at-cpa",
+      refreshToken: "rt-cpa",
+      idToken: "id-token",
+      chatgptAccountId: "chatgpt-acct-cpa",
+      email: "cpa@example.com",
+      expiresAt: String(Math.floor(Date.parse("2026-09-20T00:00:00.000Z") / 1000)),
+    })
+
+    // JSONL 多账号 + accounts 数组包装同样支持
+    const multi = parseImportInput("openai", "cpa-json", '{"type":"codex","refresh_token":"r1"}\n{"type":"codex","access_token":"a2","refresh_token":"r2"}')
+    expect(multi.map((seed) => seed.refreshToken)).toEqual(["r1", "r2"])
+    const wrapped = parseImportInput("openai", "cpa-json", JSON.stringify({ accounts: [{ refresh_token: "r3" }] }))
+    expect(wrapped[0]).toMatchObject({ poolType: "openai", refreshToken: "r3" })
+
+    // 其他池仍被拒绝
+    expect(() => parseImportInput("kimi-code", "cpa-json", "{}")).toThrow(/xAI Grok 或 OpenAI/)
   })
 })
 
@@ -252,5 +289,87 @@ describe("durable import runner", () => {
     })
     void processSpy
     db.close()
+  })
+})
+
+describe("OpenAI 导入链（CLIProxyAPI 契约字段完整性）", () => {
+  function setGlobalDatabase(value: AppDatabase | undefined) {
+    (globalThis as typeof globalThis & { __opencodeApiDb?: AppDatabase }).__opencodeApiDb = value
+  }
+
+  it("refresh-token 导入：兑换入库后凭据字段完整，provider 直接产出带 AccountID 的凭据", async () => {
+    const db = createDatabase(":memory:")
+    setGlobalDatabase(db)
+    expect(getDatabase()).toBe(db)
+    try {
+      const timestamp = new Date().toISOString()
+      db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES (?,?,?,?,?,'ACTIVE',?,?,?)")
+        .run("openai-import-owner", "openai-import-owner", "openai-import-owner", "OpenAI Import owner", "USER", "hash", timestamp, timestamp)
+
+      const idToken = openaiTestJwt({
+        sub: "openai-user-9",
+        email: "cpa@example.com",
+        "https://api.openai.com/auth": { chatgpt_account_id: "chatgpt-acct-9", chatgpt_plan_type: "plus" },
+      })
+      // 7 天有效期 > 24h 刷新提前量：导入后 getCredential 不会触发二次刷新。
+      const fetchMock = vi.fn(async (input: unknown) => {
+        const url = String(input)
+        if (url === "https://auth.openai.com/oauth/token") {
+          return Response.json({
+            access_token: "at-fresh",
+            refresh_token: "rt-fresh",
+            id_token: idToken,
+            token_type: "Bearer",
+            expires_in: 7 * 86400,
+          })
+        }
+        if (url.includes("user-auth-credential/whoami")) {
+          return Response.json({ email: "cpa@example.com", chatgpt_account_id: "chatgpt-acct-9", chatgpt_plan_type: "plus" })
+        }
+        throw new Error(`unexpected fetch: ${url}`)
+      })
+      vi.stubGlobal("fetch", fetchMock)
+
+      const seeds = [{ label: "Refresh Token #1", poolType: "openai", refreshToken: "rt-import" }]
+      db.prepare(`INSERT INTO import_jobs(id,owner_user_id,pool_type,format,status,total_items,processed_items,succeeded_items,failed_items,current_step,payload_ciphertext,created_at,updated_at)
+        VALUES('openai-job','openai-import-owner','openai','refresh-token','QUEUED',1,0,0,0,'等待处理',?,?,?)`)
+        .run(new SecretVault().encrypt(JSON.stringify(seeds)), timestamp, timestamp)
+      db.prepare(`INSERT INTO import_job_items(id,job_id,item_index,label,status,step,created_at,updated_at)
+        VALUES('openai-item','openai-job',0,'Refresh Token #1','QUEUED','等待处理',?,?)`)
+        .run(timestamp, timestamp)
+
+      await runImportJob("openai-job", db)
+
+      const item = db.prepare("SELECT status,account_id,error FROM import_job_items WHERE job_id='openai-job'").get() as { status: string; account_id: string | null; error: string | null }
+      expect(item).toMatchObject({ status: "COMPLETED", error: null })
+      expect(item.account_id).toBeTruthy()
+
+      // 凭据字段完整性：token/refreshToken/expiresAt/expiresIn/chatgptAccountId/planType/email
+      const stored = new ProviderCredentialRepository("openai-import-owner", db).get(item.account_id!)
+      expect(stored).toMatchObject({
+        token: "at-fresh",
+        refreshToken: "rt-fresh",
+        expiresIn: String(7 * 86400),
+        chatgptAccountId: "chatgpt-acct-9",
+        planType: "plus",
+        email: "cpa@example.com",
+        clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+      })
+      expect(Number(stored!.expiresAt)).toBeGreaterThan(Math.floor(Date.now() / 1000) + 6 * 86400)
+
+      // 账号以 email 命名且可直接产出带 Chatgpt-Account-Id 头的推理凭据
+      const account = new AccountRepository("openai-import-owner", db).get(item.account_id!)!
+      expect(account.email).toBe("cpa@example.com")
+      const credential = await new OpenAICPAProvider().getCredential(account)
+      expect(credential.token).toBe("at-fresh")
+      expect(credential.extraHeaders?.["chatgpt-account-id"]).toBe("chatgpt-acct-9")
+
+      // 全程仅兑换 + whoami 两次请求（无多余刷新）
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.unstubAllGlobals()
+      setGlobalDatabase(undefined)
+      db.close()
+    }
   })
 })

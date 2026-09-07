@@ -256,10 +256,17 @@ function embeddedSseErrorStatus(data: string): number | null {
     const numeric = [parsed.status, parsed.status_code, error?.status, error?.status_code]
       .map(Number).find((value) => Number.isInteger(value) && value >= 400 && value <= 599)
     if (numeric) return numeric
-    const type = [parsed.type === "error" ? parsed.type : "", parsed.code, error?.type, error?.code]
+    // Codex 后端流内错误（CLIProxyAPI 契约：error / response.failed 事件同样映射）
+    // 的 error 还可能嵌在 response.error 里，与顶层 error 一并纳入类型词匹配。
+    // 对其他 provider 无行为变化：是否处理该状态仍由各自 classifyError 决定，
+    // 返回 null 即保持原样透传流。
+    const response = parsed.response && typeof parsed.response === "object" ? parsed.response as Record<string, unknown> : null
+    const responseError = response?.error && typeof response.error === "object" ? response.error as Record<string, unknown> : null
+    const type = [parsed.type === "error" ? parsed.type : "", parsed.code, error?.type, error?.code, responseError?.type, responseError?.code]
       .filter((value) => typeof value === "string").join(" ").toLowerCase()
-    if (type.includes("rate_limit") || type.includes("too_many_requests")) return 429
+    if (type.includes("rate_limit") || type.includes("too_many_requests") || type.includes("usage_limit_reached")) return 429
     if (type.includes("permission-denied") || type.includes("permission_denied")) return 403
+    if (type.includes("authentication_error") || type.includes("invalid_token")) return 401
     return null
   } catch { return null }
 }
