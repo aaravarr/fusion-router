@@ -66,16 +66,36 @@ const CODEX_BODY_STRIP_KEYS = [
 const FIVE_HOUR_THRESHOLD_SECONDS = 21600
 const FIVE_HOUR_THRESHOLD_MINUTES = 360
 
+// 上游真实列表端点（2026-09-08 生产实测 HTTP 200）：
+// GET https://chatgpt.com/backend-api/codex/models?client_version=<codex-tui 版本>
+// CLIProxyAPI 同款用法（cmd/fetch_codex_models）：cloaking 头 + Bearer +
+// Chatgpt-Account-Id，响应 {models:[{slug,display_name,...}]}，slug 即请求用模型 ID。
+// CLIProxyAPI 另有嵌入快照 internal/registry/models/codex_client_models.json（3h 刷新），
+// 本地默认清单与该快照 + 生产实测双对齐。
+const CODEX_CLIENT_VERSION = "0.153.3"
+
 const REQUEST_TIMEOUT_MS = 20000
 
 const CODEX_MODELS = [
-  "gpt-5.3-codex",
-  "gpt-5.3-codex-spark",
+  // 2026-09-08 生产实测 GET /codex/models?client_version=0.153.3（HTTP 200，8 个，
+  // 经 7890 代理，plus 号）：下表即当时上游返回的全量 slug。
+  // CLIProxyAPI internal/registry/models/codex_client_models.json 快照同期为同样的
+  // 8 个条目（唯 gpt-5.3-codex-spark 一处已被上游轮换为 gpt-5.4-mini）。
+  // display_name 对照（上游字段，网关模型目录为纯 ID 列表，此处备查）：
+  //   gpt-6-astra→GPT-6-Astra / gpt-reserve→GPT-Reserve / gpt-5.6-sol→GPT-5.6-Sol /
+  //   gpt-5.6-terra→GPT-5.6-Terra / gpt-5.6-luna→GPT-5.6-Luna / gpt-5.5→GPT-5.5 /
+  //   gpt-5.4-mini→GPT-5.4-Mini / codex-auto-review→Codex Auto Review。
+  // gpt-reserve 与 codex-auto-review 上游 visibility=hide（不对 codex 客户端展示），
+  // 但 supported_in_api=true，是合法请求目标，故一并保留（CLIProxyAPI 仅隐藏展示，
+  // 不限制请求）。
+  "gpt-6-astra",
+  "gpt-reserve",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
   "gpt-5.4-mini",
-  "gpt-5.4-codex",
-  "o3",
-  "o4-mini",
-  "codex-mini-latest",
+  "codex-auto-review",
 ] as const
 
 const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
@@ -395,6 +415,30 @@ export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null
   if (record.instructions === null || record.instructions === undefined) record.instructions = ""
   for (const key of CODEX_BODY_STRIP_KEYS) delete record[key]
   return new TextEncoder().encode(JSON.stringify(record)) as Uint8Array<ArrayBuffer>
+}
+
+/**
+ * 上游 {models:[{slug,...}]} 提取 slug 列表（CLIProxyAPI 以 slug 为请求模型 ID；
+ * display_name 仅展示用）。解析失败返回 null；models 缺失/非数组返回 null；
+ * 空数组原样返回（调用方 syncProviderModels 会回落默认列表并提示）。
+ */
+export function parseCodexModelsPayload(body: string): string[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+  const models = (parsed as { models?: unknown }).models
+  if (!Array.isArray(models)) return null
+  const slugs = models
+    .map((item) => (item && typeof item === "object" && !Array.isArray(item)
+      ? (item as Record<string, unknown>).slug
+      : undefined))
+    .filter((slug): slug is string => typeof slug === "string" && slug.trim().length > 0)
+    .map((slug) => slug.trim())
+  return [...new Set(slugs)]
 }
 
 // ─── Provider ────────────────────────────────────────────────────────────
@@ -734,10 +778,30 @@ export class OpenAICPAProvider implements Provider {
   }
 
   async fetchRemoteModels(account: AccountRecord): Promise<string[] | null> {
-    // Codex backend does not expose a stable public /models list for PAT/OAuth.
-    // Keep defaults; callers still get a deterministic catalog.
-    void account
-    return null
+    // 上游真实列表端点（2026-09-08 生产实测 HTTP 200）：GET /codex/models?client_version=…，
+    // 与推理请求同一套 cloaking 头 + Bearer + Chatgpt-Account-Id（OAuth 必带，PAT 无则不带），
+    // 走镜像上下文（地域封锁下直连 403）。失败抛错 → syncProviderModels 回落默认列表并记录 error。
+    const credential = await this.getCredential(account)
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${credential.token}`,
+      accept: "application/json",
+      originator: CODEX_CLOAK_ORIGINATOR,
+      "user-agent": CODEX_CLOAK_USER_AGENT,
+    }
+    const chatgptAccountId = credential.extraHeaders?.["chatgpt-account-id"]
+    if (chatgptAccountId) headers["chatgpt-account-id"] = chatgptAccountId
+    const resp = await apiFetchWithMirrorContext(
+      `${CODEX_UPSTREAM_BASE_URL}/models?client_version=${encodeURIComponent(CODEX_CLIENT_VERSION)}`,
+      {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      },
+      { account },
+    )
+    const body = await resp.text()
+    if (!resp.ok) throw new Error(`OpenAI /codex/models 拉取失败（HTTP ${resp.status}）: ${body.slice(0, 200)}`)
+    return parseCodexModelsPayload(body)
   }
 
   private readCachedModels(): string[] | null {

@@ -8,6 +8,7 @@ import {
   normalizeCodexResponsesBody,
   OpenAICPAProvider,
   OpenAITokenRevokedError,
+  parseCodexModelsPayload,
 } from "./openai-cpa"
 
 // CLIProxyAPI 契约（2026-09-07 源码核实）指纹常量，与 provider 内部保持一致。
@@ -664,5 +665,85 @@ describe("OpenAICPAProvider.validateCredential", () => {
     vi.stubGlobal("fetch", fetchMock)
     expect((await provider.validateCredential(account)).valid).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+// ─── 模型目录：默认清单 + /codex/models 真实同步 ──────────────────────────
+// 默认清单 = 2026-09-08 生产实测上游返回全量（HTTP 200，8 个 slug）+
+// CLIProxyAPI codex_client_models.json 快照双对齐。
+
+describe("OpenAICPAProvider 模型目录（上游 /codex/models 同步）", () => {
+  const EXPECTED_DEFAULTS = [
+    "gpt-6-astra",
+    "gpt-reserve",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4-mini",
+    "codex-auto-review",
+  ]
+
+  it("getDefaultModels 返回实测 8 模型（含 gpt-5.6-luna/sol）", () => {
+    const provider = new OpenAICPAProvider()
+    expect(provider.getDefaultModels()).toEqual(EXPECTED_DEFAULTS)
+    expect(provider.getAvailableModels([])).toEqual(EXPECTED_DEFAULTS)
+  })
+
+  it("parseCodexModelsPayload：{models:[{slug}]} 提取 slug（去重/去空/trim）", () => {
+    expect(parseCodexModelsPayload(JSON.stringify({
+      models: [
+        { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol" },
+        { slug: " gpt-5.6-luna " },
+        { slug: "gpt-5.6-sol" },
+        { slug: "" },
+        { display_name: "no slug" },
+        null,
+      ],
+    }))).toEqual(["gpt-5.6-sol", "gpt-5.6-luna"])
+  })
+
+  it("parseCodexModelsPayload：非 JSON / 无 models 数组 → null", () => {
+    expect(parseCodexModelsPayload("not json")).toBeNull()
+    expect(parseCodexModelsPayload(JSON.stringify({ models: null }))).toBeNull()
+    expect(parseCodexModelsPayload(JSON.stringify({}))).toBeNull()
+    expect(parseCodexModelsPayload(JSON.stringify([]))).toBeNull()
+  })
+
+  it("fetchRemoteModels：GET /codex/models?client_version，cloaking 头 + Bearer + Account-Id", async () => {
+    const provider = new OpenAICPAProvider()
+    const account = createOpenAIAccount({
+      token: "at-pat",
+      chatgptAccountId: "acct-123",
+      expiresAt: String(Math.floor(Date.now() / 1000) + 48 * 3600),
+    })
+    const fetchMock = vi.fn(async (input: unknown) => {
+      expect(String(input)).toBe("https://chatgpt.com/backend-api/codex/models?client_version=0.153.3")
+      return Response.json({
+        models: [
+          { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+          { slug: "gpt-5.6-luna", display_name: "GPT-5.6-Luna", visibility: "list" },
+        ],
+      })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    expect(await provider.fetchRemoteModels(account)).toEqual(["gpt-5.6-sol", "gpt-5.6-luna"])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const headers = new Headers(init.headers)
+    expect(init.method).toBe("GET")
+    expect(headers.get("authorization")).toBe("Bearer at-pat")
+    expect(headers.get("user-agent")).toBe(EXPECTED_UA)
+    expect(headers.get("originator")).toBe(EXPECTED_ORIGINATOR)
+    expect(headers.get("accept")).toBe("application/json")
+    expect(headers.get("chatgpt-account-id")).toBe("acct-123")
+  })
+
+  it("fetchRemoteModels：上游非 200 → 抛错（syncProviderModels 回落默认列表）", async () => {
+    const provider = new OpenAICPAProvider()
+    const account = createOpenAIAccount({ token: "at-pat" })
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("forbidden", { status: 403 })))
+    await expect(provider.fetchRemoteModels(account)).rejects.toThrow(/HTTP 403/)
   })
 })
