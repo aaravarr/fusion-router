@@ -186,7 +186,10 @@ function classifyFirstSseEvent(chunk: string): UpstreamErrorClassification | nul
 export { classifyGoUsageLimit, classifyFirstSseEvent }
 
 // Headers to forward from the client request to the upstream.
-const PASSTHROUGH_HEADERS = ["accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent"]
+// x-opencode-session: upstream requires it since 2026-09-07 (MissingSessionID 400) —
+// pure passthrough only, never synthesized when the client omits it.
+const PASSTHROUGH_HEADERS = ["accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent", "x-opencode-session"]
+export { PASSTHROUGH_HEADERS }
 
 export class OpenCodeGoProvider implements Provider {
   readonly poolType = "opencode-go" as const

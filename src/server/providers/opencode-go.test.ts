@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { ensureProvidersRegistered, tryGetProvider } from "./index"
-import { isMessagesUnsupportedModel, isMuseResponsesOnlyModel, MUSE_RATE_LIMIT_MAX_RETRIES, MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL } from "./opencode-go"
+import { isMessagesUnsupportedModel, isMuseResponsesOnlyModel, MUSE_RATE_LIMIT_MAX_RETRIES, MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL, PASSTHROUGH_HEADERS } from "./opencode-go"
 import { decideUpstreamRoute } from "../messages/route-decision"
 import { messagesRequestToChat } from "../messages/convert"
 
@@ -184,6 +184,53 @@ describe("opencode-go User-Agent 透传", () => {
     expect(target.headers.get("user-agent")).toBeNull()
     expect(target.headers.get("content-type")).toBe("application/json")
     expect(target.headers.get("authorization")).toBe("Bearer go-key-1")
+  })
+})
+
+// x-opencode-session 透传：上游 2026-09-07 起强制要求该头（缺失回 MissingSessionID 400）。
+// 只透传不合成：客户端带就原样到达上游，没带就不带（网关不做任何会话识别/生成）。
+describe("opencode-go x-opencode-session 透传", () => {
+  const provider = new OpenCodeGoProvider()
+  const account = { id: "a1", ownerUserId: "u1", poolType: "opencode-go" } as never
+  const credential = { token: "go-key-1", credentialVersion: 1 }
+
+  const build = (headers: Record<string, string>) =>
+    provider.buildForwardTarget(
+      {
+        method: "POST",
+        endpoint: "chat/completions",
+        model: "kimi-k3",
+        upstreamModel: "kimi-k3",
+        body: new TextEncoder().encode("{}"),
+        headers: new Headers(headers),
+        signal: AbortSignal.timeout(1000),
+      },
+      credential,
+      account,
+    )
+
+  it("客户端带 x-opencode-session：上游请求原样收到该头", () => {
+    const target = build({ "x-opencode-session": "ses_abc123", "content-type": "application/json" })
+    expect(target.headers.get("x-opencode-session")).toBe("ses_abc123")
+    expect(target.headers.get("authorization")).toBe("Bearer go-key-1")
+  })
+
+  it("大小写变体同样命中（HTTP 头大小写不敏感）", () => {
+    const target = build({ "X-Opencode-Session": "ses_UPPER" })
+    expect(target.headers.get("x-opencode-session")).toBe("ses_UPPER")
+  })
+
+  it("客户端没带：不合成该头（证明没有会话生成逻辑），其余头不受影响", () => {
+    const target = build({ "content-type": "application/json", "user-agent": "opencode/1.2.3" })
+    expect(target.headers.get("x-opencode-session")).toBeNull()
+    expect(target.headers.get("user-agent")).toBe("opencode/1.2.3")
+    expect(target.headers.get("authorization")).toBe("Bearer go-key-1")
+  })
+
+  it("白名单两处一致：provider PASSTHROUGH_HEADERS 与 gateway UPSTREAM_PASSTHROUGH_HEADERS 完全相同", async () => {
+    const { UPSTREAM_PASSTHROUGH_HEADERS } = await import("../gateway")
+    expect(PASSTHROUGH_HEADERS).toContain("x-opencode-session")
+    expect(UPSTREAM_PASSTHROUGH_HEADERS).toEqual(PASSTHROUGH_HEADERS)
   })
 })
 

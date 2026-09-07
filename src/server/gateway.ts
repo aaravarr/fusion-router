@@ -301,9 +301,14 @@ async function readFirstSseEvent(reader: ReadableStreamDefaultReader<Uint8Array>
   return { bytes, text }
 }
 
+// Headers forwarded from the client request on the legacy (non-provider) upstream path.
+// Keep in sync with PASSTHROUGH_HEADERS in providers/opencode-go.ts — x-opencode-session
+// is required upstream since 2026-09-07 (pure passthrough only, never synthesized).
+export const UPSTREAM_PASSTHROUGH_HEADERS = ["accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent", "x-opencode-session"]
+
 function upstreamHeaders(request: Request, goApiKey: string, endpoint: string): Headers {
   const headers = new Headers()
-  for (const name of ["accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent"]) {
+  for (const name of UPSTREAM_PASSTHROUGH_HEADERS) {
     const value = request.headers.get(name); if (value) headers.set(name, value)
   }
   if (!headers.has("content-type") && request.method !== "GET") headers.set("content-type", "application/json")

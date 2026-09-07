@@ -167,6 +167,40 @@ describe("gateway", () => {
     expect(headers.get("x-api-key")).toBe("sk-go-one"); expect(headers.get("authorization")).toBeNull(); expect(headers.get("x-org-id")).toBeNull()
   })
 
+  // x-opencode-session 透传：上游 2026-09-07 起强制要求（缺失回 MissingSessionID 400）。
+  // 只透传不合成；大小写变体同样命中（HTTP 头大小写不敏感）。
+  it("客户端带 x-opencode-session（含大小写变体）：上游请求原样收到该头", async () => {
+    for (const [name, value] of [["x-opencode-session", "ses_lower"], ["X-Opencode-Session", "ses_Mixed"]] as const) {
+      const { db, apiKey, credentials, hasher } = setup()
+      const fetcher = vi.fn().mockResolvedValue(Response.json({ id: "ok" }))
+      const req = new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json", [name]: value },
+        body: JSON.stringify({ model: "deepseek-v4-flash" }),
+      })
+      const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+      expect(response.status, name).toBe(200)
+      const headers = fetcher.mock.calls[0][1]?.headers as Headers
+      expect(headers.get("x-opencode-session"), name).toBe(value)
+    }
+  })
+
+  it("客户端没带 x-opencode-session：上游请求不含该头（没有合成逻辑）", async () => {
+    const { db, apiKey, credentials, hasher } = setup(); const fetcher = vi.fn().mockResolvedValue(Response.json({ id: "ok" }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    expect(response.status).toBe(200)
+    const headers = fetcher.mock.calls[0][1]?.headers as Headers
+    expect(headers.get("x-opencode-session")).toBeNull()
+  })
+
+  it("透传白名单两处一致：gateway UPSTREAM_PASSTHROUGH_HEADERS 与 opencode-go PASSTHROUGH_HEADERS 相同", async () => {
+    const { UPSTREAM_PASSTHROUGH_HEADERS } = await import("./gateway")
+    const { PASSTHROUGH_HEADERS } = await import("./providers/opencode-go")
+    expect(UPSTREAM_PASSTHROUGH_HEADERS).toContain("x-opencode-session")
+    expect(PASSTHROUGH_HEADERS).toContain("x-opencode-session")
+    expect(UPSTREAM_PASSTHROUGH_HEADERS).toEqual(PASSTHROUGH_HEADERS)
+  })
+
   it("messages 入口对不支持 messages 的账号经 chat 枢纽双向转换", async () => {
     const { db, apiKey, credentials, hasher } = setup("xai-grok", 1)
     let sentUrl = ""
