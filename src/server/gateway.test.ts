@@ -167,8 +167,8 @@ describe("gateway", () => {
     expect(headers.get("x-api-key")).toBe("sk-go-one"); expect(headers.get("authorization")).toBeNull(); expect(headers.get("x-org-id")).toBeNull()
   })
 
-  // x-opencode-session 透传：上游 2026-09-07 起强制要求（缺失回 MissingSessionID 400）。
-  // 只透传不合成；大小写变体同样命中（HTTP 头大小写不敏感）。
+  // x-opencode-session：上游 2026-09-07 起强制要求（缺失回 MissingSessionID 400）。
+  // 有则透传、无则兜底：没带时网关为该请求生成随机 UUID 填入；大小写变体同样命中。
   it("客户端带 x-opencode-session（含大小写变体）：上游请求原样收到该头", async () => {
     for (const [name, value] of [["x-opencode-session", "ses_lower"], ["X-Opencode-Session", "ses_Mixed"]] as const) {
       const { db, apiKey, credentials, hasher } = setup()
@@ -185,12 +185,22 @@ describe("gateway", () => {
     }
   })
 
-  it("客户端没带 x-opencode-session：上游请求不含该头（没有合成逻辑）", async () => {
-    const { db, apiKey, credentials, hasher } = setup(); const fetcher = vi.fn().mockResolvedValue(Response.json({ id: "ok" }))
+  it("客户端没带 x-opencode-session：上游收到非空且为 UUID 形态的兜底值（每请求随机）", async () => {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const { db, apiKey, credentials, hasher } = setup()
+    // 每次调用返回全新 Response（Response body 只能消费一次，不能复用同一实例）
+    const fetcher = vi.fn().mockImplementation(async () => Response.json({ id: "ok" }))
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
     expect(response.status).toBe(200)
-    const headers = fetcher.mock.calls[0][1]?.headers as Headers
-    expect(headers.get("x-opencode-session")).toBeNull()
+    const session = (fetcher.mock.calls[0][1]?.headers as Headers).get("x-opencode-session")
+    expect(session).not.toBeNull()
+    expect(session).toMatch(UUID_RE)
+    // 每请求随机：第二次请求得到不同 UUID（极小概率碰撞，忽略）
+    const response2 = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    expect(response2.status).toBe(200)
+    const session2 = (fetcher.mock.calls[1][1]?.headers as Headers).get("x-opencode-session")
+    expect(session2).toMatch(UUID_RE)
+    expect(session2).not.toBe(session)
   })
 
   it("透传白名单两处一致：gateway UPSTREAM_PASSTHROUGH_HEADERS 与 opencode-go PASSTHROUGH_HEADERS 相同", async () => {
@@ -199,6 +209,20 @@ describe("gateway", () => {
     expect(UPSTREAM_PASSTHROUGH_HEADERS).toContain("x-opencode-session")
     expect(PASSTHROUGH_HEADERS).toContain("x-opencode-session")
     expect(UPSTREAM_PASSTHROUGH_HEADERS).toEqual(PASSTHROUGH_HEADERS)
+  })
+
+  // legacy 非 provider 路径直测：upstreamHeaders 的有则透传/无则兜底 UUID。
+  it("upstreamHeaders：带 x-opencode-session 原样透传；没带时兜底 UUID（非空且为 UUID 形态）", async () => {
+    const { upstreamHeaders } = await import("./gateway")
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const withSession = upstreamHeaders(new Request("http://localhost/v1/responses", { method: "POST", headers: { "x-opencode-session": "ses_direct" }, body: "{}" }), "sk-go-x", "responses")
+    expect(withSession.get("x-opencode-session")).toBe("ses_direct")
+    expect(withSession.get("authorization")).toBe("Bearer sk-go-x")
+    const withoutSession = upstreamHeaders(new Request("http://localhost/v1/responses", { method: "POST", body: "{}" }), "sk-go-x", "responses")
+    const session = withoutSession.get("x-opencode-session")
+    expect(session).not.toBeNull()
+    expect(session).toMatch(UUID_RE)
+    expect(withoutSession.get("authorization")).toBe("Bearer sk-go-x")
   })
 
   it("messages 入口对不支持 messages 的账号经 chat 枢纽双向转换", async () => {

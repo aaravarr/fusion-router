@@ -303,14 +303,18 @@ async function readFirstSseEvent(reader: ReadableStreamDefaultReader<Uint8Array>
 
 // Headers forwarded from the client request on the legacy (non-provider) upstream path.
 // Keep in sync with PASSTHROUGH_HEADERS in providers/opencode-go.ts — x-opencode-session
-// is required upstream since 2026-09-07 (pure passthrough only, never synthesized).
+// is required upstream since 2026-09-07: passthrough when present, otherwise a
+// per-request random UUID fallback (no session identification, no stable derivation).
 export const UPSTREAM_PASSTHROUGH_HEADERS = ["accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent", "x-opencode-session"]
 
-function upstreamHeaders(request: Request, goApiKey: string, endpoint: string): Headers {
+// 上游头构建（legacy 非 provider 路径）。导出仅为测试直测有则透传/无则兜底行为。
+export function upstreamHeaders(request: Request, goApiKey: string, endpoint: string): Headers {
   const headers = new Headers()
   for (const name of UPSTREAM_PASSTHROUGH_HEADERS) {
     const value = request.headers.get(name); if (value) headers.set(name, value)
   }
+  // 上游强制要求 x-opencode-session：客户端没带时兜底每请求随机 UUID（有则透传，无则兜底）。
+  if (!headers.has("x-opencode-session")) headers.set("x-opencode-session", randomUUID())
   if (!headers.has("content-type") && request.method !== "GET") headers.set("content-type", "application/json")
   if (endpoint === "messages") headers.set("x-api-key", goApiKey)
   else headers.set("authorization", `Bearer ${goApiKey}`)

@@ -187,12 +187,14 @@ describe("opencode-go User-Agent 透传", () => {
   })
 })
 
-// x-opencode-session 透传：上游 2026-09-07 起强制要求该头（缺失回 MissingSessionID 400）。
-// 只透传不合成：客户端带就原样到达上游，没带就不带（网关不做任何会话识别/生成）。
-describe("opencode-go x-opencode-session 透传", () => {
+// x-opencode-session：上游 2026-09-07 起强制要求该头（缺失回 MissingSessionID 400）。
+// 有则透传、无则兜底：客户端带就原样到达上游；没带则网关为该请求生成随机 UUID 填入
+// （每请求 randomUUID，不做会话识别、不做稳定派生）。
+describe("opencode-go x-opencode-session 透传与兜底", () => {
   const provider = new OpenCodeGoProvider()
   const account = { id: "a1", ownerUserId: "u1", poolType: "opencode-go" } as never
   const credential = { token: "go-key-1", credentialVersion: 1 }
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
   const build = (headers: Record<string, string>) =>
     provider.buildForwardTarget(
@@ -220,9 +222,15 @@ describe("opencode-go x-opencode-session 透传", () => {
     expect(target.headers.get("x-opencode-session")).toBe("ses_UPPER")
   })
 
-  it("客户端没带：不合成该头（证明没有会话生成逻辑），其余头不受影响", () => {
+  it("客户端没带：兜底生成随机 UUID（非空且为 UUID 形态，每请求全新），其余头不受影响", () => {
     const target = build({ "content-type": "application/json", "user-agent": "opencode/1.2.3" })
-    expect(target.headers.get("x-opencode-session")).toBeNull()
+    const session = target.headers.get("x-opencode-session")
+    expect(session).not.toBeNull()
+    expect(session).toMatch(UUID_RE)
+    // 每请求随机：两次构建得到不同的 UUID（极小概率碰撞，忽略）
+    const again = build({}).headers.get("x-opencode-session")
+    expect(again).toMatch(UUID_RE)
+    expect(again).not.toBe(session)
     expect(target.headers.get("user-agent")).toBe("opencode/1.2.3")
     expect(target.headers.get("authorization")).toBe("Bearer go-key-1")
   })

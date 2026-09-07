@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type { Provider, QuotaWindow, ProviderCredential, ForwardRequestInput, ForwardTarget, UpstreamErrorClassification } from "./types"
 import type { AccountRecord, QuotaKind } from "../types"
 import { SecretVault } from "../crypto"
@@ -187,9 +188,14 @@ export { classifyGoUsageLimit, classifyFirstSseEvent }
 
 // Headers to forward from the client request to the upstream.
 // x-opencode-session: upstream requires it since 2026-09-07 (MissingSessionID 400) —
-// pure passthrough only, never synthesized when the client omits it.
+// passthrough when the client sends it; otherwise fall back to a per-request random
+// UUID (no session identification, no stable derivation).
 const PASSTHROUGH_HEADERS = ["accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent", "x-opencode-session"]
 export { PASSTHROUGH_HEADERS }
+
+/** x-opencode-session 兜底：客户端没带时为该请求生成随机 UUID（每请求全新，不做会话识别/稳定派生）。 */
+const fallbackOpenCodeSession = () => randomUUID()
+export { fallbackOpenCodeSession }
 
 export class OpenCodeGoProvider implements Provider {
   readonly poolType = "opencode-go" as const
@@ -301,6 +307,8 @@ export class OpenCodeGoProvider implements Provider {
       const value = input.headers.get(name)
       if (value) headers.set(name, value)
     }
+    // 上游强制要求 x-opencode-session：客户端没带时兜底每请求随机 UUID（有则透传，无则兜底）。
+    if (!headers.has("x-opencode-session")) headers.set("x-opencode-session", fallbackOpenCodeSession())
     if (!headers.has("content-type") && input.method !== "GET") headers.set("content-type", "application/json")
     // messages endpoint uses x-api-key; others use Bearer
     if (input.endpoint === "messages") headers.set("x-api-key", credential.token)
