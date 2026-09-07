@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
-import { apiFetch } from "./api-fetch"
+import { apiFetchWithMirrorContext } from "./api-fetch"
 import { decodeJwtClaims, jwtClaimString } from "./xai-sso-device"
 
 export const OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -134,7 +134,10 @@ export async function completeOpenAIOAuthSession(ownerUserId: string, sessionId:
   const callback = parseCallbackUrl(callbackUrl)
   if (!constantTimeEqual(callback.state, session.state)) throw new Error("OAuth state 校验失败，请重新开始授权")
 
-  const response = await apiFetch(OPENAI_OAUTH_TOKEN_URL, {
+  // OAuth 兑换必须走用户镜像上下文：auth.openai.com 在部分地域被墙，
+  // 运营方在镜像组里配的镜像地址/proxyUrl（auth.openai.com 域名）只对带
+  // ownerUserId 的请求生效；裸 apiFetch 会丢弃归属，非 ADMIN 用户直接直连。
+  const response = await apiFetchWithMirrorContext(OPENAI_OAUTH_TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
@@ -145,7 +148,7 @@ export async function completeOpenAIOAuthSession(ownerUserId: string, sessionId:
       code_verifier: session.codeVerifier,
     }).toString(),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+  }, { ownerUserId })
   const payload = await response.json().catch(() => null) as Record<string, unknown> | null
   if (!response.ok) {
     const detail = typeof payload?.error_description === "string" ? payload.error_description : typeof payload?.error === "string" ? payload.error : `HTTP ${response.status}`

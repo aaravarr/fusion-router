@@ -3,8 +3,11 @@ import {
   __resetOpenAIOAuthSessionsForTests,
   completeOpenAIOAuthSession,
   OPENAI_OAUTH_CLIENT_ID,
+  OPENAI_OAUTH_TOKEN_URL,
   startOpenAIOAuthSession,
 } from "./openai-oauth"
+import { getProxyDispatcher, invalidateMirrorCacheForOwner } from "./api-fetch"
+import { createDatabase, type AppDatabase } from "./db"
 
 function jwt(payload: Record<string, unknown>): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`
@@ -70,5 +73,44 @@ describe("OpenAI OAuth PKCE flow", () => {
       .rejects.toThrow("不存在或已过期")
     await expect(completeOpenAIOAuthSession("user-1", started.sessionId, "http://localhost:1455/auth/callback?code=x&state=wrong"))
       .rejects.toThrow("state 校验失败")
+  })
+
+  it("code 兑换走归属用户镜像上下文：代理节点注入共享 dispatcher（地域封锁下直连 403）", async () => {
+    const ownerUserId = "user-proxy"
+    const db: AppDatabase = createDatabase(":memory:")
+    const timestamp = new Date().toISOString()
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run(ownerUserId, ownerUserId, ownerUserId, "Proxy", "USER", "hash", timestamp, timestamp)
+    db.prepare("INSERT INTO user_mirror_groups(id,owner_user_id,name,enabled,domains_json,account_ids_json,mirrors_json,rules_json,request_rules_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run("g-oai", ownerUserId, "g-oai", 1, JSON.stringify(["auth.openai.com"]), JSON.stringify([]),
+        JSON.stringify([{ id: "m", name: "M", url: "", proxyUrl: "http://127.0.0.1:7890", enabled: true }]),
+        JSON.stringify([]), null, timestamp, timestamp)
+    ;(globalThis as typeof globalThis & { __opencodeApiDb?: AppDatabase }).__opencodeApiDb = db
+    invalidateMirrorCacheForOwner(ownerUserId)
+    try {
+      const started = startOpenAIOAuthSession(ownerUserId)
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!
+      const fetchMock = vi.fn(async () => Response.json({
+        access_token: jwt({ sub: "openai-user-1" }),
+        refresh_token: "refresh-1",
+        id_token: jwt({ sub: "openai-user-1" }),
+        expires_in: 3600,
+      }))
+      vi.stubGlobal("fetch", fetchMock)
+      await completeOpenAIOAuthSession(
+        ownerUserId,
+        started.sessionId,
+        `http://localhost:1455/auth/callback?code=auth-code&state=${state}`,
+      )
+      expect(fetchMock).toHaveBeenCalledOnce()
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit & { dispatcher?: unknown }]
+      // 只配代理的节点：URL 保持原始上游，请求经代理发出
+      expect(url).toBe(OPENAI_OAUTH_TOKEN_URL)
+      expect(init.dispatcher).toBe(getProxyDispatcher("http://127.0.0.1:7890"))
+    } finally {
+      invalidateMirrorCacheForOwner(ownerUserId)
+      ;(globalThis as typeof globalThis & { __opencodeApiDb?: AppDatabase }).__opencodeApiDb = undefined
+      db.close()
+    }
   })
 })

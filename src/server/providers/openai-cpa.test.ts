@@ -560,6 +560,66 @@ describe("exchangeOpenAIRefreshToken", () => {
     await expect(exchangeOpenAIRefreshToken("rt-1")).rejects.toThrow(/HTTP 500/)
     await expect(exchangeOpenAIRefreshToken("rt-1")).rejects.not.toBeInstanceOf(OpenAITokenRevokedError)
   })
+
+  it("带镜像上下文：代理节点注入共享 dispatcher（地域封锁下直连 403）", async () => {
+    const { getProxyDispatcher, invalidateMirrorCacheForOwner } = await import("../api-fetch")
+    const { OPENAI_OAUTH_TOKEN_URL } = await import("../openai-oauth")
+    const proxyOwner = "openai-cpa-proxy-owner"
+    const timestamp = new Date().toISOString()
+    db.prepare("INSERT INTO users(id,username,username_normalized,display_name,role,status,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,'ACTIVE',?,?,?)")
+      .run(proxyOwner, proxyOwner, proxyOwner, "Proxy", "USER", "hash", timestamp, timestamp)
+    db.prepare("INSERT INTO user_mirror_groups(id,owner_user_id,name,enabled,domains_json,account_ids_json,mirrors_json,rules_json,request_rules_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run("g-oai-proxy", proxyOwner, "g-oai-proxy", 1, JSON.stringify(["auth.openai.com"]), JSON.stringify([]),
+        JSON.stringify([{ id: "m", name: "M", url: "", proxyUrl: "http://127.0.0.1:7890", enabled: true }]),
+        JSON.stringify([]), null, timestamp, timestamp)
+    invalidateMirrorCacheForOwner(proxyOwner)
+    try {
+      const fetchMock = vi.fn(async () => Response.json({
+        access_token: jwt({ sub: "openai-user-1" }),
+        refresh_token: "rt-new",
+        id_token: idTokenWithClaims(),
+        expires_in: 3600,
+      }))
+      vi.stubGlobal("fetch", fetchMock)
+      await exchangeOpenAIRefreshToken("rt-1", undefined, { ownerUserId: proxyOwner })
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit & { dispatcher?: unknown }]
+      expect(url).toBe(OPENAI_OAUTH_TOKEN_URL)
+      expect(init.dispatcher).toBe(getProxyDispatcher("http://127.0.0.1:7890"))
+    } finally {
+      invalidateMirrorCacheForOwner(proxyOwner)
+    }
+  })
+
+  it("provider 刷新透传账号上下文：命中账号归属镜像组时代理生效", async () => {
+    const { getProxyDispatcher, invalidateMirrorCacheForOwner } = await import("../api-fetch")
+    invalidateMirrorCacheForOwner(ownerUserId)
+    const timestamp = new Date().toISOString()
+    db.prepare("INSERT INTO user_mirror_groups(id,owner_user_id,name,enabled,domains_json,account_ids_json,mirrors_json,rules_json,request_rules_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run("g-oai-acct", ownerUserId, "g-oai-acct", 1, JSON.stringify(["auth.openai.com"]), JSON.stringify([]),
+        JSON.stringify([{ id: "m", name: "M", url: "", proxyUrl: "http://127.0.0.1:7890", enabled: true }]),
+        JSON.stringify([]), null, timestamp, timestamp)
+    invalidateMirrorCacheForOwner(ownerUserId)
+    try {
+      const provider = new OpenAICPAProvider()
+      const account = createOpenAIAccount({
+        token: "at-old",
+        refreshToken: "rt-old",
+        expiresAt: String(Math.floor(Date.now() / 1000) + 60),
+      })
+      const fetchMock = vi.fn(async () => Response.json({
+        access_token: "at-new",
+        refresh_token: "rt-new",
+        id_token: idTokenWithClaims(),
+        expires_in: 7 * 86400,
+      }))
+      vi.stubGlobal("fetch", fetchMock)
+      expect((await provider.getCredential(account)).token).toBe("at-new")
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit & { dispatcher?: unknown }]
+      expect(init.dispatcher).toBe(getProxyDispatcher("http://127.0.0.1:7890"))
+    } finally {
+      invalidateMirrorCacheForOwner(ownerUserId)
+    }
+  })
 })
 
 // ─── validateCredential：whoami 回填 AccountID ───────────────────────────

@@ -26,7 +26,7 @@ import type { AccountRecord, QuotaKind, ProviderAccountData } from "../types"
 import type { PoolType } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
-import { apiFetch, apiFetchWithMirrorContext } from "../api-fetch"
+import { apiFetchWithMirrorContext, type MirrorSelectionContext } from "../api-fetch"
 import { OPENAI_OAUTH_CLIENT_ID, OPENAI_OAUTH_TOKEN_URL, parseOpenAIIdentity } from "../openai-oauth"
 
 // ─── Constants ───────────────────────────────────────────────────────────
@@ -120,8 +120,12 @@ export interface OpenAIRefreshedToken {
 export async function exchangeOpenAIRefreshToken(
   refreshToken: string,
   clientId = OPENAI_OAUTH_CLIENT_ID,
+  mirrorContext: MirrorSelectionContext = {},
 ): Promise<OpenAIRefreshedToken> {
-  const resp = await apiFetch(OPENAI_OAUTH_TOKEN_URL, {
+  // refresh 兑换与 OAuth code 兑换同理：必须带镜像上下文走运营方给
+  // auth.openai.com 配的镜像/proxy，否则地域封锁下直接 403（裸 apiFetch
+  // 丢归属，非 ADMIN 用户的刷新请求直连上游）。
+  const resp = await apiFetchWithMirrorContext(OPENAI_OAUTH_TOKEN_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: new URLSearchParams({
@@ -131,7 +135,7 @@ export async function exchangeOpenAIRefreshToken(
       scope: OPENAI_REFRESH_SCOPE,
     }).toString(),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+  }, mirrorContext)
   const body = await resp.text()
   if (!resp.ok) {
     let errorCode = ""
@@ -408,10 +412,11 @@ export class OpenAICPAProvider implements Provider {
 
   // ── Token Refresh ─────────────────────────────────────────────────────
 
-  private refreshTokenIfNeeded(credential: ProviderCredential, accountId: string): Promise<ProviderCredential> {
+  private refreshTokenIfNeeded(credential: ProviderCredential, account: AccountRecord): Promise<ProviderCredential> {
+    const accountId = account.id
     const inflight = this.refreshInflight.get(accountId)
     if (inflight) return inflight
-    const task = this.doRefreshTokenIfNeeded(credential, accountId)
+    const task = this.doRefreshTokenIfNeeded(credential, account)
     this.refreshInflight.set(accountId, task)
     const cleanup = () => {
       if (this.refreshInflight.get(accountId) === task) this.refreshInflight.delete(accountId)
@@ -420,7 +425,8 @@ export class OpenAICPAProvider implements Provider {
     return task
   }
 
-  private async doRefreshTokenIfNeeded(credential: ProviderCredential, accountId: string): Promise<ProviderCredential> {
+  private async doRefreshTokenIfNeeded(credential: ProviderCredential, account: AccountRecord): Promise<ProviderCredential> {
+    const accountId = account.id
     const db = getDatabase()
     const row = db.prepare("SELECT credential_data_ciphertext, credential_version FROM provider_credentials WHERE account_id = ?").get(accountId) as { credential_data_ciphertext: string; credential_version: number } | undefined
     if (!row) return credential
@@ -446,7 +452,7 @@ export class OpenAICPAProvider implements Provider {
     if (backoff && now < backoff.nextAttemptAtMs) return credential
 
     try {
-      const refreshed = await exchangeOpenAIRefreshToken(data.refreshToken, data.clientId || OPENAI_OAUTH_CLIENT_ID)
+      const refreshed = await exchangeOpenAIRefreshToken(data.refreshToken, data.clientId || OPENAI_OAUTH_CLIENT_ID, { account })
       data.token = refreshed.accessToken
       // 上游每次刷新都轮换 refresh_token；响应缺失时保留旧值（exchange 已兜底）。
       data.refreshToken = refreshed.refreshToken
@@ -520,7 +526,7 @@ export class OpenAICPAProvider implements Provider {
     }
 
     // If this account has a refresh_token, check if we need to refresh before returning.
-    return this.refreshTokenIfNeeded(credential, account.id)
+    return this.refreshTokenIfNeeded(credential, account)
   }
 
   /** best-effort 回填 whoami 发现的身份信息（PAT/CPA 导入缺 id_token 时补齐 ChatGPT AccountID）。 */

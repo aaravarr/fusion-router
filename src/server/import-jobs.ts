@@ -314,7 +314,9 @@ async function importSeed(ownerUserId: string, jobId: string, index: number, ini
   }
   if (!seed.accessToken && seed.refreshToken && seed.poolType === "openai") {
     updateItem(db, jobId, index, "RUNNING", "正在刷新 OpenAI OAuth 凭据")
-    const result = await exchangeOpenAIRefreshToken(seed.refreshToken, seed.clientId)
+    // 带导入归属用户的镜像上下文：refresh 兑换同样受地域封锁影响，
+    // 必须走运营方给 auth.openai.com 配的镜像/proxy。
+    const result = await exchangeOpenAIRefreshToken(seed.refreshToken, seed.clientId, { ownerUserId })
     // 兑换响应的 id_token 解出 ChatGPT AccountID / email / planType（CLIProxyAPI 契约），
     // 与刷新后的 token、过期时间一并入库——Chatgpt-Account-Id 头是推理必带字段。
     seed = {
