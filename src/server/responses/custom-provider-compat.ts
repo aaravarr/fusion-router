@@ -162,11 +162,74 @@ export function responsesJsonToChatCompletion(payload: unknown): Obj {
   } : undefined
   return {
     id: payload.id ?? "", object: "chat.completion", created: payload.created_at ?? Math.floor(Date.now() / 1000), model: payload.model,
-    choices: [{ index: 0, message: { role: "assistant", content: output.content, ...(output.reasoning ? { reasoning_content: output.reasoning } : {}), ...(output.toolCalls.length ? { tool_calls: output.toolCalls } : {}) }, finish_reason: output.toolCalls.length ? "tool_calls" : "stop" }],
+    choices: [{ index: 0, message: { role: "assistant", content: output.content, ...(output.reasoning ? { reasoning_content: output.reasoning } : {}), ...(output.toolCalls.length ? { tool_calls: output.toolCalls } : {}) }, finish_reason: mapResponsesFinish(payload) }],
     ...(usage ? { usage } : {}),
   }
 }
 
+/**
+ * 逐行 SSE 事件迭代器（CLIProxyAPI 对齐：translator 逐行喂 `data:`，
+ * 不依赖 `\n\n` 空行分隔——Codex 兼容形状可能无空行）：
+ * 新事件起于 `event:` 行或空行；`:` 注释行忽略；非 SSE 行不污染当前事件。
+ * 返回各事件的 data 载荷（多 data: 行按原语义 `\n` 拼接）。
+ */
+export function iterSseDataPayloads(rawText: string): string[] {
+  const payloads: string[] = []
+  let dataLines: string[] = []
+  const flush = () => {
+    if (dataLines.length) payloads.push(dataLines.join("\n"))
+    dataLines = []
+  }
+  for (const line of rawText.split(/\r?\n/)) {
+    if (!line.trim()) { flush(); continue }
+    if (line.startsWith(":")) continue
+    if (line.startsWith("event:")) { flush(); continue }
+    if (line.startsWith("data:")) { dataLines.push(line.slice(5).trimStart()); continue }
+  }
+  flush()
+  return payloads
+}
+
+/**
+ * SSE 文本是否含至少一个可解析为对象的 data 载荷：
+ * 网关嗅探命中（无 content-type）后、流式转换前的先验——SSE 外形但零可解析
+ * 载荷（如代理错误页伪装成 SSE 行）直接判无效上游响应，而非包装成
+ * 空 content + stop 的“成功”流。截断流（仅 delta 无终态）同样通过，
+ * 其 delta 载荷可解析，不影响兜底收尾。
+ */
+export function hasConvertibleSsePayload(rawText: string): boolean {
+  for (const raw of iterSseDataPayloads(rawText)) {
+    if (!raw || raw === "[DONE]") continue
+    try {
+      if (isObj(JSON.parse(raw))) return true
+    } catch { /* 非 JSON 载荷，继续看下一事件 */ }
+  }
+  return false
+}
+
+/**
+ * 无 content-type 时的 SSE 嗅探（Codex 上游 `chatgpt.com/backend-api/codex`
+ * 的 SSE 响应不带 content-type，网关不能仅凭响应头判定）：
+ * 行首 `event:` / `data:`（SSE 帧）即判为 SSE；`{"data":...}` 类 JSON
+ * 行首是引号，不会误判；单体 JSON（行首 `{`）不会误判。
+ */
+export function looksLikeResponsesSse(raw: string): boolean {
+  const text = raw.replace(/^\uFEFF/, "").trimStart()
+  if (!text) return false
+  if (text.startsWith("event:") || text.startsWith("data:")) return true
+  return /(^|\n)event:\s*response\.\S+/.test(text) || /(^|\n)data:\s*\{"type":\s*"response\./.test(text)
+}
+
+/** responses 终态 → chat finish_reason（CLIProxyAPI 语义）：tool_calls 优先；截断类→length；内容过滤→content_filter；其余→stop。 */
+export function mapResponsesFinish(response: Obj): "tool_calls" | "length" | "content_filter" | "stop" {
+  if (responseOutput(response).toolCalls.length > 0) return "tool_calls"
+  const details = isObj(response.incomplete_details) ? response.incomplete_details : {}
+  const reason = String(details.reason ?? response.incomplete_reason ?? "")
+  if (reason === "content_filter") return "content_filter"
+  if (/max_output_tokens|max_tokens/.test(reason)) return "length"
+  if (String(response.status ?? "") === "incomplete") return "length"
+  return "stop"
+}
 /**
  * 把上游 responses SSE 全文聚合成单个 response 对象（供 chat 非流式聚合）：
  * 优先取 `response.completed` 事件的 response；缺失时回退最后一个带 response 的事件；
@@ -174,8 +237,7 @@ export function responsesJsonToChatCompletion(payload: unknown): Obj {
  */
 export function responsesSseToJson(rawText: string): Obj | null {
   let fallback: Obj | null = null
-  for (const event of rawText.split(/\r?\n\r?\n/)) {
-    const raw = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
+  for (const raw of iterSseDataPayloads(rawText)) {
     if (!raw || raw === "[DONE]") continue
     let data: unknown
     try {
@@ -190,7 +252,7 @@ export function responsesSseToJson(rawText: string): Obj | null {
   return fallback
 }
 
-function chatChunk(data: Obj, state: { id: string; model?: unknown; created: number }): Obj | null {
+function chatChunk(data: Obj, state: { id: string; model?: unknown; created: number; terminal: boolean }): Obj | null {
   const type = String(data.type ?? "")
   const base = { id: state.id, object: "chat.completion.chunk", created: state.created, model: state.model }
   if (type === "response.created" && isObj(data.response)) {
@@ -201,28 +263,56 @@ function chatChunk(data: Obj, state: { id: string; model?: unknown; created: num
   if (type.includes("reasoning") && type.endsWith(".delta") && typeof data.delta === "string") return { ...base, choices: [{ index: 0, delta: { reasoning_content: data.delta }, finish_reason: null }] }
   if (type === "response.output_item.added" && isObj(data.item) && data.item.type === "function_call") return { ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: Number(data.output_index ?? 0), id: data.item.call_id ?? data.item.id, type: "function", function: { name: data.item.name, arguments: "" } }] }, finish_reason: null }] }
   if (type === "response.function_call_arguments.delta" && typeof data.delta === "string") return { ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: Number(data.output_index ?? 0), function: { arguments: data.delta } }] }, finish_reason: null }] }
-  if (type === "response.completed") {
+  if (type === "response.completed" || type === "response.incomplete") {
+    state.terminal = true
     const response = isObj(data.response) ? data.response : {}
-    const hasTools = responseOutput(response).toolCalls.length > 0
     const usage = isObj(response.usage) ? { prompt_tokens: Number(response.usage.input_tokens ?? 0), completion_tokens: Number(response.usage.output_tokens ?? 0), total_tokens: Number(response.usage.total_tokens ?? 0) } : undefined
-    return { ...base, choices: [{ index: 0, delta: {}, finish_reason: hasTools ? "tool_calls" : "stop" }], ...(usage ? { usage } : {}) }
+    return { ...base, choices: [{ index: 0, delta: {}, finish_reason: mapResponsesFinish(response) }], ...(usage ? { usage } : {}) }
+  }
+  if (type === "response.failed" || type === "error") {
+    // OpenAI SSE 错误惯例：in-band error 对象（无 finish_reason 语义，客户端按错误处理）。
+    state.terminal = true
+    const response = isObj(data.response) ? data.response : {}
+    const errObj = isObj(response.error) ? response.error : isObj(data.error) ? data.error : {}
+    const message = typeof errObj.message === "string" && errObj.message ? errObj.message : typeof data.message === "string" ? data.message : "upstream response failed"
+    const code = typeof errObj.code === "string" ? errObj.code : typeof errObj.type === "string" ? errObj.type : "upstream_failed"
+    return { ...base, error: { type: "upstream_failed", code, message } }
   }
   return null
 }
 
 export function responsesSseToChatStream(stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder(); const encoder = new TextEncoder()
-  let buffer = ""; const state = { id: "", model: undefined as unknown, created: Math.floor(Date.now() / 1000) }
+  let buffer = ""; const state = { id: "", model: undefined as unknown, created: Math.floor(Date.now() / 1000), terminal: false }
+  let pendingData: string[] = []
+  const emit = (raw: string, controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (!raw || raw === "[DONE]") return
+    try { const converted = chatChunk(JSON.parse(raw) as Obj, state); if (converted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(converted)}\n\n`)) } catch { /* skip malformed event */ }
+  }
+  const flushPending = (controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (pendingData.length) emit(pendingData.join("\n"), controller)
+    pendingData = []
+  }
+  const feedLine = (line: string, controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (!line.trim()) { flushPending(controller); return }
+    if (line.startsWith(":")) return
+    if (line.startsWith("event:")) { flushPending(controller); return }
+    if (line.startsWith("data:")) { pendingData.push(line.slice(5).trimStart()); return }
+  }
   return stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       buffer += decoder.decode(chunk, { stream: true })
-      const events = buffer.split(/\r?\n\r?\n/); buffer = events.pop() ?? ""
-      for (const event of events) {
-        const raw = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n")
-        if (!raw || raw === "[DONE]") continue
-        try { const converted = chatChunk(JSON.parse(raw) as Obj, state); if (converted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(converted)}\n\n`)) } catch { /* skip malformed event */ }
-      }
+      const lines = buffer.split(/\r?\n/); buffer = lines.pop() ?? ""
+      for (const line of lines) feedLine(line, controller)
     },
-    flush(controller) { controller.enqueue(encoder.encode("data: [DONE]\n\n")) },
+    flush(controller) {
+      for (const line of buffer.split(/\r?\n/)) feedLine(line, controller)
+      buffer = ""
+      flushPending(controller)
+      // 上游流无终态事件直接断（截断/网关透传中断）：兜底补合法收尾，
+      // 否则客户端报 "Stream ended without finish_reason"（对齐 CLIProxyAPI 框架层兜底）。
+      if (!state.terminal) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: state.id, object: "chat.completion.chunk", created: state.created, model: state.model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`))
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+    },
   }))
 }

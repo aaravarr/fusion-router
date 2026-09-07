@@ -17,7 +17,7 @@ import { injectDefaultServerTools, normalizeToolsInBody } from "./responses/tool
 import { getProxyDispatcher, resolveMirrorPlanForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
-import { chatRequestToResponses, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
+import { chatRequestToResponses, hasConvertibleSsePayload, looksLikeResponsesSse, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
 import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
 import { chatJsonToMessages, chatSseToMessagesStream, messagesRequestToChat } from "./messages/convert"
@@ -834,11 +834,29 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             continue
           }
           let converted: unknown
+          let messagesConvertedOk = true
           try {
             const parsed = JSON.parse(raw)
             converted = chatJsonToMessages(attemptMessagesFallback === "responses" ? responsesJsonToChatCompletion(parsed) : parsed)
-          } catch { converted = { type: "error", error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } } }
+          } catch {
+            // 上游 SSE 无 content-type 时落到本分支：嗅探到 SSE 帧则先聚合再转 messages。
+            const aggregated = attemptMessagesFallback === "responses" && looksLikeResponsesSse(raw) ? responsesSseToJson(raw) : null
+            if (aggregated) {
+              converted = chatJsonToMessages(responsesJsonToChatCompletion(aggregated))
+              const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+              if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+              routeMeta.transformSummary = parts.join(" | ")
+            } else { converted = { type: "error", error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }; messagesConvertedOk = false }
+          }
           const body = JSON.stringify(converted)
+          if (!messagesConvertedOk) {
+            const status = upstream.status
+            this.finishAttempt(attemptId, status, "RETURN_DIRECTLY", "invalid_upstream_response", Date.now() - attemptStartedAt, "invalid_upstream_response", selection.account.name, body)
+            this.finalizeRequest(requestId, { status, outcome: "invalid_upstream_response", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: "invalid_upstream_response", accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: body.length, logSettings, requestBodyJson, responseBody: logging ? converted : undefined, responseTruncated: false, meta, ...routeMeta })
+            const headers = responseHeaders(upstream.headers)
+            headers.set("x-messages-route", attemptMessagesFallback)
+            return new Response(body, { status, headers })
+          }
           routing.markSuccess(selection.account.id)
           const status = upstream.status
           this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
@@ -858,9 +876,91 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             await this.retryUpstreamNetworkError(sameAccountRetryCounts, tried, selection.account.id, selection.account.name, attemptId, attemptStartedAt, responsesNetworkError, raw)
             continue
           }
+          // Codex 上游（chatgpt.com/backend-api/codex）的 SSE 响应不带 content-type：
+          // 嗅探到 SSE 帧则走 SSE 转换，而非当单体 JSON 解析（否则必进
+          // invalid_upstream_response，且流式/非流式 chat 全崩）。
+          if (looksLikeResponsesSse(raw)) {
+            const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+            if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+            routeMeta.transformSummary = parts.join(" | ")
+            if (stream) {
+              // 先验：SSE 外形但零可解析 data 载荷（如代理错误页伪装成 SSE 行）→
+              // 当无效上游响应处理（RETURN_DIRECTLY + ok:0，不 markSuccess），
+              // 而非包装成空 content + stop 的“成功”流。截断流（仅 delta）
+              // 载荷可解析，照常走转换 + 兜底收尾。
+              if (!hasConvertibleSsePayload(raw)) {
+                const invalid: unknown = { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }
+                const invalidBody = JSON.stringify(invalid)
+                const invalidStatus = upstream.status
+                this.finishAttempt(attemptId, invalidStatus, "RETURN_DIRECTLY", "invalid_upstream_response", Date.now() - attemptStartedAt, "invalid_upstream_response", selection.account.name, invalidBody)
+                this.finalizeRequest(requestId, { status: invalidStatus, outcome: "invalid_upstream_response", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: "invalid_upstream_response", accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: invalidBody.length, logSettings, requestBodyJson, responseBody: logging ? invalid : undefined, responseTruncated: false, meta, ...routeMeta })
+                const invalidHeaders = responseHeaders(upstream.headers)
+                invalidHeaders.set("content-type", "application/json")
+                return new Response(invalidBody, { status: invalidStatus, headers: invalidHeaders })
+              }
+              // 流式客户端：把缓冲的整段 SSE 转成 chat SSE 流式返回（含 finish_reason 收尾）。
+              routing.markSuccess(selection.account.id)
+              if (provider?.extractQuotaFromResponse) {
+                const qw = provider.extractQuotaFromResponse(upstream.headers)
+                if (qw) this.recordPassiveQuota(selection.account.id, qw)
+              }
+              const firstTokenAt = Date.now()
+              const status = upstream.status
+              const onComplete = (r: CaptureResult) => {
+                this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, r.error ?? null, selection.account.name)
+                this.finalizeRequest(requestId, {
+                  status,
+                  outcome: "SUCCESS",
+                  attempts: attemptNumber,
+                  ok: isLogOk(status, r.error) ? 1 : 0,
+                  latencyMs: Date.now() - t0,
+                  localPrepMs: upstreamStartedAt - t0,
+                  firstTokenMs: r.firstContentAt != null ? r.firstContentAt - upstreamStartedAt : firstTokenAt - upstreamStartedAt,
+                  usage: r.usage,
+                  error: r.error,
+                  accountId: selection.account.id,
+                  accountName: selection.account.name,
+                  responseSizeBytes: r.responseBytes ?? null,
+                  logSettings,
+                  requestBodyJson,
+                  responseBody: logging ? r.response : undefined,
+                  responseTruncated: r.responseTruncated,
+                  meta,
+                  ...routeMeta,
+                })
+              }
+              const buffered = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(raw)); controller.close() } })
+              const headers = responseHeaders(upstream.headers)
+              headers.set("content-type", "text/event-stream")
+              return new Response(teeAndCapture(responsesSseToChatStream(buffered), onComplete), { status, headers })
+            }
+            const aggregated = responsesSseToJson(raw)
+            if (aggregated) {
+              const aggregatedConverted: unknown = responsesJsonToChatCompletion(aggregated)
+              const aggregatedBody = JSON.stringify(aggregatedConverted)
+              routing.markSuccess(selection.account.id)
+              const status = upstream.status
+              const aggregateParts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+              if (!aggregateParts.some((p) => p.startsWith("aggregate:"))) aggregateParts.push("aggregate:sse-to-chat-json")
+              routeMeta.transformSummary = aggregateParts.join(" | ")
+              this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
+              this.finalizeRequest(requestId, { status, outcome: "SUCCESS", attempts: attemptNumber, ok: 1, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, usage: extractUsage(aggregatedConverted), accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: aggregatedBody.length, logSettings, requestBodyJson, responseBody: logging ? aggregatedConverted : undefined, responseTruncated: false, meta, ...routeMeta })
+              const headers = responseHeaders(upstream.headers)
+              headers.set("content-type", "application/json")
+              return new Response(aggregatedBody, { status, headers })
+            }
+          }
           let converted: unknown
-          try { converted = responsesJsonToChatCompletion(JSON.parse(raw)) } catch { converted = { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } } }
+          let chatConvertedOk = true
+          try { converted = responsesJsonToChatCompletion(JSON.parse(raw)) } catch { converted = { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }; chatConvertedOk = false }
           const body = JSON.stringify(converted)
+          if (!chatConvertedOk) {
+            // 转换失败不再伪装 SUCCESS：记 error 口径且 ok:0，不 markSuccess。
+            const status = upstream.status
+            this.finishAttempt(attemptId, status, "RETURN_DIRECTLY", "invalid_upstream_response", Date.now() - attemptStartedAt, "invalid_upstream_response", selection.account.name, body)
+            this.finalizeRequest(requestId, { status, outcome: "invalid_upstream_response", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: "invalid_upstream_response", accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: body.length, logSettings, requestBodyJson, responseBody: logging ? converted : undefined, responseTruncated: false, meta, ...routeMeta })
+            return new Response(body, { status, headers: responseHeaders(upstream.headers) })
+          }
           routing.markSuccess(selection.account.id)
           const status = upstream.status
           this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
@@ -892,6 +992,15 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             ? responsesJsonToChatCompletion(aggregated)
             : { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }
           const body = JSON.stringify(converted)
+          if (!aggregated) {
+            // 聚合失败不再伪装 SUCCESS：记 error 口径且 ok:0，不 markSuccess。
+            const status = upstream.status
+            this.finishAttempt(attemptId, status, "RETURN_DIRECTLY", "invalid_upstream_response", Date.now() - attemptStartedAt, "invalid_upstream_response", selection.account.name, body)
+            this.finalizeRequest(requestId, { status, outcome: "invalid_upstream_response", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: "invalid_upstream_response", accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: body.length, logSettings, requestBodyJson, responseBody: logging ? converted : undefined, responseTruncated: false, meta, ...routeMeta })
+            const headers = responseHeaders(upstream.headers)
+            headers.set("content-type", "application/json")
+            return new Response(body, { status, headers })
+          }
           routing.markSuccess(selection.account.id)
           if (provider?.extractQuotaFromResponse) {
             const qw = provider.extractQuotaFromResponse(upstream.headers)

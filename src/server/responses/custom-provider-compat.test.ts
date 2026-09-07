@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { chatImagePartToResponsesImagePart, chatRequestToResponses, clampResponsesCallId, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./custom-provider-compat"
+import { chatImagePartToResponsesImagePart, chatRequestToResponses, clampResponsesCallId, hasConvertibleSsePayload, iterSseDataPayloads, looksLikeResponsesSse, mapResponsesFinish, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./custom-provider-compat"
 import { messagesRequestToChat } from "../messages/convert"
 
 describe("custom provider protocol compatibility", () => {
@@ -296,5 +296,147 @@ describe("call_id length guard (opencode-go /v1/responses 限制 call_id <= 64)"
     })).input as Array<Record<string, unknown>>
     expect(shortChain.find((item) => item.type === "function_call")).toMatchObject({ call_id: "toolu_1" })
     expect(shortChain.find((item) => item.type === "function_call_output")).toMatchObject({ call_id: "toolu_1" })
+  })
+})
+
+describe("Codex 真实 SSE 形状（2026-09-08 生产直连实测 gpt-5.4-mini）", () => {
+  // 真实事件序列：created → in_progress → output_item.added → content_part.added →
+  // output_text.delta* → output_text.done → content_part.done → output_item.done → completed。
+  // 特征：event: 行 + 单行 data:（无 content-type 响应头，网关靠嗅探识别），
+  // 每事件带 sequence_number，delta 带 obfuscation，completed 带 usage + service_tier 回显。
+  const codexRealSse = [
+    'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_abc","object":"response","created_at":1788791349,"status":"in_progress","model":"gpt-5.4-mini-2026-03-17","service_tier":"auto","output":[]},"sequence_number":0}\n\n',
+    'event: response.in_progress\ndata: {"type":"response.in_progress","response":{"id":"resp_abc","status":"in_progress"},"sequence_number":1}\n\n',
+    'event: response.output_item.added\ndata: {"type":"response.output_item.added","item":{"id":"msg_1","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":0,"sequence_number":2}\n\n',
+    'event: response.content_part.added\ndata: {"type":"response.content_part.added","content_index":0,"item_id":"msg_1","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":3}\n\n',
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","content_index":0,"delta":"hello","item_id":"msg_1","logprobs":[],"obfuscation":"2K0dxJKA0lE","output_index":0,"sequence_number":4}\n\n',
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","content_index":0,"delta":" world","item_id":"msg_1","logprobs":[],"obfuscation":"MDsamTfzxIV","output_index":0,"sequence_number":5}\n\n',
+    'event: response.output_text.done\ndata: {"type":"response.output_text.done","content_index":0,"item_id":"msg_1","logprobs":[],"output_index":0,"sequence_number":8,"text":"hello world"}\n\n',
+    'event: response.content_part.done\ndata: {"type":"response.content_part.done","content_index":0,"item_id":"msg_1","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"hello world"},"sequence_number":9}\n\n',
+    'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello world"}],"role":"assistant"},"output_index":0,"sequence_number":10}\n\n',
+    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_abc","status":"completed","model":"gpt-5.4-mini-2026-03-17","service_tier":"default","output":[{"type":"message","content":[{"type":"output_text","text":"hello world"}],"role":"assistant"}],"usage":{"input_tokens":18,"input_tokens_details":{"cached_tokens":0},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":26}},"sequence_number":11}\n\n',
+  ].join("")
+
+  const sseStreamOf = (text: string, chunkBytes?: number[]) => {
+    const bytes = new TextEncoder().encode(text)
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (!chunkBytes) { controller.enqueue(bytes); controller.close(); return }
+        let offset = 0
+        for (const size of chunkBytes) { controller.enqueue(bytes.slice(offset, offset + size)); offset += size }
+        if (offset < bytes.length) controller.enqueue(bytes.slice(offset))
+        controller.close()
+      },
+    })
+  }
+  const chatChunksOf = async (text: string, chunkBytes?: number[]) => {
+    const output = await new Response(responsesSseToChatStream(sseStreamOf(text, chunkBytes))).text()
+    return output.split("data: ").map((part) => part.trim()).filter(Boolean)
+  }
+  // role 首 chunk 自带 finish_reason:null：终态判定只看非 null finish_reason。
+  const terminalFinish = (chunks: string[]) => chunks.find((c) => c.includes("finish_reason") && !c.includes('"finish_reason":null'))
+  const terminalFinishCount = (chunks: string[]) => chunks.filter((c) => c.includes("finish_reason") && !c.includes('"finish_reason":null')).length
+
+  it("looksLikeResponsesSse：无 content-type 的 Codex SSE 能被嗅探，单体 JSON 不误判", () => {
+    expect(looksLikeResponsesSse(codexRealSse)).toBe(true)
+    expect(looksLikeResponsesSse('event: response.created\ndata: {"type":"x"}\n')).toBe(true)
+    expect(looksLikeResponsesSse('{"type":"response.completed","response":{}}')).toBe(false)
+    expect(looksLikeResponsesSse('{"data":"x"}')).toBe(false)
+    expect(looksLikeResponsesSse("")).toBe(false)
+    expect(looksLikeResponsesSse("not sse at all")).toBe(false)
+  })
+
+  it("流式：真实形状产出 role/delta/finish+usage/[DONE] 完整序列", async () => {
+    const chunks = await chatChunksOf(codexRealSse)
+    expect(chunks[0]).toContain('"delta":{"role":"assistant"}')
+    expect(chunks.some((c) => c.includes('"content":"hello'))).toBe(true)
+    const finish = terminalFinish(chunks)
+    expect(finish).toContain('"finish_reason":"stop"')
+    expect(finish).toContain('"usage":{"prompt_tokens":18,"completion_tokens":8,"total_tokens":26}')
+    expect(chunks[chunks.length - 1]).toBe("[DONE]")
+    // 无兜底 chunk（终态已见，不应多发）
+    expect(terminalFinishCount(chunks)).toBe(1)
+  })
+
+  it("流式：事件被 TCP 切碎仍正确组装（chunk 边界任意）", async () => {
+    const chunks = await chatChunksOf(codexRealSse, [37, 5, 200, 1, 999, 64])
+    expect(chunks.some((c) => c.includes('"content":"hello'))).toBe(true)
+    expect(chunks.some((c) => c.includes('"finish_reason":"stop"'))).toBe(true)
+    expect(chunks[chunks.length - 1]).toBe("[DONE]")
+  })
+
+  it("流式：无空行分隔的单 \\n 形状同样解析（CLIProxyAPI 逐行容忍）", async () => {
+    const singleNewline = codexRealSse.replaceAll("\n\n", "\n")
+    const chunks = await chatChunksOf(singleNewline)
+    expect(chunks.some((c) => c.includes('"content":"hello'))).toBe(true)
+    expect(chunks.some((c) => c.includes('"finish_reason":"stop"'))).toBe(true)
+    expect(responsesSseToJson(singleNewline)).toMatchObject({ id: "resp_abc", status: "completed" })
+  })
+
+  it("流式：上游截断（无 completed 直接断）兜底补 finish_reason:stop 再 [DONE]", async () => {
+    const truncated = codexRealSse.split("event: response.output_text.done")[0]
+    const chunks = await chatChunksOf(truncated)
+    expect(chunks.some((c) => c.includes('"content":"hello'))).toBe(true)
+    const finish = terminalFinish(chunks)
+    expect(finish).toContain('"finish_reason":"stop"')
+    expect(chunks[chunks.length - 1]).toBe("[DONE]")
+  })
+
+  it("流式：response.failed 产出 in-band error 对象而非静默截断", async () => {
+    const failed = 'event: response.failed\ndata: {"type":"response.failed","response":{"id":"resp_x","status":"failed","error":{"code":"server_error","message":"boom","type":"server_error"}}}\n\n'
+    const chunks = await chatChunksOf(codexRealSse.split("event: response.output_text.done")[0] + failed)
+    const err = chunks.find((c) => c.includes('"error"'))
+    expect(err).toContain("boom")
+    expect(chunks[chunks.length - 1]).toBe("[DONE]")
+    // failed 本身是终态：不应再补 stop 兜底
+    expect(terminalFinishCount(chunks)).toBe(0)
+  })
+
+  it("流式：response.incomplete（max_output_tokens）→ finish_reason:length", async () => {
+    const incomplete = 'event: response.incomplete\ndata: {"type":"response.incomplete","response":{"id":"resp_x","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":5,"output_tokens":10,"total_tokens":15}}}\n\n'
+    const chunks = await chatChunksOf(codexRealSse.split("event: response.output_text.done")[0] + incomplete)
+    const finish = terminalFinish(chunks)
+    expect(finish).toContain('"finish_reason":"length"')
+  })
+
+  it("非流式聚合：真实形状聚出 completed（含 usage），供 chat JSON", () => {
+    expect(responsesSseToJson(codexRealSse)).toMatchObject({
+      id: "resp_abc",
+      status: "completed",
+      usage: { input_tokens: 18, output_tokens: 8, total_tokens: 26 },
+    })
+    expect(responsesJsonToChatCompletion(responsesSseToJson(codexRealSse))).toMatchObject({
+      object: "chat.completion",
+      choices: [{ message: { content: "hello world" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 18, completion_tokens: 8, total_tokens: 26 },
+    })
+  })
+
+  it("mapResponsesFinish：tool_calls 优先于截断；content_filter 透出", () => {
+    expect(mapResponsesFinish({ status: "completed", output: [{ type: "function_call", call_id: "c1", name: "f", arguments: "{}" }] })).toBe("tool_calls")
+    expect(mapResponsesFinish({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" } })).toBe("length")
+    expect(mapResponsesFinish({ status: "incomplete", incomplete_details: { reason: "content_filter" } })).toBe("content_filter")
+    expect(mapResponsesFinish({ status: "incomplete" })).toBe("length")
+    expect(mapResponsesFinish({ status: "completed", output: [] })).toBe("stop")
+  })
+
+  it("iterSseDataPayloads：两种分隔形状等价，多 data: 行按原语义拼接", () => {
+    const a = iterSseDataPayloads(codexRealSse)
+    const b = iterSseDataPayloads(codexRealSse.replaceAll("\n\n", "\n"))
+    expect(a.length).toBeGreaterThan(5)
+    expect(b).toEqual(a)
+  })
+
+  it("hasConvertibleSsePayload：真实/截断流通过，空流与伪装 SSE 不通过", () => {
+    expect(hasConvertibleSsePayload(codexRealSse)).toBe(true)
+    expect(hasConvertibleSsePayload(codexRealSse.replaceAll("\n\n", "\n"))).toBe(true)
+    // 截断流（仅 delta 无终态）：delta 载荷可解析，照常走转换 + 兜底收尾
+    expect(hasConvertibleSsePayload(codexRealSse.split("event: response.output_text.done")[0])).toBe(true)
+    expect(hasConvertibleSsePayload("")).toBe(false)
+    expect(hasConvertibleSsePayload("data: [DONE]\n\n")).toBe(false)
+    expect(hasConvertibleSsePayload("not sse at all")).toBe(false)
+    // 代理错误页伪装成 SSE 行：嗅探命中但零可解析载荷 → 网关判无效上游响应
+    expect(hasConvertibleSsePayload('event: response.created\ndata: <html>502 Bad Gateway</html>\n\n')).toBe(false)
+    expect(hasConvertibleSsePayload('event: error\ndata: not json at all\n\n')).toBe(false)
   })
 })
