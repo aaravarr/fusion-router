@@ -1,7 +1,6 @@
 import type { AppDatabase } from "@/server/db"
 import { getDatabase } from "@/server/db"
 import { storeDataUri } from "@/server/media-store"
-import { opencodeGoImageSupportDeclaration } from "@/server/providers/opencode-go"
 
 /**
  * 基于 OpenRouter 模型目录判断模型是否支持图片输入（多模态）。
@@ -199,33 +198,21 @@ export async function filterVisionModels(
 
 
 /**
- * provider 硬声明（本地权威能力表）：命中即采信，不再查 OpenRouter 目录。
- *
- * 池内专用模型 id（如 opencode-go 的 muse-spark-1.3-contributor）不在 OpenRouter
- * 目录中，旧逻辑对其返回 null（未知放行）——对纯文本模型这是 fail-open 漏洞：
- * 带图请求不剥图直接上行被上游 400。provider 基于生产实测的硬声明在此收口，
- * OpenRouter 目录仅作无硬声明模型的兜底。返回 null = 无硬声明。
- */
-function hardDeclaredImageSupport(model: string): boolean | null {
-  // 目前仅 opencode-go 池提供硬声明（muse-* 纯文本）；其他池有实测证据时在此追加。
-  return opencodeGoImageSupportDeclaration(model)
-}
-
-/**
  * 判断模型是否支持图片输入，供网关"接口兼容"拦截使用。
- * 判定顺序：provider 硬声明（本地权威）→ OpenRouter 目录 → 兜底白名单。
  * 返回值语义：
  * - true  ：支持图片（OpenRouter 确认或兜底白名单）
- * - false ：明确不支持图片（provider 硬声明，或 OpenRouter 确认）
- * - null  ：未知（无硬声明，OpenRouter 无此模型且不在兜底白名单）——调用方应放行，避免误拦。
+ * - false ：明确不支持图片（OpenRouter 确认）
+ * - null  ：未知（OpenRouter 无此模型且不在兜底白名单）——调用方应放行，避免误拦。
+ *
+ * 注意：2026-09-07 曾给 muse-* 加过 provider 硬声明 false（d3e7c43），后经上游实测
+ * 推翻——muse-spark-1.3-contributor 的 /v1/responses 接受标准 input_image，为多模态
+ * 模型；生产 400 真因是转换器图片形状映射错误（已修正），硬声明已回滚。
  */
 export async function modelSupportsImage(
   model: string,
   db: AppDatabase = getDatabase(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean | null> {
-  const hard = hardDeclaredImageSupport(model)
-  if (hard !== null) return hard
   const slug = MODEL_SLUG_ALIASES[model.trim().toLowerCase()] ?? model.trim().toLowerCase()
   if (!slug) return null
   const map = await getOpenRouterModalityMap(db, fetchImpl)

@@ -27,22 +27,6 @@ export function isMuseResponsesOnlyModel(model: string): boolean {
 }
 
 /**
- * opencode-go 池模型图片输入能力的硬声明（本地权威，剥图决策优先于 OpenRouter 目录）。
- *
- * muse-* 为纯文本模型，不支持图片输入。证据：2026-09-07 生产 400（request dac712f2）——
- * muse-spark-1.3-contributor chat 入口带 image_url part，池内专用 id 不在 OpenRouter
- * 目录导致 modelSupportsImage 返回 null（未知放行）、剥图未触发，chat->responses 转换
- * 产出 input_image，上游 Console Go 拒绝：
- * [invalid_request_error] input[128].content did not match any supported type。
- *
- * 与 isMuseResponsesOnlyModel 同源（/^muse-/i），覆盖 muse-spark-1.2/1.3-contributor
- * 及后续 muse- 变体。返回 null 表示本池对该模型无硬声明，交由 OpenRouter 目录兜底判定。
- */
-export function opencodeGoImageSupportDeclaration(model: string): boolean | null {
-  return isMuseResponsesOnlyModel(model) ? false : null
-}
-
-/**
  * muse-* 瞬时 429（速率/并发限流，非配额耗尽）同账号退避重试的最大次数。
  * 退避间隔由网关 computeBackoffMs 统一计算：无 Retry-After 时 1s/2s/4s 指数退避，
  * 有则尊重 Retry-After（单次封顶 30s）；全部失败后按 shouldSwitchAccount 切号。

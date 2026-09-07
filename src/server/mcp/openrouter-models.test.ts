@@ -105,30 +105,15 @@ describe("modelSupportsImage", () => {
     db.close()
   })
 
-  // 2026-09-07 生产 400（dac712f2）：muse-spark-1.3-contributor 为池内专用 id，
-  // OpenRouter 目录查不到 → 旧逻辑返回 null（未知放行）→ 剥图未触发 → 上游拒绝 input_image。
-  it("muse-* 经 provider 硬声明返回 false（不依赖 OpenRouter 目录）", async () => {
+  // 2026-09-07 生产 400（dac712f2）跟进：上游实测推翻 d3e7c43 的"muse 纯文本"误判——
+  // muse-spark-1.3-contributor 的 /v1/responses 接受标准 input_image（多模态），
+  // 真因是转换器把 image_url 对象原样改名透传（形状错误），硬声明 false 已回滚。
+  // 池内专用 id 不在 OpenRouter 目录 → 仍返回 null（未知放行），图片保真上行由转换器保证。
+  it("muse-* 无硬声明：目录查不到时返回 null 放行（不剥图）", async () => {
     const db = makeDb()
     for (const m of ["muse-spark-1.3-contributor", "muse-spark-1.2-contributor", "muse-spark-1.2", "Muse-Spark-9.9"]) {
-      expect(await modelSupportsImage(m, db, mockFetch(OR_PAYLOAD)), m).toBe(false)
+      expect(await modelSupportsImage(m, db, mockFetch({ data: [] })), m).toBeNull()
     }
-    db.close()
-  })
-
-  it("muse 硬声明优先于 OpenRouter 目录（目录即使标 image 也不采信）", async () => {
-    const db = makeDb()
-    const payloadWithMuse = {
-      data: [{ id: "meta/muse-spark-1.3-contributor", architecture: { input_modalities: ["text", "image"] } }],
-    }
-    expect(await modelSupportsImage("muse-spark-1.3-contributor", db, mockFetch(payloadWithMuse))).toBe(false)
-    db.close()
-  })
-
-  it("muse 硬声明在 OpenRouter 拉取前短路（无网络也生效）", async () => {
-    const db = makeDb()
-    const failFetch = vi.fn(async () => { throw new Error("network down") }) as unknown as typeof fetch
-    expect(await modelSupportsImage("muse-spark-1.3-contributor", db, failFetch)).toBe(false)
-    expect(failFetch).not.toHaveBeenCalled()
     db.close()
   })
 

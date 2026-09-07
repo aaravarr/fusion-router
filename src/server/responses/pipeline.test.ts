@@ -21,6 +21,9 @@ describe("sanitizeResponsesInputItems 归一化历史消息 part", () => {
     const input = (result.body as any).input as Array<{ type: string; content: Array<{ type: string }> }>
     expect(input[0].content[0].type).toBe("input_text")
     expect(input[0].content[1].type).toBe("input_image")
+    // 2026-09-07 生产 400（dac712f2）：image_url 必须展平为字符串 + detail，
+    // 仅改名透传对象会被上游拒绝（did not match any supported type）
+    expect(input[0].content[1]).toEqual({ type: "input_image", image_url: "data:image/png;base64,xx", detail: "auto" })
     expect(input[1].content[0].type).toBe("output_text") // 合法变体保持不变
     db.close()
   })

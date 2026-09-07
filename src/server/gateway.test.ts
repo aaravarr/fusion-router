@@ -1255,12 +1255,15 @@ describe("opencode-go muse-* 强制原生 responses", () => {
     expect(attempt.response_body).toBe(upstreamError)
   })
 
-  // 2026-09-07 生产 400（dac712f2）：muse 纯文本模型 chat 入口带图，剥图未触发
-  // （OpenRouter 目录无池内专用 id → modelSupportsImage null 放行），chat->responses
-  // 产出 input_image 被上游拒绝。修复后：provider 硬声明 muse-* 不支持图片，
-  // 图片在转换链路上游前已被 rewriteImagesToText 剥为文本占位。
-  it("chat 入口 + muse + image_url part：剥图为文本占位后上行 /responses，无 input_image", async () => {
+  // 2026-09-07 生产 400（dac712f2）跟进：上游实测推翻 d3e7c43 的"muse 纯文本"误判——
+  // muse-spark-1.3-contributor 的 /v1/responses 接受标准 input_image（多模态），
+  // 真因是转换器把 image_url 对象原样改名透传（形状错误）被上游拒绝。转换器已修正，
+  // 剥图硬声明已回滚：muse 带图 chat 请求经 chat->responses 上行，图片保真为标准 input_image。
+  it("chat 入口 + muse + image_url part：chat->responses 上行，图片保真为标准 input_image", async () => {
     const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    // 播种 OpenRouter 模态缓存（避免真实网络）：目录无 muse 条目 → null 未知放行 → 不剥图。
+    db.prepare("INSERT INTO system_settings(key, value_json, is_secret, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
+      .run(OPENROUTER_CACHE_KEY, JSON.stringify({ fetchedAt: new Date().toISOString(), models: {} }), new Date().toISOString())
     const sent = { url: "", body: {} as Record<string, unknown> }
     const req = new Request("http://localhost/v1/chat/completions", {
       method: "POST",
@@ -1270,23 +1273,25 @@ describe("opencode-go muse-* 强制原生 responses", () => {
         messages: [
           { role: "user", content: [{ type: "text", text: "看这个" }, { type: "image_url", image_url: { url: "https://example.com/shot-84.png" } }] },
           { role: "assistant", content: "看到了" },
-          { role: "user", content: [{ type: "text", text: "还有这个" }, { type: "image_url", image_url: { url: "https://example.com/shot-86.png" } }] },
+          { role: "user", content: [{ type: "text", text: "还有这个" }, { type: "image_url", image_url: { url: "data:image/jpeg;base64,AAA" } }] },
         ],
       }),
     })
     const response = await new GatewayService(credentials, db, capturingFetcher(sent), hasher).handle(req, "chat/completions")
     expect(response.status, await response.clone().text()).toBe(200)
-    // 仍走 chat->responses 转换上行原生 /responses
+    // 走 chat->responses 转换上行原生 /responses
     expect(sent.url).toContain("/responses")
     const input = sent.body.input as Array<{ role?: string; content?: unknown }>
     expect(Array.isArray(input)).toBe(true)
     const allParts = input.flatMap((item) => Array.isArray(item.content) ? item.content as Array<Record<string, unknown>> : [])
-    // 转换后无任何 input_image（生产 400 的直接成因被消除）
-    expect(allParts.filter((p) => p && String(p.type) === "input_image")).toEqual([])
-    // 图片位置为文本占位（与既有 [图片: url] 惯例一致），文本 part 无损保留
-    expect(allParts).toContainEqual({ type: "input_text", text: "[图片: https://example.com/shot-84.png]" })
-    expect(allParts).toContainEqual({ type: "input_text", text: "[图片: https://example.com/shot-86.png]" })
+    // 图片保真为上游可接受的标准形状（image_url 字符串 + detail），文本 part 无损保留
+    expect(allParts).toContainEqual({ type: "input_image", image_url: "https://example.com/shot-84.png", detail: "auto" })
+    expect(allParts).toContainEqual({ type: "input_image", image_url: "data:image/jpeg;base64,AAA", detail: "auto" })
     expect(allParts).toContainEqual({ type: "input_text", text: "看这个" })
+    // 无任何旧形状残留（image_url 对象透传正是生产 400 的直接成因）
+    for (const p of allParts) {
+      if (p && String(p.type) === "input_image") expect(typeof p.image_url).toBe("string")
+    }
     const row = db.prepare("SELECT upstream_endpoint, route_reason, converted FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
     expect(row.upstream_endpoint).toBe("responses")
     expect(row.route_reason).toBe("chat_to_responses")
@@ -1295,7 +1300,7 @@ describe("opencode-go muse-* 强制原生 responses", () => {
 })
 
 // 别伤多模态：omen-alpha（opencode-go 池，supportedInterfaces 只声明 chat）带图请求
-// 必须原生保真上行——muse 硬声明不得误伤其他模型的图片通路。
+// 必须原生保真上行（图片 part 原样直通，不剥图不转换）。
 describe("opencode-go 带图请求多模态回归（omen-alpha 图片保真）", () => {
   beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
 

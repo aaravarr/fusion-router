@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { chatRequestToResponses, clampResponsesCallId, responsesJsonToChatCompletion, responsesSseToChatStream } from "./custom-provider-compat"
+import { chatImagePartToResponsesImagePart, chatRequestToResponses, clampResponsesCallId, responsesJsonToChatCompletion, responsesSseToChatStream } from "./custom-provider-compat"
 import { messagesRequestToChat } from "../messages/convert"
 
 describe("custom provider protocol compatibility", () => {
@@ -32,10 +32,51 @@ describe("custom provider protocol compatibility", () => {
         { role: "assistant", content: [{ type: "text", text: "ok" }] },
       ],
     }).input).toEqual([
-      { role: "user", content: [{ type: "input_text", text: "hi" }, { type: "input_image", image_url: { url: "https://x/a.png" } }] },
+      { role: "user", content: [{ type: "input_text", text: "hi" }, { type: "input_image", image_url: "https://x/a.png", detail: "auto" }] },
       { role: "user", content: "plain string" },
       { role: "assistant", content: [{ type: "input_text", text: "ok" }] },
     ])
+  })
+
+  // 2026-09-07 生产 400（dac712f2）：转换器曾把 image_url 对象原样改名透传
+  //（{type:"input_image", image_url:{url}}），上游 Go 服务要求 image_url 为字符串，
+  // 报 `input[128].content did not match any supported type`。上游实测确认标准
+  // input_image（image_url 字符串 + detail）返回 200，错误形状复现 400。
+  describe("chat image_url → responses input_image 形状映射", () => {
+    it("image_url 对象展平为字符串并补 detail:auto（http URL）", () => {
+      expect(chatImagePartToResponsesImagePart({ type: "image_url", image_url: { url: "https://x/a.png" } }))
+        .toEqual({ type: "input_image", image_url: "https://x/a.png", detail: "auto" })
+    })
+
+    it("data URL 同形态处理（生产 dac712f2 的真实形状）", () => {
+      const dataUrl = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD"
+      expect(chatImagePartToResponsesImagePart({ type: "image_url", image_url: { url: dataUrl } }))
+        .toEqual({ type: "input_image", image_url: dataUrl, detail: "auto" })
+    })
+
+    it("透传客户端指定的 detail（low/high）", () => {
+      expect(chatImagePartToResponsesImagePart({ type: "image_url", image_url: { url: "https://x/a.png", detail: "high" } }))
+        .toEqual({ type: "input_image", image_url: "https://x/a.png", detail: "high" })
+    })
+
+    it("image_url 已是字符串时直接采用", () => {
+      expect(chatImagePartToResponsesImagePart({ type: "image_url", image_url: "https://x/a.png" }))
+        .toEqual({ type: "input_image", image_url: "https://x/a.png", detail: "auto" })
+    })
+
+    it("chatRequestToResponses 全链路：muse 带图 chat 入口产出标准 input_image", () => {
+      const input = chatRequestToResponses({
+        model: "muse-spark-1.3-contributor",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "看这个" }, { type: "image_url", image_url: { url: "data:image/jpeg;base64,AAA" } }] },
+        ],
+      }).input as Array<{ role: string; content: unknown }>
+      expect(input).toHaveLength(1)
+      expect(input[0].content).toEqual([
+        { type: "input_text", text: "看这个" },
+        { type: "input_image", image_url: "data:image/jpeg;base64,AAA", detail: "auto" },
+      ])
+    })
   })
 
   it("converts a Responses JSON result to Chat Completions", () => {

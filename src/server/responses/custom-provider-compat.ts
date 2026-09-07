@@ -52,6 +52,32 @@ export function clampResponsesCallId<T>(id: T): T {
 }
 
 /**
+ * 把 Chat Completions 的 image_url part 映射为 Responses API 的 input_image part。
+ *
+ * Responses 的 input_image 要求 image_url 为字符串（data URL 或 http(s) URL，
+ * 二者同为字符串形态一视同仁）+ 可选 detail（auto|low|high）：
+ *   { type: "input_image", image_url: "<string>", detail: "auto" }
+ * 而 Chat 的 image_url part 的 image_url 是一个对象：
+ *   { type: "image_url", image_url: { url: "<string>", detail?: "<string>" } }
+ * 仅改 type 名而不把 image_url 对象展平为字符串，上游 Go 服务会因变体反序列化
+ * 失败而 400（2026-09-07 生产 dac712f2：
+ * `[invalid_request_error] input[128].content did not match any supported type`）。
+ */
+export function chatImagePartToResponsesImagePart(part: Obj): Obj {
+  const raw = part.image_url
+  const url =
+    typeof raw === "string"
+      ? raw
+      : isObj(raw) && typeof raw.url === "string"
+        ? raw.url
+        : typeof part.url === "string"
+          ? part.url
+          : ""
+  const detail = isObj(raw) && typeof raw.detail === "string" ? raw.detail : "auto"
+  return { type: "input_image", image_url: url, detail }
+}
+
+/**
  * 把 Chat Completions 的 content（字符串或 part 数组）映射为 Responses API 的
  * input content。Responses 上游（如 opencode-go）只接受 input_text / input_image
  * 等变体，直接透传 Chat 的 {type:"text"} / {type:"image_url"} 会导致
@@ -64,7 +90,7 @@ function chatContentToResponsesContent(content: unknown): unknown {
     if (!isObj(part)) return part
     const type = String(part.type ?? "")
     if (type === "text") return { ...part, type: "input_text" }
-    if (type === "image_url") return { ...part, type: "input_image" }
+    if (type === "image_url") return chatImagePartToResponsesImagePart(part)
     return part
   })
 }

@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto"
 import type { AppDatabase } from "../db"
 import { getDatabase } from "../db"
 import { stripServerSearchQueryPrefix } from "./codex-chat-compat"
+import { chatImagePartToResponsesImagePart } from "./custom-provider-compat"
 
 type Obj = Record<string, unknown>
 
@@ -524,7 +525,9 @@ export async function sanitizeResponsesInputItems(
           }
           if (pt === "image_url") {
             modified = true
-            return { ...p, type: "input_image" }
+            // 与 chatRequestToResponses 同形：image_url 对象展平为字符串 + detail，
+            // 否则上游 Go 服务报 input[i].content did not match any supported type（生产 dac712f2）。
+            return chatImagePartToResponsesImagePart(p)
           }
           return p
         })
