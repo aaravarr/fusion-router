@@ -168,6 +168,32 @@ export function computeBackoffMs(retries: number, retryAfterSeconds: number | nu
   return Math.min(1000 * Math.pow(2, retries), 30_000)
 }
 
+export type SameAccountRetryPlan =
+  | { decision: "retry"; backoffMs: number }
+  | { decision: "retries-exhausted" }
+  | { decision: "budget-exceeded" }
+
+/**
+ * 同账号退避重试的纯决策（无等待、无落库，便于单测）：
+ * - 重试次数用尽 → retries-exhausted（调用方落到 shouldSwitchAccount 切号）；
+ * - 下一跳等待将超出 maxTotalBackoffMs 总预算 → budget-exceeded
+ *   （调用方直接返回最后一次上游错误，不再等待或切号）；
+ * - 否则 retry + 本次等待毫秒数。
+ * maxTotalBackoffMs 缺省表示不设总预算（既有 provider 行为不变）。
+ */
+export function planSameAccountRetry(
+  retries: number,
+  maxRetries: number,
+  retryAfterSeconds: number | null | undefined,
+  spentMs: number,
+  maxTotalBackoffMs?: number | null,
+): SameAccountRetryPlan {
+  if (retries >= maxRetries) return { decision: "retries-exhausted" }
+  const backoffMs = computeBackoffMs(retries, retryAfterSeconds)
+  if (maxTotalBackoffMs != null && spentMs + backoffMs > maxTotalBackoffMs) return { decision: "budget-exceeded" }
+  return { decision: "retry", backoffMs }
+}
+
 export function classifyGoUsageLimit(response: Response, body: string): GoLimit | null {
   if (response.status !== 429) return null
   try {
@@ -455,6 +481,9 @@ export class GatewayService {
     const sameAccountRetryCounts = new Map<string, number>()
     // 同账号退避重试计数（accountId → 已重试次数），每次 handle 新建；
     // 重试成功或请求结束都无需清理。
+    // 同账号退避累计等待（accountId → 已等待毫秒），用于 retrySameAccount.maxTotalBackoffMs
+    // 总预算判定；同样每次 handle 新建，随请求结束丢弃。
+    const sameAccountBackoffMs = new Map<string, number>()
     let attemptNumber = 0
     let lastAttemptAccountId: string | undefined
     let lastAttemptAccountName: string | undefined
@@ -734,7 +763,7 @@ upstream = await this.fetcher(mirrorPlan2.url, {
         }
         if (!upstream.ok) {
           const body = await upstream.text()
-          const errorClass = (provider ? provider.classifyError(upstream.status, body, upstream.headers) : null)
+          let errorClass = (provider ? provider.classifyError(upstream.status, body, upstream.headers, model ?? undefined) : null)
             ?? (upstream.status === 429 ? goLimitToErrorClass(classifyGoUsageLimit(upstream, body)) : null)
           if (errorClass?.permanentlyDisableAccount) {
             tried.add(selection.account.id)
@@ -744,10 +773,18 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             continue
           }
           if (errorClass?.retrySameAccount) {
-            if (await this.retrySameAccountWithBackoff(
+            const sameAccountDecision = await this.retrySameAccountWithBackoff(
               sameAccountRetryCounts, errorClass, selection.account.id, selection.account.name,
               attemptId, upstream.status, attemptStartedAt, parseRetryAfter(upstream), body,
-            )) continue
+              sameAccountBackoffMs,
+            )
+            if (sameAccountDecision === "retried") continue
+            if (sameAccountDecision === "budget-exceeded") {
+              // 单请求退避总预算耗尽：不再等待或切号，清掉分类后落到下方
+              // RETURN_DIRECTLY 分支，直接返回最后一次上游错误。
+              errorClass = null
+            }
+            // retries-exhausted：落到下方 shouldSwitchAccount 分支切号。
           }
           if (errorClass?.shouldSwitchAccount) {
             tried.add(selection.account.id)
@@ -835,7 +872,7 @@ upstream = await this.fetcher(mirrorPlan2.url, {
           const first = await readFirstSseEvent(reader)
           const sseData = firstSseData(first.text)
           const embeddedStatus = sseData ? embeddedSseErrorStatus(sseData) : null
-          const sseLimit = (provider && sseData && embeddedStatus ? provider.classifyError(embeddedStatus, sseData, upstream.headers) : null)
+          const sseLimit = (provider && sseData && embeddedStatus ? provider.classifyError(embeddedStatus, sseData, upstream.headers, model ?? undefined) : null)
             ?? (first.text.includes("GoUsageLimitError") ? goLimitToErrorClass(classifyFirstSseEvent(upstream.headers, first.text)) : null)
           if (sseLimit?.permanentlyDisableAccount) {
             await reader.cancel(); tried.add(selection.account.id); permanentlyDisabled.add(selection.account.id)
@@ -844,14 +881,28 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             continue
           }
           if (sseLimit?.retrySameAccount) {
-            // 返回 true = 已发起同账号重试（此时再取消流后 continue，不 tried.add/markQuota）；
-            // 返回 false = 重试用尽，不 cancel，落到下方 shouldSwitchAccount 分支由其统一 cancel。
-            if (await this.retrySameAccountWithBackoff(
+            // 返回 "retried" = 已发起同账号重试（此时再取消流后 continue，不 tried.add/markQuota）；
+            // 返回 "retries-exhausted" = 重试用尽，不 cancel，落到下方 shouldSwitchAccount 分支由其统一 cancel；
+            // 返回 "budget-exceeded" = 总预算耗尽，下方显式返回末错。
+            const sseSameAccountDecision = await this.retrySameAccountWithBackoff(
               sameAccountRetryCounts, sseLimit, selection.account.id, selection.account.name,
               attemptId, embeddedStatus ?? upstream.status, attemptStartedAt, parseRetryAfter(upstream), first.text,
-            )) {
+              sameAccountBackoffMs,
+            )
+            if (sseSameAccountDecision === "retried") {
               await reader.cancel()
               continue
+            }
+            if (sseSameAccountDecision === "budget-exceeded") {
+              // 首事件即限流错误、且单请求退避总预算耗尽：尚未向客户端发送任何字节，
+              // 直接返回最后一次上游错误（429 JSON 而非 5xx），并记录 attempt。
+              await reader.cancel()
+              const sseStatus = embeddedStatus ?? upstream.status
+              const sseParsed = safeParse(sseData ?? "")
+              const sseBodyError = (sseData && extractBodyError(sseParsed)) ?? sseLimit.errorType
+              this.finishAttempt(attemptId, sseStatus, "RETURN_DIRECTLY", sseLimit.errorType, Date.now() - attemptStartedAt, sseBodyError, selection.account.name, first.text)
+              this.finalizeRequest(requestId, { status: sseStatus, outcome: sseLimit.errorType, attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: sseBodyError, accountId: selection.account.id, accountName: selection.account.name, responseSizeBytes: first.text.length, usage: extractUsage(sseParsed), logSettings, requestBodyJson, responseBody: sseParsed, responseTruncated: false, meta, ...routeMeta })
+              return new Response(sseData ?? first.text, { status: sseStatus, headers: { "content-type": "application/json" } })
             }
           }
           if (sseLimit?.shouldSwitchAccount) {
@@ -1108,19 +1159,20 @@ upstream = await this.fetcher(mirrorPlan2.url, {
     message: string,
     responseBody: string | null,
   ): Promise<void> {
-    if (await this.retrySameAccountWithBackoff(
+    if ((await this.retrySameAccountWithBackoff(
       sameAccountRetryCounts,
       { retrySameAccount: { maxRetries: NETWORK_ERROR_MAX_SAME_ACCOUNT_RETRIES }, retryAfterSeconds: null, errorType: NETWORK_ERROR_TYPE },
       accountId, accountName, attemptId, 502, attemptStartedAt, null, responseBody ?? "",
-    )) return
+    )) === "retried") return
     tried.add(accountId)
     this.finishAttempt(attemptId, 502, "RETRY_NEXT_ACCOUNT", "NETWORK", Date.now() - attemptStartedAt, message, accountName, responseBody)
   }
 
   /**
    * retrySameAccount 分支的公共处理：在相同账号上指数退避重试。
-   * 返回 true 表示已发起重试（调用方应 continue，不 tried.add / markQuota）；
-   * 返回 false 表示重试次数用尽，调用方应落到 shouldSwitchAccount 分支。
+   * 返回 "retried" 表示已发起重试（调用方应 continue，不 tried.add / markQuota）；
+   * 返回 "retries-exhausted" 表示重试次数用尽，调用方应落到 shouldSwitchAccount 分支；
+   * 返回 "budget-exceeded" 表示单请求退避总预算耗尽，调用方应直接返回最后一次上游错误。
    */
   private async retrySameAccountWithBackoff(
     sameAccountRetryCounts: Map<string, number>,
@@ -1132,12 +1184,23 @@ upstream = await this.fetcher(mirrorPlan2.url, {
     attemptStartedAt: number,
     retryAfterHeaderSeconds: number | null,
     responseBody: string,
-  ): Promise<boolean> {
+    sameAccountBackoffMs?: Map<string, number>,
+  ): Promise<"retried" | "retries-exhausted" | "budget-exceeded"> {
+    const retryCfg = classification.retrySameAccount
+    if (!retryCfg) return "retries-exhausted"
     const retries = sameAccountRetryCounts.get(accountId) ?? 0
-    if (!classification.retrySameAccount || retries >= classification.retrySameAccount.maxRetries) return false
+    const spentMs = sameAccountBackoffMs?.get(accountId) ?? 0
+    const plan = planSameAccountRetry(
+      retries,
+      retryCfg.maxRetries,
+      classification.retryAfterSeconds ?? retryAfterHeaderSeconds,
+      spentMs,
+      retryCfg.maxTotalBackoffMs,
+    )
+    if (plan.decision !== "retry") return plan.decision
     sameAccountRetryCounts.set(accountId, retries + 1)
-    const retryAfter = classification.retryAfterSeconds ?? retryAfterHeaderSeconds
-    const backoffMs = computeBackoffMs(retries, retryAfter)
+    if (sameAccountBackoffMs) sameAccountBackoffMs.set(accountId, spentMs + plan.backoffMs)
+    const backoffMs = plan.backoffMs
     if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs))
     this.finishAttempt(
       attemptId,
@@ -1145,11 +1208,11 @@ upstream = await this.fetcher(mirrorPlan2.url, {
       "RETRY_SAME_ACCOUNT_BACKOFF",
       classification.errorType,
       Date.now() - attemptStartedAt,
-      `${classification.errorType} (退避重试 ${retries + 1}/${classification.retrySameAccount.maxRetries})`,
+      `${classification.errorType} (退避重试 ${retries + 1}/${retryCfg.maxRetries})`,
       accountName,
       responseBody,
     )
-    return true
+    return "retried"
   }
 
   private finishAttempt(id: string, status: number, decision: string, error: string | null, latencyMs?: number, errorMessage?: string | null, accountName?: string | null, responseBody?: string | null) {

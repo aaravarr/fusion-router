@@ -25,6 +25,71 @@ export function isMuseResponsesOnlyModel(model: string): boolean {
   return MUSE_RESPONSES_ONLY_PATTERN.test(model.trim())
 }
 
+/**
+ * muse-* 瞬时 429（速率/并发限流，非配额耗尽）同账号退避重试的最大次数。
+ * 退避间隔由网关 computeBackoffMs 统一计算：无 Retry-After 时 1s/2s/4s 指数退避，
+ * 有则尊重 Retry-After（单次封顶 30s）；全部失败后按 shouldSwitchAccount 切号。
+ * 取 3（open-design-go TierConcurrencyLimit 同值；GLM 取 6、Kimi 取 10，
+ * muse 上游限流恢复快，3 次足以覆盖抖动又不至于久挂客户端）。
+ */
+export const MUSE_RATE_LIMIT_MAX_RETRIES = 3
+
+/**
+ * 单请求内 muse-* 429 同账号退避引入的额外等待总预算（毫秒）。
+ * 累计等待将超出预算时网关不再等待，直接返回最后一次上游错误，避免挂住客户端。
+ * 60s（指数退避路径 1+2+4=7s 远不触发；仅约束 Retry-After 偏大的极端情况，
+ * 此时 2 次 30s 等待即达预算）。
+ */
+export const MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS = 60_000
+
+function retryAfterSeconds(value: string | null): number | null {
+  if (!value) return null
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return Math.max(0, Math.ceil(numeric))
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : Math.max(0, Math.ceil((parsed - Date.now()) / 1000))
+}
+
+// muse-* 429 配额耗尽措辞（对齐 kimi-code / glm-coding 二分法）：结构化
+// error.code/type 或 message 命中即视为配额/余额耗尽（标记冷却并切号），
+// 其余 429 为瞬时限流（同号退避重试）。opencode.ai 的 muse 429 真实错误体
+// 尚未实测复现，按计费类通用措辞收敛；拿到真实错误体后再精化。
+const MUSE_QUOTA_EXHAUSTED_CODES = new Set([
+  "exceeded_current_quota_error",
+  "insufficient_quota",
+  "quota_exceeded",
+])
+const MUSE_QUOTA_EXHAUSTED_PATTERNS = [
+  /exceeded your current (?:token )?quota/,
+  /check your account balance/,
+  /insufficient (?:balance|quota)/,
+  /recharge your account|please recharge/,
+  /account (?:is )?in arrears/,
+  /(?:coding )?plan (?:quota|limit) (?:has been )?exceeded/,
+  /套餐(?:额度|已用完|耗尽)/,
+  /额度(?:已用完|耗尽|不足)/,
+  /欠费|余额不足/,
+] as const
+
+function isMuseQuotaExhausted(body: string): boolean {
+  if (!body) return false
+  try {
+    // 结构化：遍历 error → error.error 最多 3 层，收集 code/type（同 kimi-code）。
+    const codes: string[] = []
+    let current: unknown = JSON.parse(body)
+    for (let depth = 0; current !== null && typeof current === "object" && !Array.isArray(current) && depth < 3; depth += 1) {
+      const record = current as Record<string, unknown>
+      if (typeof record.code === "string") codes.push(record.code)
+      if (typeof record.type === "string") codes.push(record.type)
+      current = record.error
+    }
+    if (codes.some((code) => MUSE_QUOTA_EXHAUSTED_CODES.has(code))) return true
+  } catch {
+    // 非 JSON（如纯文本），走 message 匹配。
+  }
+  return MUSE_QUOTA_EXHAUSTED_PATTERNS.some((pattern) => pattern.test(body.toLowerCase()))
+}
+
 // 上游 /messages 端点不支持的模型清单（精确匹配，大小写不敏感）。
 // 证据：omen-alpha —— 2026-09-04 生产实测，带图与纯文本的 messages 原生请求
 // 一律 HTTP 500 {"type":"error","error":{"type":"error","message":"Internal server error"}}
@@ -242,9 +307,29 @@ export class OpenCodeGoProvider implements Provider {
     return { url: `${baseUrl}/${path}`, headers, body: input.body }
   }
 
-  classifyError(status: number, body: string, _headers: Headers): UpstreamErrorClassification | null {
+  classifyError(status: number, body: string, headers: Headers, model?: string): UpstreamErrorClassification | null {
     const limit = classifyGoUsageLimit(status, body)
     if (limit) return limit
+    // muse-* 429 二分（仅 muse 模型；其他模型保持既有行为不变）：
+    // 配额耗尽语义 → 标记冷却并切号；瞬时限流语义 → 同号退避重试后再切号。
+    // 推理调用是只读生成，重试无幂等问题。
+    if (status === 429 && model != null && isMuseResponsesOnlyModel(model)) {
+      if (isMuseQuotaExhausted(body)) {
+        return {
+          shouldSwitchAccount: true,
+          quotaKind: "UNKNOWN_GO_LIMIT",
+          retryAfterSeconds: retryAfterSeconds(headers.get("retry-after")) ?? 60,
+          errorType: "MUSE_QUOTA_EXHAUSTED",
+        }
+      }
+      return {
+        shouldSwitchAccount: true,
+        retrySameAccount: { maxRetries: MUSE_RATE_LIMIT_MAX_RETRIES, maxTotalBackoffMs: MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS },
+        quotaKind: "PROVIDER_RATE_LIMIT",
+        retryAfterSeconds: retryAfterSeconds(headers.get("retry-after")),
+        errorType: "MUSE_RATE_LIMITED",
+      }
+    }
     const lower = body.toLowerCase()
     if (/model .+ is not supported/.test(lower) || (lower.includes("not supported") && lower.includes("model"))) {
       return { shouldSwitchAccount: true, errorType: "ModelError" }

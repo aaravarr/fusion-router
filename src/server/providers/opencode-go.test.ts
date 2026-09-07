@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { ensureProvidersRegistered, tryGetProvider } from "./index"
-import { isMessagesUnsupportedModel, isMuseResponsesOnlyModel, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL } from "./opencode-go"
+import { isMessagesUnsupportedModel, isMuseResponsesOnlyModel, MUSE_RATE_LIMIT_MAX_RETRIES, MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS, OpenCodeGoProvider, OPENCODE_GO_UPSTREAM_BASE_URL } from "./opencode-go"
 import { decideUpstreamRoute } from "../messages/route-decision"
 import { messagesRequestToChat } from "../messages/convert"
 
@@ -184,5 +184,103 @@ describe("opencode-go User-Agent 透传", () => {
     expect(target.headers.get("user-agent")).toBeNull()
     expect(target.headers.get("content-type")).toBe("application/json")
     expect(target.headers.get("authorization")).toBe("Bearer go-key-1")
+  })
+})
+
+// muse-* 429 自动重试：配额耗尽 vs 瞬时限流二分（对齐 kimi-code / glm-coding 风格）。
+// 仅 muse 模型生效（classifyError 第 4 参 model）；其他模型与缺省 model 保持既有行为（429 → null）。
+describe("opencode-go muse-* 429 二分（MUSE_QUOTA_EXHAUSTED / MUSE_RATE_LIMITED）", () => {
+  const provider = new OpenCodeGoProvider()
+  const MUSE = "muse-spark-1.3-contributor"
+
+  it("重试参数定值：最多 3 次同号重试，总预算 60s", () => {
+    expect(MUSE_RATE_LIMIT_MAX_RETRIES).toBe(3)
+    expect(MUSE_RATE_LIMIT_MAX_TOTAL_BACKOFF_MS).toBe(60_000)
+  })
+
+  describe.each([
+    ["结构化 error.type=exceeded_current_quota_error", JSON.stringify({ error: { type: "exceeded_current_quota_error", message: "You exceeded your current quota" } })],
+    ["结构化 error.code=insufficient_quota", JSON.stringify({ error: { code: "insufficient_quota", message: "quota ran out" } })],
+    ["嵌套 error.error.code=quota_exceeded", JSON.stringify({ error: { error: { code: "quota_exceeded" } } })],
+    ["纯文本 insufficient balance", "insufficient balance, please recharge"],
+    ["纯文本 in arrears", "Your account is in arrears, please recharge"],
+    ["中文 套餐额度已用完", "套餐额度已用完，请充值"],
+    ["中文 余额不足", "余额不足"],
+    ["中文 欠费", "账号已欠费"],
+  ])("配额耗尽语义（直接切号，不在本账号空转）：%s", (_label, body) => {
+    it("muse 模型 → MUSE_QUOTA_EXHAUSTED + 冷却 60s 默认", () => {
+      const result = provider.classifyError(429, body, new Headers(), MUSE)
+      expect(result).toMatchObject({
+        shouldSwitchAccount: true,
+        quotaKind: "UNKNOWN_GO_LIMIT",
+        retryAfterSeconds: 60,
+        errorType: "MUSE_QUOTA_EXHAUSTED",
+      })
+      expect(result?.retrySameAccount).toBeUndefined()
+    })
+  })
+
+  describe.each([
+    ["纯文本 rate limit", "rate limit exceeded, retry later"],
+    ["纯文本 concurrent", "too many concurrent requests"],
+    ["纯文本首字母大写", "Rate limit exceeded, please retry after a moment"],
+    ["结构化 rate_limit_error", JSON.stringify({ error: { type: "rate_limit_error", message: "Rate limit exceeded" } })],
+    ["结构化 429 状态码", JSON.stringify({ error: { type: "too_many_requests", message: "slow down" }, status: 429 })],
+  ])("瞬时限流语义（同号退避重试再切号）：%s", (_label, body) => {
+    it("muse 模型 → MUSE_RATE_LIMITED + retrySameAccount", () => {
+      const result = provider.classifyError(429, body, new Headers(), MUSE)
+      expect(result).toMatchObject({
+        shouldSwitchAccount: true,
+        retrySameAccount: { maxRetries: 3, maxTotalBackoffMs: 60_000 },
+        quotaKind: "PROVIDER_RATE_LIMIT",
+        errorType: "MUSE_RATE_LIMITED",
+      })
+    })
+  })
+
+  it("muse 大小写变体同样命中二分", () => {
+    expect(provider.classifyError(429, "too many requests", new Headers(), "MUSE-Spark-9"))
+      ?.toMatchObject({ errorType: "MUSE_RATE_LIMITED" })
+    expect(provider.classifyError(429, "余额不足", new Headers(), " muse-spark-1.2 "))
+      ?.toMatchObject({ errorType: "MUSE_QUOTA_EXHAUSTED" })
+  })
+
+  it("Retry-After 头被尊重：秒数与 HTTP-date 均解析", () => {
+    expect(provider.classifyError(429, "too many requests", new Headers({ "retry-after": "17" }), MUSE)?.retryAfterSeconds).toBe(17)
+    expect(provider.classifyError(429, "余额不足", new Headers({ "retry-after": "120" }), MUSE)?.retryAfterSeconds).toBe(120)
+    const httpDate = new Date(Date.now() + 45_000).toUTCString()
+    const parsed = provider.classifyError(429, "too many requests", new Headers({ "retry-after": httpDate }), MUSE)?.retryAfterSeconds
+    expect(parsed).toBeGreaterThan(0)
+    expect(parsed).toBeLessThanOrEqual(45)
+  })
+
+  it("GoUsageLimitError 结构仍优先（muse 与非 muse 一致，直接切号不重试）", () => {
+    const body = JSON.stringify({ error: { type: "GoUsageLimitError" }, metadata: { limitName: "weekly" } })
+    for (const model of [MUSE, "deepseek-v4-flash", undefined]) {
+      const result = provider.classifyError(429, body, new Headers(), model)
+      expect(result, String(model)).toMatchObject({
+        shouldSwitchAccount: true,
+        quotaKind: "WEEKLY",
+        errorType: "GoUsageLimitError",
+      })
+      expect(result?.retrySameAccount, String(model)).toBeUndefined()
+    }
+  })
+
+  it("非 muse 模型 429 行为不变（配额措辞/瞬时限流一律 null，不新增重试或切号）", () => {
+    for (const model of ["deepseek-v4-flash", "kimi-k3", "gpt-5.6-luna"]) {
+      expect(provider.classifyError(429, "too many concurrent requests", new Headers(), model), model).toBeNull()
+      expect(provider.classifyError(429, "insufficient balance, please recharge", new Headers(), model), model).toBeNull()
+    }
+    // 旧调用（model 缺省）同样保持既有行为
+    expect(provider.classifyError(429, "too many concurrent requests", new Headers())).toBeNull()
+  })
+
+  it("非 429 状态不受影响：muse 401/403 仍为 AuthenticationError，500 仍为 null", () => {
+    expect(provider.classifyError(401, "unauthorized", new Headers(), MUSE))
+      .toMatchObject({ shouldSwitchAccount: false, errorType: "AuthenticationError" })
+    expect(provider.classifyError(403, "forbidden", new Headers(), MUSE))
+      .toMatchObject({ shouldSwitchAccount: false, errorType: "AuthenticationError" })
+    expect(provider.classifyError(500, "internal error", new Headers(), MUSE)).toBeNull()
   })
 })

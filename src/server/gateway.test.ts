@@ -3,7 +3,7 @@ import { createDatabase, getDatabase } from "./db"
 import { ApiKeyHasher, SecretVault } from "./crypto"
 import { AccountRepository, ApiKeyRepository, ProviderCredentialRepository } from "./repository"
 import { CustomProviderRepository } from "./custom-providers"
-import { classifyGoUsageLimit, computeBackoffMs, GatewayService, type CredentialProvider } from "./gateway"
+import { classifyGoUsageLimit, computeBackoffMs, GatewayService, planSameAccountRetry, type CredentialProvider } from "./gateway"
 import { RoutingService } from "./routing"
 import { getSystemSettings, initializeSystemSettings, updateSystemSettings } from "./settings"
 
@@ -1194,5 +1194,178 @@ describe("opencode-go muse-* 强制原生 responses", () => {
     expect(attempt.status).toBe(500)
     expect(attempt.decision).toBe("RETURN_DIRECTLY")
     expect(attempt.response_body).toBe(upstreamError)
+  })
+})
+
+describe("planSameAccountRetry（同号退避纯决策：次数/总预算）", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  it("次数用尽 → retries-exhausted", () => {
+    expect(planSameAccountRetry(3, 3, null, 0, 60_000)).toEqual({ decision: "retries-exhausted" })
+    expect(planSameAccountRetry(5, 3, null, 0, 60_000)).toEqual({ decision: "retries-exhausted" })
+  })
+
+  it("无 Retry-After 时指数退避 1s/2s/4s", () => {
+    expect(planSameAccountRetry(0, 3, null, 0, 60_000)).toEqual({ decision: "retry", backoffMs: 1000 })
+    expect(planSameAccountRetry(1, 3, null, 1000, 60_000)).toEqual({ decision: "retry", backoffMs: 2000 })
+    expect(planSameAccountRetry(2, 3, null, 3000, 60_000)).toEqual({ decision: "retry", backoffMs: 4000 })
+  })
+
+  it("Retry-After 被尊重且单次封顶 30s", () => {
+    expect(planSameAccountRetry(0, 3, 17, 0, 60_000)).toEqual({ decision: "retry", backoffMs: 17_000 })
+    expect(planSameAccountRetry(0, 3, 120, 0, 60_000)).toEqual({ decision: "retry", backoffMs: 30_000 })
+    expect(planSameAccountRetry(0, 3, 0, 0, 60_000)).toEqual({ decision: "retry", backoffMs: 0 })
+  })
+
+  it("累计等待将超总预算 → budget-exceeded（含等于预算仍放行的边界）", () => {
+    // 25s + 25s = 50s 已花，再等 25s 将达 75s > 60s → 停
+    expect(planSameAccountRetry(2, 3, 25, 50_000, 60_000)).toEqual({ decision: "budget-exceeded" })
+    // 恰好等于预算仍放行一次
+    expect(planSameAccountRetry(1, 3, 25, 5000, 60_000)).toEqual({ decision: "retry", backoffMs: 25_000 })
+    // 指数退避路径 1+2+4=7s 远够不到 60s 预算
+    expect(planSameAccountRetry(2, 3, null, 3000, 60_000)).toEqual({ decision: "retry", backoffMs: 4000 })
+  })
+
+  it("无总预算（undefined）时永不 budget-exceeded，既有 provider 行为不变", () => {
+    expect(planSameAccountRetry(0, 10, 120, 999_999_999)).toEqual({ decision: "retry", backoffMs: 30_000 })
+  })
+})
+
+// opencode-go 池 muse-* 429 网关循环层：瞬时限流同号退避 → 重试用尽切号 →
+// 配额耗尽直接切号 → 总预算超限返回末错。Retry-After: 0 使等待为 0，单测不真实睡眠
+// （同 kimi 用例惯例）；超限用例用假时钟推进。
+describe("opencode-go muse-* 429 网关重试循环", () => {
+  beforeEach(() => { process.env.TOKEN_ENCRYPTION_KEY = encryptionKey })
+
+  const MUSE_MODEL = "muse-spark-1.2-contributor"
+  const museResponsesRequest = (key: string) => new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: MUSE_MODEL, input: "hi" }),
+  })
+  const responsesOk = () => Response.json({
+    id: "resp_muse_ok", object: "response", status: "completed", model: MUSE_MODEL,
+    output: [{ id: "msg_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "ok" }] }],
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  })
+  const transient429 = (retryAfter: string | null = "0") => new Response(
+    JSON.stringify({ error: { type: "rate_limit_error", message: "Rate limit exceeded, please retry" } }),
+    { status: 429, headers: { "content-type": "application/json", ...(retryAfter == null ? {} : { "retry-after": retryAfter }) } },
+  )
+  const quota429 = () => new Response(
+    JSON.stringify({ error: { code: "insufficient_quota", message: "insufficient balance, please recharge" } }),
+    { status: 429, headers: { "content-type": "application/json" } },
+  )
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it("瞬时 429×2 后 200 成功：同账号退避重试，不切号不记冷却", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(transient429())
+      .mockResolvedValueOnce(transient429())
+      .mockResolvedValueOnce(responsesOk())
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(museResponsesRequest(apiKey), "responses")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    await response.text(); await tick()
+    const attempts = db.prepare("SELECT attempt_number,status,decision,error_type,account_id FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; status: number; decision: string; error_type: string | null; account_id: string }>
+    expect(attempts).toHaveLength(3)
+    expect(attempts[0]).toMatchObject({ attempt_number: 1, status: 429, decision: "RETRY_SAME_ACCOUNT_BACKOFF", error_type: "MUSE_RATE_LIMITED" })
+    expect(attempts[1]).toMatchObject({ attempt_number: 2, status: 429, decision: "RETRY_SAME_ACCOUNT_BACKOFF" })
+    expect(attempts[2]).toMatchObject({ attempt_number: 3, status: 200, decision: "SUCCESS" })
+    expect(attempts[1].account_id).toBe(attempts[0].account_id)
+    expect(attempts[2].account_id).toBe(attempts[0].account_id)
+    // 同号重试不走 markQuota：不产生 PROVIDER_RATE_LIMIT 冷却行
+    expect(db.prepare("SELECT COUNT(*) AS value FROM quota_windows WHERE kind='PROVIDER_RATE_LIMIT'").get()).toEqual({ value: 0 })
+  })
+
+  it("瞬时 429 重试 3 次用尽后切号：前 4 次同账号，第 5 次新账号成功", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 2)
+    const fetcher = vi.fn()
+    for (let index = 0; index < 4; index += 1) fetcher.mockResolvedValueOnce(transient429())
+    fetcher.mockResolvedValueOnce(responsesOk())
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(museResponsesRequest(apiKey), "responses")
+    expect(response.status).toBe(200)
+    // 1 次原始失败 + 3 次同号退避 + 切号后成功
+    expect(fetcher).toHaveBeenCalledTimes(5)
+    await response.text(); await tick()
+    const attempts = db.prepare("SELECT attempt_number,decision,error_type,account_id FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; decision: string; error_type: string | null; account_id: string }>
+    expect(attempts).toHaveLength(5)
+    for (let index = 0; index < 3; index += 1) {
+      expect(attempts[index].decision).toBe("RETRY_SAME_ACCOUNT_BACKOFF")
+      expect(attempts[index].account_id).toBe(attempts[0].account_id)
+    }
+    expect(attempts[3]).toMatchObject({ decision: "RETRY_NEXT_ACCOUNT", error_type: "MUSE_RATE_LIMITED" })
+    expect(attempts[4]).toMatchObject({ decision: "SUCCESS" })
+    expect(attempts[4].account_id).not.toBe(attempts[0].account_id)
+    // 切号时记 PROVIDER_RATE_LIMIT 冷却
+    expect(db.prepare("SELECT COUNT(*) AS value FROM quota_windows WHERE kind='PROVIDER_RATE_LIMIT' AND account_id=?").get(attempts[0].account_id)).toEqual({ value: 1 })
+  })
+
+  it("配额型 429 直接切号：不同账号一次成功，不在本账号空转", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 2)
+    const fetcher = vi.fn().mockResolvedValueOnce(quota429()).mockResolvedValueOnce(responsesOk())
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(museResponsesRequest(apiKey), "responses")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await response.text(); await tick()
+    const attempts = db.prepare("SELECT attempt_number,decision,error_type,account_id FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; decision: string; error_type: string | null; account_id: string }>
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({ decision: "RETRY_NEXT_ACCOUNT", error_type: "MUSE_QUOTA_EXHAUSTED" })
+    expect(attempts[1]).toMatchObject({ decision: "SUCCESS" })
+    expect(attempts[1].account_id).not.toBe(attempts[0].account_id)
+    expect(db.prepare("SELECT COUNT(*) AS value FROM quota_windows WHERE kind='UNKNOWN_GO_LIMIT' AND account_id=?").get(attempts[0].account_id)).toEqual({ value: 1 })
+  })
+
+  it("总预算超限返回末错：Retry-After:25s×3，第 3 次 429 后不再等待，直接 429 透传", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    // 25s + 25s = 50s 已花，第 3 次 429 后再等 25s 将达 75s > 60s 预算 → 直接返回末错
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(transient429("25")))
+    vi.useFakeTimers()
+    try {
+      const pending = new GatewayService(credentials, db, fetcher, hasher).handle(museResponsesRequest(apiKey), "responses")
+      await vi.advanceTimersByTimeAsync(120_000)
+      const response = await pending
+      expect(response.status).toBe(429)
+      expect(await response.text()).toContain("rate_limit_error")
+      expect(fetcher).toHaveBeenCalledTimes(3)
+      const attempts = db.prepare("SELECT attempt_number,status,decision,error_type FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; status: number; decision: string; error_type: string | null }>
+      expect(attempts).toHaveLength(3)
+      expect(attempts[0]).toMatchObject({ decision: "RETRY_SAME_ACCOUNT_BACKOFF", error_type: "MUSE_RATE_LIMITED" })
+      expect(attempts[1]).toMatchObject({ decision: "RETRY_SAME_ACCOUNT_BACKOFF" })
+      expect(attempts[2]).toMatchObject({ status: 429, decision: "RETURN_DIRECTLY", error_type: "rate_limit_error" })
+      const row = db.prepare("SELECT status,outcome FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as { status: number; outcome: string }
+      expect(row.status).toBe(429)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("流式首事件 429（SSE error 事件）：分类为限流并记 attempt，同号重试后成功", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    const errorEvent = `data: ${JSON.stringify({ error: { type: "rate_limit_error", message: "Rate limit exceeded, please retry" }, status: 429 })}\n\n`
+    const successSse = [
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "hello" })}`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_muse_s", model: MUSE_MODEL, output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n")
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(errorEvent, { status: 200, headers: { "content-type": "text/event-stream", "retry-after": "0" } }))
+      .mockResolvedValueOnce(new Response(successSse, { status: 200, headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: MUSE_MODEL, input: "hi", stream: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "responses")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await response.text(); await tick()
+    const attempts = db.prepare("SELECT attempt_number,decision,error_type,account_id FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; decision: string; error_type: string | null; account_id: string }>
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({ decision: "RETRY_SAME_ACCOUNT_BACKOFF", error_type: "MUSE_RATE_LIMITED" })
+    expect(attempts[1]).toMatchObject({ decision: "SUCCESS" })
+    expect(attempts[1].account_id).toBe(attempts[0].account_id)
   })
 })

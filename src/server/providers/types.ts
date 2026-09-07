@@ -70,10 +70,13 @@ export interface UpstreamErrorClassification {
    * 遇到该错误时先在相同账号上指数退避重试，全部失败后再按
    * shouldSwitchAccount 切账号。maxRetries 是“重试次数”：第 1 次失败后
    * 还能再重试 maxRetries 次（即最多产生 maxRetries 次额外尝试）。
+   * maxTotalBackoffMs 是可选的单请求退避总预算（毫秒）：同一请求内该账号
+   * 累计等待将超出预算时不再等待，直接返回最后一次上游错误，避免无限挂住
+   * 客户端；缺省（undefined）表示不设总预算，保持既有行为。
    * 硬配额耗尽类错误（FIVE_HOUR/WEEKLY 等）不应携带此字段，保持直接切账号；
    * 瞬时限流（如 PROVIDER_RATE_LIMIT）可携带，先同号退避重试，用尽后再切号。
    */
-  retrySameAccount?: { maxRetries: number }
+  retrySameAccount?: { maxRetries: number; maxTotalBackoffMs?: number }
 }
 
 // Forward Request
@@ -127,7 +130,12 @@ export interface Provider {
   validateCredential(account: AccountRecord): Promise<{ valid: boolean; email?: string; planType?: string; extra?: Record<string, unknown> }>
   getUpstreamBaseUrl(account: AccountRecord): string
   buildForwardTarget(input: ForwardRequestInput, credential: ProviderCredential, account: AccountRecord): ForwardTarget
-  classifyError(status: number, body: string, headers: Headers): UpstreamErrorClassification | null
+  /**
+   * 上游错误分类。model 为本次请求的网关侧模型名（可选）：按模型差异化 429
+   * 策略的 provider（如 opencode-go 仅对 muse-* 限流/配额二分）据此收窄行为；
+   * 缺省时保持既有模型无关行为。旧实现（3 参）仍兼容。
+   */
+  classifyError(status: number, body: string, headers: Headers, model?: string): UpstreamErrorClassification | null
   extractQuotaFromResponse?(headers: Headers): QuotaWindow[] | null
   isAccountReady(account: AccountRecord): boolean
 }
