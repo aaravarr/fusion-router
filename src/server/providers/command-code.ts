@@ -1,20 +1,36 @@
 /**
  * Command Code（GOAT 套餐）Provider
  *
- * 单 base：https://api.commandcode.ai/provider/v1（2026-09-07 实测）：
- * chat completions 与 Anthropic messages 双格式原生直通；/responses 404 不存在，
- * responses 入口经网关既有转换链转 chat 后上行（supportedInterfaces 不声明 responses）。
+ * 单 base：https://api.commandcode.ai/provider/v1（2026-09-07/08 实测）：
+ * - POST /chat/completions（OpenAI 格式）：全量 OpenAI 与 OSS 模型（muse/deepseek/
+ *   kimi/glm 等）唯一入口；claude 系模型在它这里 400 拒绝（实测 claude-sonnet-5）。
+ * - POST /messages（Anthropic 格式）：只收 Claude 系模型（实测 muse 走它 400
+ *   "Model not supported on this endpoint"）；GOAT 套餐不含 Claude（claude-sonnet-5
+ *   经 messages 403 MODEL_NOT_IN_PLAN）。
+ * - GET  /models → 免 key 公开（2026-09-08 复测 67 个模型，带 key 同样 67 个，
+ *   含全部 5 个 muse；OpenAI list 形 {id, name, context_length}，ID 含斜杠）。
+ * - POST /responses → 404 不存在（实测）→ responses 入口走网关 responses->chat 转换。
+ * messages 端点只收 Claude 系（实测 muse 走它 400），而 GOAT 套餐不含 Claude
+ * （claude-sonnet-5 经 messages 403 MODEL_NOT_IN_PLAN）——本池只服务 OpenAI/OSS
+ * 模型，supportedInterfaces 摘掉 messages 统一只声明 chat，messages 入口由网关
+ * messages->chat 接力（对齐 commit 1eb8a43 对 omen-alpha 的处理）。
  *
  * 认证：Authorization: Bearer <user_... key>，CLI 与 API 同端点同 key，
  * 无任何客户端指纹要求（不透传也不伪装 UA）。
  *
- * 错误语义（2026-09-07 调研 + 实测）：
+ * 错误语义（2026-09-07/08 调研 + 实测）：
  * - 401/403 → 认证错误（无 key 实测响应体 {"success":false,"error":{"code":"UNAUTHORIZED","status":401}}）。
+ * - 403 MODEL_NOT_IN_PLAN（{"type":"error","error":{"type":"permission_error","message":"MODEL_NOT_IN_PLAN: ..."}}）
+ *   → 套餐不含该模型：切账号（可能切到含该模型的套餐），不冷却不标记。
  * - 429/402/400 且错误体带 rateLimit.window: "fiveHour"|"weekly" → 对应窗口配额耗尽，
- *   按 rateLimit.resetAt 冷却到该时间后切号。
+ *   按 rateLimit.resetAt 冷却到该时间后切号（窗口结构待生产验证）。
  * - 其余 429 → 瞬时限流，同账号退避重试（上限 COMMAND_CODE_RATE_LIMIT_MAX_RETRIES）再切号。
  * - 403/其他状态命中 geo 限制措辞（GPT-5.6 Luna / Gemini 系对中国 IP 不可用）→ 不分类，
  *   透传错误给客户端。
+ *
+ * 已知上游特性（2026-09-08 实测，网关侧不做特判）：
+ * - muse 经 GOAT 时 max_tokens < 512 会被 reasoning 吃光返回空 content；
+ * - 偶发 finish_reason=stop 但 content 为空串（上游重试节点问题）。
  */
 
 import type {
@@ -25,7 +41,7 @@ import type {
   ForwardTarget,
   UpstreamErrorClassification,
 } from "./types"
-import type { AccountRecord, QuotaKind, ProviderAccountData } from "../types"
+import type { AccountRecord, ProviderAccountData, QuotaKind } from "../types"
 import type { PoolType } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
@@ -34,6 +50,7 @@ import {
   CommandCodeApiKeyInvalidError,
   fetchCommandCodeModels,
   fetchCommandCodeUsage,
+  matchCommandCodeModel,
   windowsFromCommandCodeUsage,
 } from "../command-code"
 
@@ -43,7 +60,8 @@ import {
  */
 export const COMMAND_CODE_RATE_LIMIT_MAX_RETRIES = 6
 
-const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY"]
+/** 上游账期累计统计口径的 quota 窗口 kind（usage/summary 无 5h/weekly 双窗，实测）。 */
+const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["MONTHLY"]
 /**
  * 首次 /models 同步成功前的引导目录（全量 67 个模型由 REMOTE 同步覆盖）。
  * 选自 2026-09-07 实测 GET /provider/v1/models 响应。
@@ -55,6 +73,7 @@ const DEFAULT_MODELS = [
   "deepseek/deepseek-v4-pro",
   "moonshotai/Kimi-K3",
   "zai-org/GLM-5.3",
+  "meta/muse-spark-1.3-contributor",
 ] as const
 const PASSTHROUGH_HEADERS = ["accept-language", "anthropic-version", "anthropic-beta"] as const
 
@@ -163,10 +182,11 @@ export class CommandCodeProvider implements Provider {
     }
     try {
       const usage = await fetchCommandCodeUsage(credential.token, account)
-      return { valid: true, planType: usage.plan || "command-code", extra: { plan: usage.plan || undefined } }
+      // whoami/usage 均不返回 plan（2026-09-08 实测）：planType 落常量标识。
+      return { valid: true, planType: "command-code", extra: { usage } }
     } catch (error) {
       if (error instanceof CommandCodeApiKeyInvalidError) return { valid: false }
-      // 网络/5xx/404 抖动不误杀账号（/alpha 契约持 key 待实测）。
+      // 网络/5xx/404 抖动不误杀账号。
       return { valid: true }
     }
   }
@@ -175,10 +195,15 @@ export class CommandCodeProvider implements Provider {
     return SUPPORTED_QUOTA_KINDS
   }
 
-  supportedInterfaces(): readonly import("../messages/route-decision").InterfaceFormat[] {
-    // /responses 上游 404 不存在（实测）：只声明 chat/messages 双原生，
-    // responses 入口由网关转换链转 chat 后上行。
-    return ["chat", "messages"] as const
+  supportedInterfaces(_model?: string): readonly import("../messages/route-decision").InterfaceFormat[] {
+    // /responses 上游 404 不存在（实测）：responses 入口由网关转换链转 chat 后上行。
+    // messages 端点只收 Claude 系（实测 muse 走它 400 "Model not supported on this
+    // endpoint"），而 GOAT 套餐不含 Claude（claude-sonnet-5 经 messages 403
+    // MODEL_NOT_IN_PLAN）——本池实际只服务 OpenAI/OSS 模型，messages 能力整体摘掉，
+    // 统一只声明 chat：messages 入口由网关 messages->chat 接力，chat 入口原生直通
+    // （对齐 commit 1eb8a43 对 omen-alpha 的处理，网关无 chat->messages 转换链）。
+    void _model
+    return ["chat"] as const
   }
 
   async refreshQuota(_accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
@@ -196,15 +221,33 @@ export class CommandCodeProvider implements Provider {
     return [...DEFAULT_MODELS]
   }
 
+  /**
+   * 目录成员判定 + 裸名唯一后缀命中（{model} → {provider}/{model}）。
+   * 精确命中（含大小写不敏感变体）与裸名唯一后缀均视为支持；歧义/未命中不支持，
+   * 让路由 fail-closed（与全仓库 providerSupportsModel 的目录语义一致）。
+   */
   supportsModel(model: string): boolean {
-    return this.getAvailableModels().includes(model)
+    const requested = model.trim()
+    if (!requested) return false
+    if (!requested.includes("/")) {
+      // 目录里恰好存在以裸名为全 ID 的模型时精确命中已覆盖；这里处理唯一后缀。
+      const match = matchCommandCodeModel(requested, this.getAvailableModels())
+      return match.kind === "EXACT" || match.kind === "UNIQUE_SUFFIX"
+    }
+    return matchCommandCodeModel(requested, this.getAvailableModels()).kind === "EXACT"
   }
 
   /**
-   * GET /provider/v1/models 免 key 公开（2026-09-07 实测 67 个模型），无需凭据。
+   * GET /provider/v1/models 免 key 公开（2026-09-08 复测：无认证与带 key 均 200、
+   * 同 67 个模型含全部 5 个 muse），有账号无账号都能同步。
    */
   async fetchRemoteModels(_account: AccountRecord): Promise<string[] | null> {
     void _account
+    return fetchCommandCodeModels()
+  }
+
+  /** 免鉴权目录拉取：无 ready 账号时 syncProviderModels 走这里同步全量清单。 */
+  async fetchCredentiallessModels(): Promise<string[] | null> {
     return fetchCommandCodeModels()
   }
 
@@ -224,8 +267,25 @@ export class CommandCodeProvider implements Provider {
 
   resolveModel(_account: AccountRecord, requestedModel: string): string {
     void _account
-    // 模型 ID（含 deepseek/...、moonshotai/... 等带斜杠形态）原样透传。
-    return requestedModel
+    const requested = requestedModel.trim()
+    if (!requested) return requestedModel
+    const match = matchCommandCodeModel(requested, this.getAvailableModels())
+    if (match.kind === "UNIQUE_SUFFIX") {
+      // 裸名 → 唯一 {provider}/{model} 全 ID：上行 body 的 model 必须改写成全 ID。
+      return match.matched
+    }
+    if (match.kind === "AMBIGUOUS") {
+      // 多个 {provider}/{同裸名} 候选：不确定性错误，宁可失败也不静默猜一个
+      // （静默取第一个会烧错账号的配额且行为不可复现）。候选清单随错误透出，
+      // 客户端带上前缀重试即可。
+      throw new Error(
+        `Command Code 模型裸名 "${requested}" 命中多个候选（${match.candidates.join(", ")}），请使用带前缀的全名`,
+      )
+    }
+    if (match.kind === "EXACT") return match.matched
+    // MISS：原样透传，交给上游做模型校验（路由层 fail-closed 已在 supportsModel 拦截；
+    // 走到这里说明目录缺项但用户显式指定，保留上游兜底）。
+    return requested
   }
 
   getUpstreamBaseUrl(_account: AccountRecord): string {
@@ -257,12 +317,23 @@ export class CommandCodeProvider implements Provider {
       if (value) headers.set(name, value)
     }
 
-    return { url, headers, body: input.body }
+    // 裸名唯一后缀命中时 upstreamModel 是 {provider}/{model} 全 ID（resolveModel 已解析），
+    // 上行 body 的 model 必须改写成全 ID（对齐 custom.ts 的 upstreamModel 注入模式）。
+    let body = input.body
+    if (body?.length && input.upstreamModel && input.upstreamModel !== input.model) {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>
+        parsed.model = input.upstreamModel
+        body = new TextEncoder().encode(JSON.stringify(parsed))
+      } catch { /* upstream will validate malformed JSON */ }
+    }
+
+    return { url, headers, body }
   }
 
   classifyError(status: number, body: string, headers: Headers): UpstreamErrorClassification | null {
     // 超窗错误优先识别：declined/429/402 等形态的错误体带 rateLimit.window +
-    // resetAt（调研结论，持 key 待实测）→ 冷却到 resetAt 后恢复。
+    // resetAt（调研结论，待生产验证）→ 冷却到 resetAt 后恢复。
     const windowHit = parseWindowRateLimit(body)
     if (windowHit && (status === 400 || status === 402 || status === 403 || status === 429)) {
       const resetMs = windowHit.resetAt ? Date.parse(windowHit.resetAt) : Number.NaN
@@ -273,6 +344,15 @@ export class CommandCodeProvider implements Provider {
           ? Math.max(0, Math.ceil((resetMs - Date.now()) / 1000))
           : retryAfterSeconds(headers.get("retry-after")) ?? 60,
         errorType: "COMMAND_CODE_WINDOW_EXHAUSTED",
+      }
+    }
+    // 套餐不含该模型（如 GOAT 不含 Claude 系，2026-09-08 实测 403
+    // {"type":"error","error":{"type":"permission_error","message":"MODEL_NOT_IN_PLAN: ..."}}）：
+    // 切下一个可用账号（换号可能换到含该模型的套餐），不冷却、不标记失效。
+    if (status === 403 && /MODEL_NOT_IN_PLAN/i.test(body)) {
+      return {
+        shouldSwitchAccount: true,
+        errorType: "COMMAND_CODE_MODEL_NOT_IN_PLAN",
       }
     }
     if (status === 401 || status === 403) {

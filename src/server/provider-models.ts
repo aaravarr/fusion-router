@@ -196,6 +196,20 @@ export async function syncProviderModels(options: {
 
   const account = pickReadyAccount(options.ownerUserId ?? null, options.poolType, options.accountId ?? null, db)
   if (!account) {
+    // 无 ready 账号时先试免鉴权的远程目录（如 command-code 的 /provider/v1/models
+    // 免 key 公开，2026-09-08 实测）——只要有一个 provider 如此，就不该让全量
+    // 目录同步被「没有账号」卡死，否则清单永远停留在 6 个引导模型上。
+    try {
+      const credentialless = await (provider as { fetchCredentiallessModels?: () => Promise<string[] | null> }).fetchCredentiallessModels?.()
+      if (credentialless && credentialless.length > 0) {
+        return writeProviderModelCache(options.poolType, credentialless, {
+          source: "REMOTE",
+          accountId: null,
+          error: null,
+          fetchedAt: nowIso(),
+        }, db)
+      }
+    } catch { /* 落入下方 DEFAULT 兜底 */ }
     return writeProviderModelCache(options.poolType, defaultModels, {
       source: "DEFAULT",
       accountId: null,

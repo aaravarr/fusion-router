@@ -28,10 +28,11 @@ export async function POST(request: Request) {
 
   const apiKey = parsed.data.apiKey.trim()
 
-  // 先实测验证 key：GET /alpha/whoami。注意：key 无效必须返回 400 而非 401——
-  // 前端 sessionFetch 会把 401 当会话过期跳转登录页（铁律，同 Kimi/GLM）。
-  // /alpha 契约来自客户端源码逆向（持 key 待实测）：接口 404 不存在时宽容降级
-  // 为格式校验照常录入（commandCodeVerified=false）；网络/5xx 等上游故障回 502。
+  // 先实测验证 key：GET /alpha/whoami（2026-09-08 持 key 实测 200，
+  // 返回 {success, user: {id, name, email, userName}, org}，无 plan 字段）。
+  // 注意：key 无效必须返回 400 而非 401——前端 sessionFetch 会把 401 当会话过期
+  // 跳转登录页（铁律，同 Kimi/GLM）。/alpha 接口 404 不存在时宽容降级为格式校验
+  // 照常录入（commandCodeVerified=false）；网络/5xx 等上游故障回 502。
   let plan = ""
   let email: string | null = null
   let userId: string | null = null
@@ -70,7 +71,7 @@ export async function POST(request: Request) {
   const credRepo = new ProviderCredentialRepository(user.id, db)
 
   const account = accountRepo.createProviderAccount({
-    name: `Command Code (GOAT)${plan ? ` · ${plan}` : ""}`,
+    name: `Command Code (GOAT)${email ? ` · ${email}` : ""}`,
     poolType: "command-code",
     email,
     externalId: commandCodeExternalId(apiKey),

@@ -111,7 +111,8 @@ describe("POST /api/admin/accounts/command-code-apikey", () => {
   })
 
   it("验证通过后创建账户、保存长期 key 凭据（authMode apikey，无 refreshToken/expiresAt）", async () => {
-    mocks.verifyCommandCodeApiKey.mockResolvedValue({ userId: "u_123", plan: "goat", email: "a@b.c" })
+    // 2026-09-08 实测：whoami 返回 {user:{id,email,...}}，无 plan 字段 → plan 恒空串。
+    mocks.verifyCommandCodeApiKey.mockResolvedValue({ userId: "u_123", plan: "", email: "a@b.c" })
     const response = await POST(new Request("http://x/api/admin/accounts/command-code-apikey", {
       method: "POST",
       body: JSON.stringify({ apiKey: VALID_KEY }),
@@ -120,14 +121,15 @@ describe("POST /api/admin/accounts/command-code-apikey", () => {
     const payload = (await response.json()) as { status: string; account: { id: string }; plan: string; verified: boolean }
     expect(payload.status).toBe("success")
     expect(payload.account.id).toBe("acct-1")
-    expect(payload.plan).toBe("goat")
+    expect(payload.plan).toBe("")
     expect(payload.verified).toBe(true)
     expect(mocks.verifyCommandCodeApiKey).toHaveBeenCalledWith(VALID_KEY)
 
     const accountInput = mocks.createProviderAccount.mock.calls[0]?.[0] as { poolType: string; name: string; externalId: string; email: string | null }
     expect(accountInput.poolType).toBe("command-code")
+    // 无 plan 时账号名不再拼 plan 后缀，改拼 email 便于辨识。
     expect(accountInput.name).toContain("GOAT")
-    expect(accountInput.name).toContain("goat")
+    expect(accountInput.name).toContain("a@b.c")
     expect(accountInput.email).toBe("a@b.c")
     expect(accountInput.externalId).toMatch(/^[0-9a-f]{24}$/)
 
@@ -136,7 +138,6 @@ describe("POST /api/admin/accounts/command-code-apikey", () => {
     expect(credentialInput.credentialData.token).toBe(VALID_KEY)
     expect(credentialInput.credentialData.authMode).toBe("apikey")
     expect(credentialInput.credentialData.commandCodeVerified).toBe("true")
-    expect(credentialInput.credentialData.commandCodePlan).toBe("goat")
     expect(credentialInput.credentialData.commandCodeUserId).toBe("u_123")
     // 长期 key：无 refreshToken / expiresAt。
     expect(credentialInput.credentialData.refreshToken).toBeUndefined()

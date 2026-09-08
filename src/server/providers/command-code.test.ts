@@ -1,11 +1,21 @@
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CommandCodeProvider, parseWindowRateLimit, COMMAND_CODE_RATE_LIMIT_MAX_RETRIES } from "./command-code"
+import { decideUpstreamRoute } from "../messages/route-decision"
 import type { AccountRecord } from "../types"
+
+// 隔离真实 dev DB（getDatabase 全局单例会读到 data/opencode-gateway.db 的
+// provider_model_cache 陈旧缓存），缓存读取路径静默吞错 → 落 DEFAULT 引导目录。
+vi.mock("../db", () => ({ getDatabase: () => { throw new Error("db disabled in unit test") } }))
 
 const provider = new CommandCodeProvider()
 const stubAccount = { id: "acct-test" } as AccountRecord
 
-function forwardInput(endpoint: string, extraClientHeaders: Record<string, string> = {}) {
+beforeEach(() => {
+  // readCachedModels 吞掉一切异常返回 null，但内存 mock 计数可断言隔离生效。
+  vi.clearAllMocks()
+})
+
+function forwardInput(endpoint: string, extraClientHeaders: Record<string, string> = {}, overrides: Partial<Parameters<typeof provider.buildForwardTarget>[0]> = {}) {
   return {
     method: "POST",
     endpoint,
@@ -14,6 +24,7 @@ function forwardInput(endpoint: string, extraClientHeaders: Record<string, strin
     body: new TextEncoder().encode("{}"),
     headers: new Headers({ "user-agent": "curl/8.0.1", ...extraClientHeaders }),
     signal: AbortSignal.timeout(1_000),
+    ...overrides,
   }
 }
 
@@ -53,6 +64,29 @@ describe("CommandCodeProvider.buildForwardTarget：单 base URL 拼接与头注�
     expect(target.headers.get("x-device-mid")).toBeNull()
     const internalKeys = [...target.headers.keys()].filter((key) => key.startsWith("__"))
     expect(internalKeys).toEqual([])
+  })
+
+  it("裸名命中唯一后缀时：upstreamModel ≠ model → 上行 body 的 model 改写为全 ID", () => {
+    const body = JSON.stringify({ model: "muse-spark-1.3-contributor", max_tokens: 16, messages: [{ role: "user", content: "hi" }] })
+    const target = provider.buildForwardTarget(
+      forwardInput("chat/completions", {}, { model: "muse-spark-1.3-contributor", upstreamModel: "meta/muse-spark-1.3-contributor", body: new TextEncoder().encode(body) }),
+      credential,
+      stubAccount,
+    )
+    const parsed = JSON.parse(new TextDecoder().decode(target.body!)) as { model: string }
+    expect(parsed.model).toBe("meta/muse-spark-1.3-contributor")
+    expect(parsed.max_tokens).toBe(16)
+  })
+
+  it("upstreamModel 与 model 一致（全 ID 原样）时不重写 body；非 JSON body 不崩", () => {
+    const same = provider.buildForwardTarget(forwardInput("chat/completions"), credential, stubAccount)
+    expect(new TextDecoder().decode(same.body!)).toBe("{}")
+    const garbage = provider.buildForwardTarget(
+      forwardInput("chat/completions", {}, { model: "x", upstreamModel: "p/x", body: new TextEncoder().encode("not-json") }),
+      credential,
+      stubAccount,
+    )
+    expect(new TextDecoder().decode(garbage.body!)).toBe("not-json")
   })
 })
 
@@ -96,6 +130,12 @@ describe("CommandCodeProvider.classifyError（表驱动）", () => {
       status: 403,
       body: "forbidden",
       expected: { shouldSwitchAccount: false, errorType: "AuthenticationError" },
+    },
+    {
+      name: "403 MODEL_NOT_IN_PLAN（2026-09-08 实测 GOAT 不含 Claude）→ 切号不冷却不标记",
+      status: 403,
+      body: JSON.stringify({ type: "error", error: { type: "permission_error", message: "MODEL_NOT_IN_PLAN: Claude Sonnet 5 available in Pro and above plans or extra on demand usage" } }),
+      expected: { shouldSwitchAccount: true, errorType: "COMMAND_CODE_MODEL_NOT_IN_PLAN" },
     },
     {
       name: "403 geo 限制措辞 → null（透传错误，不切号不标记）",
@@ -163,6 +203,16 @@ describe("CommandCodeProvider.classifyError（表驱动）", () => {
     })
   }
 
+  it("MODEL_NOT_IN_PLAN 不携带 quotaKind（不落任何冷却窗口）", () => {
+    const result = provider.classifyError(
+      403,
+      JSON.stringify({ error: { type: "permission_error", message: "MODEL_NOT_IN_PLAN: Claude Sonnet 5 available in Pro and above plans" } }),
+      new Headers(),
+    )
+    expect(result?.quotaKind).toBeUndefined()
+    expect(result?.retrySameAccount).toBeUndefined()
+  })
+
   it("超窗冷却时间由 resetAt 决定（≈1 小时后重置 → ≈3600s）", () => {
     const resetAt = new Date(Date.now() + 3600_000).toISOString()
     const result = provider.classifyError(429, JSON.stringify({ error: { rateLimit: { window: "fiveHour", resetAt } } }), new Headers())
@@ -188,22 +238,67 @@ describe("CommandCodeProvider.classifyError（表驱动）", () => {
 })
 
 describe("CommandCodeProvider 接口与模型", () => {
-  it("双接口原生声明（responses 不存在，走转换链）", () => {
-    expect(provider.supportedInterfaces()).toEqual(["chat", "messages"])
+  it("supportedInterfaces 摘掉 messages（实测 messages 端点只收 Claude 系、GOAT 套餐无 Claude 会 403）统一只声明 chat", () => {
+    for (const model of [
+      "meta/muse-spark-1.3-contributor",
+      "deepseek/deepseek-v4-flash",
+      "moonshotai/Kimi-K3",
+      "claude-sonnet-5",
+      "Claude-Opus-4-8",
+    ]) {
+      expect(provider.supportedInterfaces(model), model).toEqual(["chat"])
+    }
+    // /responses 404 不存在、messages 已摘：任何模型都不声明 messages / responses。
+    for (const model of ["claude-sonnet-5", "meta/muse-spark-1.3-contributor"]) {
+      expect(provider.supportedInterfaces(model)).not.toContain("responses")
+      expect(provider.supportedInterfaces(model)).not.toContain("messages")
+    }
   })
 
-  it("quota kinds = 5h + weekly", () => {
-    expect(provider.supportedQuotaKinds()).toEqual(["FIVE_HOUR", "WEEKLY"])
+  it("messages 入口：决策管线自动接力 messages->chat 上行至 chat/completions", () => {
+    const route = decideUpstreamRoute("messages", provider.supportedInterfaces("meta/muse-spark-1.3-contributor"))!
+    expect(route).toMatchObject({
+      upstreamEndpoint: "chat/completions",
+      requestChain: ["messages->chat"],
+      native: false,
+      reason: "messages_to_chat",
+    })
+    // chat 入口仍原生直通，不做转换（对齐 1eb8a43 的 omen-alpha 语义）。
+    const chatRoute = decideUpstreamRoute("chat", provider.supportedInterfaces("meta/muse-spark-1.3-contributor"))!
+    expect(chatRoute).toMatchObject({ upstreamEndpoint: "chat/completions", requestChain: [], native: true, reason: "chat_native" })
+    // responses 入口：上游 404 不存在 → 经 responses->chat 上行。
+    const responsesRoute = decideUpstreamRoute("responses", provider.supportedInterfaces("meta/muse-spark-1.3-contributor"))!
+    expect(responsesRoute).toMatchObject({ upstreamEndpoint: "chat/completions", requestChain: ["responses->chat"], native: false, reason: "responses_to_chat" })
   })
 
-  it("默认引导目录（REMOTE 同步前）", () => {
+  it("quota kinds = MONTHLY（usage/summary 实测为账期累计，无双窗）", () => {
+    expect(provider.supportedQuotaKinds()).toEqual(["MONTHLY"])
+  })
+
+  it("默认引导目录（REMOTE 同步前，含实测可用的 muse）", () => {
     const models = provider.getDefaultModels()
-    expect(models).toEqual(expect.arrayContaining(["claude-sonnet-5", "gpt-5.6-sol", "deepseek/deepseek-v4-pro"]))
+    expect(models).toEqual(expect.arrayContaining([
+      "claude-sonnet-5",
+      "gpt-5.6-sol",
+      "deepseek/deepseek-v4-pro",
+      "meta/muse-spark-1.3-contributor",
+    ]))
   })
 
-  it("resolveModel 原样透传（含带斜杠 ID）", () => {
+  it("resolveModel：精确命中原样透传（含带斜杠 ID）", () => {
     expect(provider.resolveModel(stubAccount, "deepseek/deepseek-v4-flash")).toBe("deepseek/deepseek-v4-flash")
     expect(provider.resolveModel(stubAccount, "moonshotai/Kimi-K3")).toBe("moonshotai/Kimi-K3")
+  })
+
+  it("resolveModel：裸名唯一后缀命中 → 全 ID（引导目录含 muse）", () => {
+    expect(provider.resolveModel(stubAccount, "muse-spark-1.3-contributor")).toBe("meta/muse-spark-1.3-contributor")
+    expect(provider.resolveModel(stubAccount, "deepseek-v4-pro")).toBe("deepseek/deepseek-v4-pro")
+  })
+
+  it("resolveModel：未知裸名 → 原样透传（目录缺项时交给上游兜底校验）", () => {
+    expect(provider.resolveModel(stubAccount, "brand-new-model")).toBe("brand-new-model")
+    expect(provider.resolveModel(stubAccount, "unknown/model-x")).toBe("unknown/model-x")
+    expect(provider.resolveModel(stubAccount, "")).toBe("")
   })
 
   it("getUpstreamBaseUrl 返回单 base", () => {

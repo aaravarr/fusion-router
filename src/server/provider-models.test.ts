@@ -44,4 +44,31 @@ describe("provider model cache", () => {
     expect(catalog.source).toBe("REMOTE")
     expect(listProviderModelCatalogs(db).some((item) => item.poolType === "xai-grok")).toBe(true)
   })
+
+  it("无 ready 账号但 provider 支持免鉴权目录时：仍同步远程清单（command-code 实测场景）", async () => {
+    const db = createDatabase(":memory:")
+    const { tryGetProvider } = await import("./providers")
+    const provider = tryGetProvider("command-code")!
+    const spy = vi.spyOn(provider as typeof provider & { fetchCredentiallessModels?: () => Promise<string[] | null> }, "fetchCredentiallessModels")
+      .mockResolvedValue(["meta/muse-spark-1.3-contributor", "zai-org/GLM-5.3"])
+
+    const catalog = await syncProviderModels({ poolType: "command-code", ownerUserId, accountId: null, db })
+    expect(spy).toHaveBeenCalled()
+    expect(catalog.source).toBe("REMOTE")
+    expect(catalog.models).toEqual(["meta/muse-spark-1.3-contributor", "zai-org/GLM-5.3"])
+    expect(catalog.accountId).toBeNull()
+    expect(catalog.error).toBeNull()
+  })
+
+  it("无 ready 账号且免鉴权目录缺失/失败时：维持 DEFAULT 兜底", async () => {
+    const db = createDatabase(":memory:")
+    const { tryGetProvider } = await import("./providers")
+    const provider = tryGetProvider("command-code")!
+    vi.spyOn(provider as typeof provider & { fetchCredentiallessModels?: () => Promise<string[] | null> }, "fetchCredentiallessModels")
+      .mockRejectedValue(new Error("network down"))
+
+    const catalog = await syncProviderModels({ poolType: "command-code", ownerUserId, accountId: null, db })
+    expect(catalog.source).toBe("DEFAULT")
+    expect(catalog.error).toBe("没有可用账号，无法拉取远程模型目录")
+  })
 })

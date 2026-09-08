@@ -68,8 +68,8 @@ export const POOL_TYPE_METADATA: Partial<Record<PoolType, PoolTypeMeta>> = {
   "command-code": {
     type: "command-code",
     label: "Command Code",
-    description: "Command Code GOAT 套餐（Studio 创建的 user_ API key，长期有效）。Upstream: api.commandcode.ai/provider/v1。原生格式: Chat / Messages（/responses 不存在，走转换链转 chat）。Quota: alpha/usage/summary（5h + weekly，契约待实测）",
-    quotaKinds: ["FIVE_HOUR", "WEEKLY"] as readonly QuotaKind[],
+    description: "Command Code GOAT 套餐（Studio 创建的 user_ API key，长期有效）。Upstream: api.commandcode.ai/provider/v1。chat 收全量 OpenAI/OSS 模型、messages 仅 Claude 系（/responses 不存在，走转换链转 chat）。Quota: alpha/usage/summary（账期累计 credits，无双窗；窗口调度靠被动错误分类）",
+    quotaKinds: ["MONTHLY"] as readonly QuotaKind[],
     credentialFields: [
       { key: "apiKey", label: "API Key", required: true, type: "password" },
     ],
