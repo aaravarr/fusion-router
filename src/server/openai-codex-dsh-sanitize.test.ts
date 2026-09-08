@@ -20,6 +20,7 @@ const DIRTY_ARGS = JSON.stringify({
   justification: "需要更宽权限执行",
   sandbox_permissions: "workspace-write",
 })
+const GENERIC_TOOL = { type: "function", function: { name: "pwsh", parameters: { type: "object", properties: { command: { type: "string" }, description: { type: "string" } }, required: ["command"] } } }
 
 // Codex LF 真实流形状（openai-codex-native-stats.test.ts 同形 fixture）+
 // function_call item：output_item.added → function_call_arguments.delta 增量 ×2 →
@@ -254,5 +255,31 @@ describe("openai 池 DSH function_call 参数清洗（codex 原生直通）", ()
     await new Promise((resolve) => setTimeout(resolve, 0))
     const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
     expect(String(row.transform_summary || "")).not.toContain(DSH_ARGS_SANITIZE_TAG)
+  })
+
+  it("通用 schema 修剪：responses 原生直通不区分 UA 删除未知 key", async () => {
+    const { apiKey, credentials, hasher } = setupOpenAI()
+    const fetcher = vi.fn().mockImplementation(async () => new Response(codexLfFunctionCallEvents, { status: 200 }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(responsesRequest(apiKey, {
+      model: "gpt-5.6-luna", input: "hi", stream: false, tools: [GENERIC_TOOL],
+    }, { "user-agent": "codex-cli-client/9.9.9" }), "responses")
+    const payload = await response.json() as Record<string, unknown>
+    const output = payload.output as Array<Record<string, unknown>>
+    expect(JSON.parse(String(output.find((item) => item.type === "function_call")?.arguments))).toEqual({ command: "Get-Process", description: "列出进程" })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(row.transform_summary || "")).toContain("args-schema-prune")
+  })
+
+  it("通用 schema 修剪：chat→responses 增量转换后交付参数已修剪", async () => {
+    const { apiKey, credentials, hasher } = setupOpenAI()
+    const fetcher = vi.fn().mockImplementation(async () => new Response(codexLfFunctionCallEvents, { status: 200 }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(chatRequest(apiKey, {
+      model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }], stream: true, tools: [GENERIC_TOOL],
+    }, { "user-agent": "codex-cli-client/9.9.9" }), "chat/completions")
+    const text = await response.text()
+    expect(text).toContain("chat.completion.chunk")
+    expect(text).not.toContain("sandbox_permissions")
+    expect(text).toContain("justification")
   })
 })

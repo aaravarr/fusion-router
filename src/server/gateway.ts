@@ -19,6 +19,7 @@ import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, hasConvertibleSsePayload, looksLikeResponsesSse, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
 import { createIncrementalSseSanitizer, isDshSanitizeScope, sanitizeResponsesPayload, sanitizeSseText, withDshSanitizeTag, DSH_ARGS_SANITIZE_TAG } from "./responses/dsh-args-sanitize"
+import { createIncrementalArgsSchemaPruner, extractToolSchemas, isArgsSchemaPruneScope, pruneResponsesPayload, pruneSseText, withArgsSchemaPruneTag, type ArgsSchemaPruneSummary, type ArgsSchemaToolSchemas } from "./responses/args-schema-prune"
 import { extractCodexNativeStreamStats } from "./responses/codex-native-stats"
 import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
@@ -330,6 +331,24 @@ function markDshSanitized(routeMeta: { transformSummary?: string | null }): void
   routeMeta.transformSummary = withDshSanitizeTag(routeMeta.transformSummary)
 }
 
+function markArgsSchemaPruned(routeMeta: { transformSummary?: string | null }, summary: Pick<ArgsSchemaPruneSummary, "rules" | "removedKeys">): void {
+  routeMeta.transformSummary = withArgsSchemaPruneTag(routeMeta.transformSummary, summary)
+}
+
+function applyArgsSchemaPruneToPayload(payload: unknown, poolType: unknown, schemas: ArgsSchemaToolSchemas): ArgsSchemaPruneSummary {
+  if (!isArgsSchemaPruneScope(poolType) || schemas.size === 0) return { changed: false, rules: [], removedKeys: [] }
+  const summary = pruneResponsesPayload(payload, schemas)
+  if (summary.changed) console.log(`[args-schema-prune] openai pool: rules=${summary.rules.join(",")} removed=${[...new Set(summary.removedKeys)].join(",")}`)
+  return summary
+}
+
+function applyArgsSchemaPruneToSseText(rawText: string, poolType: unknown, schemas: ArgsSchemaToolSchemas): { text: string; summary: ArgsSchemaPruneSummary; sanitizedEvents: number } {
+  if (!isArgsSchemaPruneScope(poolType) || schemas.size === 0) return { text: rawText, summary: { changed: false, rules: [], removedKeys: [] }, sanitizedEvents: 0 }
+  const result = pruneSseText(rawText, schemas)
+  if (result.summary.changed) console.log(`[args-schema-prune] openai pool SSE: rules=${result.summary.rules.join(",")} removed=${[...new Set(result.summary.removedKeys)].join(",")}`)
+  return result
+}
+
 function responseHeaders(source: Headers): Headers {
   const headers = new Headers()
   for (const name of ["content-type", "cache-control", "retry-after", "x-request-id", "anthropic-ratelimit-requests-limit", "anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-requests-reset"]) {
@@ -483,6 +502,7 @@ export class GatewayService {
         requestBodyJson = parsed
       } catch { /* Upstream validates. */ }
     }
+    const argsSchemaTools = extractToolSchemas(requestBodyJson)
     const inferenceRequest = request.method !== "GET" && endpoint !== "models"
     if (inferenceRequest && apiKey.allowedModels?.length && !model) return Response.json({ error: { type: "model_required", message: "A string model is required for restricted API keys" } }, { status: 400 })
     if (apiKey.allowedModels?.length && model && !apiKey.allowedModels.includes(model)) return Response.json({ error: { type: "model_not_allowed", message: "This API key cannot use the requested model" } }, { status: 403 })
@@ -990,6 +1010,12 @@ upstream = await this.fetcher(mirrorPlan2.url, {
               if (qw) this.recordPassiveQuota(selection.account.id, qw)
             }
             let sourceStream: ReadableStream<Uint8Array> = prependChunks(sniffed.chunks, sniffed.reader)
+             if (isArgsSchemaPruneScope(selection.account.poolType) && argsSchemaTools.size > 0) {
+               const pruner = createIncrementalArgsSchemaPruner(argsSchemaTools, (result) => {
+                 if (result.changed) markArgsSchemaPruned(routeMeta, result)
+               })
+               sourceStream = sourceStream.pipeThrough(pruner.stream)
+             }
             if (isDshSanitizeScope(selection.account.poolType, meta.userAgent)) {
               const sanitizer = createIncrementalSseSanitizer((result) => {
                 if (result.sanitizedEvents > 0) markDshSanitized(routeMeta)
@@ -1108,7 +1134,9 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             }
             const aggregated = responsesSseToJson(raw)
             if (aggregated) {
-              const aggregatedConverted: unknown = responsesJsonToChatCompletion(aggregated)
+              const argsSummary = applyArgsSchemaPruneToPayload(aggregated, selection.account.poolType, argsSchemaTools)
+               if (argsSummary.changed) markArgsSchemaPruned(routeMeta, argsSummary)
+               const aggregatedConverted: unknown = responsesJsonToChatCompletion(aggregated)
               const aggregatedBody = JSON.stringify(aggregatedConverted)
               routing.markSuccess(selection.account.id)
               const status = upstream.status
@@ -1124,7 +1152,12 @@ upstream = await this.fetcher(mirrorPlan2.url, {
           }
           let converted: unknown
           let chatConvertedOk = true
-          try { converted = responsesJsonToChatCompletion(JSON.parse(raw)) } catch { converted = { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }; chatConvertedOk = false }
+          try {
+            const parsed = JSON.parse(raw)
+            const argsSummary = applyArgsSchemaPruneToPayload(parsed, selection.account.poolType, argsSchemaTools)
+            if (argsSummary.changed) markArgsSchemaPruned(routeMeta, argsSummary)
+            converted = responsesJsonToChatCompletion(parsed)
+          } catch { converted = { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }; chatConvertedOk = false }
           const body = JSON.stringify(converted)
           if (!chatConvertedOk) {
             // 转换失败不再伪装 SUCCESS：记 error 口径且 ok:0，不 markSuccess。
@@ -1160,10 +1193,13 @@ upstream = await this.fetcher(mirrorPlan2.url, {
           // 需聚合 response.completed 再一次性返回 chat JSON，而非把 SSE 流透给非流式客户端。
           const raw = await upstream.text()
           const aggregated = responsesSseToJson(raw)
-          const converted: unknown = aggregated
-            ? responsesJsonToChatCompletion(aggregated)
-            : { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }
-          const body = JSON.stringify(converted)
+          let converted: unknown
+           if (aggregated) {
+             const argsSummary = applyArgsSchemaPruneToPayload(aggregated, selection.account.poolType, argsSchemaTools)
+             if (argsSummary.changed) markArgsSchemaPruned(routeMeta, argsSummary)
+             converted = responsesJsonToChatCompletion(aggregated)
+           } else converted = { error: { type: "invalid_upstream_response", message: raw.slice(0, 500) } }
+                     const body = JSON.stringify(converted)
           if (!aggregated) {
             // 聚合失败不再伪装 SUCCESS：记 error 口径且 ok:0，不 markSuccess。
             const status = upstream.status
@@ -1348,6 +1384,12 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             }
             if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
             let outStream: ReadableStream<Uint8Array> = prependChunks(sniffed.chunks, sniffed.reader)
+             if (isArgsSchemaPruneScope(selection.account.poolType) && argsSchemaTools.size > 0) {
+               const pruner = createIncrementalArgsSchemaPruner(argsSchemaTools, (result) => {
+                 if (result.changed) markArgsSchemaPruned(routeMeta, result)
+               })
+               outStream = outStream.pipeThrough(pruner.stream)
+             }
             if (isDshSanitizeScope(selection.account.poolType, meta.userAgent)) {
               const sanitizer = createIncrementalSseSanitizer((result) => {
                 if (result.sanitizedEvents > 0) markDshSanitized(routeMeta)
@@ -1441,7 +1483,9 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             const aggregatedUsage = aggregated ? extractUsage(aggregated) : undefined
             const usage = aggregatedUsage ?? codexStats.usage
             // DSH+GPT 清洗（仅 openai 池 + deepseek UA）：聚合 JSON 的完整 item arguments。
-            const dshSanitize = applyDshArgsSanitizeToPayload(aggregated, selection.account.poolType, meta.userAgent)
+            const argsSummary = applyArgsSchemaPruneToPayload(aggregated, selection.account.poolType, argsSchemaTools)
+             if (argsSummary.changed) markArgsSchemaPruned(routeMeta, argsSummary)
+             const dshSanitize = applyDshArgsSanitizeToPayload(aggregated, selection.account.poolType, meta.userAgent)
             if (dshSanitize.sanitized) {
               try {
                 const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
@@ -1515,7 +1559,9 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             // DSH+GPT 清洗（仅 openai 池 + deepseek UA）：done/终态完整 arguments，
             // delta 增量原样透传。
             if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
-            const dshStreaming = applyDshArgsSanitizeToSseText(rawText, selection.account.poolType, meta.userAgent)
+            const argsStreaming = applyArgsSchemaPruneToSseText(rawText, selection.account.poolType, argsSchemaTools)
+             if (argsStreaming.summary.changed) markArgsSchemaPruned(routeMeta, argsStreaming.summary)
+             const dshStreaming = applyDshArgsSanitizeToSseText(argsStreaming.text, selection.account.poolType, meta.userAgent)
             if (dshStreaming.sanitized) markDshSanitized(routeMeta)
             const sseBytes = new TextEncoder().encode(dshStreaming.text)
             const sseStream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(sseBytes); controller.close() } })
@@ -1601,7 +1647,9 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             else remappedJson = json
             // DSH+GPT 清洗（仅 openai 池 + deepseek UA）：标准 JSON 整包里的
             // function_call arguments（转换路径不动，仅本原生直通分支）。
-            const dshStdJson = applyDshArgsSanitizeToPayload(remappedJson, selection.account.poolType, meta.userAgent)
+            const argsStdJson = applyArgsSchemaPruneToPayload(remappedJson, selection.account.poolType, argsSchemaTools)
+             if (argsStdJson.changed) markArgsSchemaPruned(routeMeta, argsStdJson)
+             const dshStdJson = applyDshArgsSanitizeToPayload(remappedJson, selection.account.poolType, meta.userAgent)
             if (dshStdJson.sanitized) {
               routeMeta.transformSummary = withDshSanitizeTag(routeMeta.transformSummary)
               try { this.db.prepare("UPDATE gateway_requests SET transform_summary=? WHERE id=?").run(routeMeta.transformSummary, requestId) } catch { /* best-effort */ }
