@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest"
 import {
+  COMMAND_CODE_PLAN_CREDIT_CAPS,
   commandCodeExternalId,
+  commandCodePlanDisplay,
   isValidCommandCodeApiKeyShape,
   matchCommandCodeModel,
+  parseCommandCodeCredits,
   parseCommandCodeModels,
+  parseCommandCodeSubscription,
   parseCommandCodeUsage,
   parseCommandCodeWhoami,
+  windowsFromCommandCodeQuota,
   windowsFromCommandCodeUsage,
 } from "./command-code"
 
@@ -96,7 +101,184 @@ describe("parseCommandCodeUsage（2026-09-08 持 key 实测：账期累计口径
   })
 })
 
-describe("windowsFromCommandCodeUsage（账期累计 → 单 MONTHLY 信息窗）", () => {
+describe("parseCommandCodeCredits（2026-09-08 真 key 实测：三 credits=剩余 + 双窗）", () => {
+  // 实测：套餐总量 70 − monthlyCredits 66.2795 = 3.7205 = 5h 窗口 used。
+  const sample = {
+    credits: {
+      belowThreshold: false,
+      creditThreshold: 5,
+      monthlyCredits: 66.2795,
+      purchasedCredits: 0,
+      freeCredits: 2.5,
+    },
+    windowLimits: {
+      limited: false,
+      exceeded: false,
+      fiveHour: { used: 3.7205, cap: 14, exceeded: false, resetAt: 1788832800000 },
+      weekly: { used: 3.7205, cap: 35, exceeded: false, resetAt: 1789264800000 },
+    },
+  }
+
+  it("解析实测形态（直键 + data envelope 均兼容）", () => {
+    for (const payload of [sample, { data: sample }]) {
+      const credits = parseCommandCodeCredits(payload)!
+      expect(credits.monthlyRemaining).toBeCloseTo(66.2795)
+      expect(credits.purchasedRemaining).toBe(0)
+      expect(credits.freeRemaining).toBe(2.5)
+      expect(credits.belowThreshold).toBe(false)
+      expect(credits.creditThreshold).toBe(5)
+      expect(credits.fiveHour).toMatchObject({ used: 3.7205, cap: 14 })
+      expect(credits.fiveHour!.resetAt).toBe(new Date(1788832800000).toISOString())
+      expect(credits.weekly).toMatchObject({ used: 3.7205, cap: 35 })
+      expect(credits.weekly!.resetAt).toBe(new Date(1789264800000).toISOString())
+    }
+  })
+
+  it("70 − 66.2795 = 3.7205 三字段剩余语义交叉验证", () => {
+    const credits = parseCommandCodeCredits(sample)!
+    expect(70 - credits.monthlyRemaining).toBeCloseTo(credits.fiveHour!.used, 4)
+  })
+
+  it("缺 credits/垃圾输入返回 null", () => {
+    expect(parseCommandCodeCredits(null)).toBeNull()
+    expect(parseCommandCodeCredits({ windowLimits: {} })).toBeNull()
+    expect(parseCommandCodeCredits("oops")).toBeNull()
+    expect(parseCommandCodeCredits({ credits: { belowThreshold: false } })).toBeNull()
+  })
+
+  it("窗口缺失/秒级 resetAt 宽容：缺失落 null，秒级转 ISO", () => {
+    const credits = parseCommandCodeCredits({ credits: { monthlyCredits: 10 } })!
+    expect(credits.fiveHour).toBeNull()
+    expect(credits.weekly).toBeNull()
+    const sec = parseCommandCodeCredits({
+      credits: { monthlyCredits: 10 },
+      windowLimits: { fiveHour: { used: 1, cap: 14, resetAt: 1788832800 } },
+    })!
+    expect(sec.fiveHour!.resetAt).toBe(new Date(1788832800000).toISOString())
+  })
+})
+
+describe("parseCommandCodeSubscription（真 key 实测形态）", () => {
+  const sample = {
+    data: {
+      status: "active",
+      planId: "individual-goat",
+      currentPeriodStart: "2026-09-01T00:00:00.000Z",
+      currentPeriodEnd: "2026-10-01T00:00:00.000Z",
+      cancelAtPeriodEnd: false,
+    },
+  }
+
+  it("解析实测形态（含 data envelope）", () => {
+    expect(parseCommandCodeSubscription(sample)).toEqual({
+      status: "active",
+      planId: "individual-goat",
+      currentPeriodStart: "2026-09-01T00:00:00.000Z",
+      currentPeriodEnd: "2026-10-01T00:00:00.000Z",
+      cancelAtPeriodEnd: false,
+    })
+    expect(parseCommandCodeSubscription(sample.data)).toMatchObject({ planId: "individual-goat" })
+  })
+
+  it("垃圾输入返回 null", () => {
+    expect(parseCommandCodeSubscription(null)).toBeNull()
+    expect(parseCommandCodeSubscription({})).toBeNull()
+    expect(parseCommandCodeSubscription("x")).toBeNull()
+  })
+})
+
+describe("套餐表与 plan 展示名", () => {
+  it("CLI 内置总量表齐全", () => {
+    expect(COMMAND_CODE_PLAN_CREDIT_CAPS).toMatchObject({
+      "individual-goat": 70, go: 10, pro: 30, "pro-v1": 80,
+      provider: 15, max: 150, ultra: 300, "teams-pro": 40,
+    })
+  })
+
+  it("individual-goat → GOAT，未知回原串，空串回空", () => {
+    expect(commandCodePlanDisplay("individual-goat")).toBe("GOAT")
+    expect(commandCodePlanDisplay("pro")).toBe("PRO")
+    expect(commandCodePlanDisplay("weird-plan")).toBe("weird-plan")
+    expect(commandCodePlanDisplay("")).toBe("")
+    expect(commandCodePlanDisplay(null)).toBe("")
+  })
+})
+
+describe("windowsFromCommandCodeQuota（三窗：双窗已用比 + MONTHLY 余额窗）", () => {
+  const credits = {
+    monthlyRemaining: 66.2795,
+    purchasedRemaining: 0,
+    freeRemaining: 0,
+    belowThreshold: false,
+    creditThreshold: 5,
+    fiveHour: { used: 3.7205, cap: 14, exceeded: false, resetAt: new Date(1788832800000).toISOString() },
+    weekly: { used: 3.7205, cap: 35, exceeded: false, resetAt: new Date(1789264800000).toISOString() },
+  }
+  const subscription = {
+    status: "active",
+    planId: "individual-goat",
+    currentPeriodStart: "2026-09-01T00:00:00.000Z",
+    currentPeriodEnd: "2026-10-01T00:00:00.000Z",
+    cancelAtPeriodEnd: false,
+  }
+  const usage = {
+    totalCount: 37, completedCount: 37, failedCount: 0,
+    totalCredits: 3.7205, totalFreeCredits: 0, totalMonthlyCredits: 3.7205, totalPurchasedCredits: 0,
+    totalTokens: 3284142, totalTokensIn: 3263702, totalTokensOut: 20440,
+    periodBasis: "billing-period",
+  }
+
+  it("三窗齐全：双窗 usagePercent=used/cap，MONTHLY=(70−66.2795)/70", () => {
+    const windows = windowsFromCommandCodeQuota({ credits, subscription, usage })
+    expect(windows.map((w) => w.kind)).toEqual(["FIVE_HOUR", "WEEKLY", "MONTHLY"])
+    const five = windows[0]
+    expect(five.usagePercent).toBeCloseTo((3.7205 / 14) * 100, 2)
+    expect(five.resetAt).toBe(new Date(1788832800000).toISOString())
+    expect(five.unit).toBe("credits")
+    expect(five.extra).toMatchObject({ used: 3.7205, cap: 14 })
+    const weekly = windows[1]
+    expect(weekly.usagePercent).toBeCloseTo((3.7205 / 35) * 100, 2)
+    expect(weekly.resetAt).toBe(new Date(1789264800000).toISOString())
+    const monthly = windows[2]
+    expect(monthly.unit).toBe("credits")
+    expect(monthly.usagePercent).toBeCloseTo(((70 - 66.2795) / 70) * 100, 2)
+    expect(monthly.limitValue).toBe(70)
+    expect(monthly.remainingValue).toBeCloseTo(66.2795)
+    expect(monthly.resetAt).toBe("2026-10-01T00:00:00.000Z")
+    expect(monthly.extra).toMatchObject({
+      remaining: 66.2795, purchased: 0, free: 0, cap: 70,
+      planId: "individual-goat", belowThreshold: false,
+      totalCredits: 3.7205, totalCount: 37, totalTokens: 3284142,
+    })
+  })
+
+  it("未知 planId 兜底：cap=remaining+本账期已消耗（summary 口径）", () => {
+    const windows = windowsFromCommandCodeQuota({
+      credits, subscription: { ...subscription, planId: "mystery-plan" }, usage,
+    })
+    const monthly = windows.find((w) => w.kind === "MONTHLY")!
+    expect(monthly.limitValue).toBeCloseTo(66.2795 + 3.7205)
+    // clampPercent 保留 2 位小数：3.7205/70*100=5.315 → 5.32。
+    expect(monthly.usagePercent).toBe(5.32)
+    expect(monthly.extra).toMatchObject({ planId: "mystery-plan" })
+  })
+
+  it("无 summary 时 MONTHLY 仍有余额窗（consumed=0 → usage 0）", () => {
+    const windows = windowsFromCommandCodeQuota({ credits, subscription, usage: null })
+    const monthly = windows.find((w) => w.kind === "MONTHLY")!
+    expect(monthly.limitValue).toBe(70)
+    expect(monthly.extra).not.toHaveProperty("totalCredits")
+  })
+
+  it("缺窗行时只产出已有窗 + MONTHLY（不崩）", () => {
+    const windows = windowsFromCommandCodeQuota({
+      credits: { ...credits, fiveHour: null, weekly: null }, subscription, usage,
+    })
+    expect(windows.map((w) => w.kind)).toEqual(["MONTHLY"])
+  })
+})
+
+describe("windowsFromCommandCodeUsage（deprecated：旧快照回放兼容）", () => {
   it("MONTHLY 单窗：usagePercent 固定 0（绝不落 100 误触发路由拉黑），credits/tokens 挂 extra", () => {
     const now = Date.parse("2026-09-08T10:00:00.000Z")
     const windows = windowsFromCommandCodeUsage({

@@ -9,7 +9,7 @@ export const POOL_TYPE_META: Record<string, { label: string; description: string
   "kimi-code": { label: "Kimi Code", description: "Kimi Code 设备码 OAuth，5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
   "open-design-go": { label: "OpenDesign Go", description: "OpenDesign Go 订阅（OpenAI 兼容），按月计费，凭据来自 ~/.amr/config.json", quotaKinds: ["monthly"] },
   "glm-coding": { label: "GLM Coding Plan", description: "智谱 GLM Coding Plan（ZCode 指纹），5h + weekly 额度", quotaKinds: ["fiveHour", "weekly"] },
-  "command-code": { label: "Command Code", description: "Command Code GOAT 套餐（Studio API key），账期累计用量（单 MONTHLY 信息窗）", quotaKinds: ["monthly"] },
+  "command-code": { label: "Command Code", description: "Command Code GOAT 套餐（Studio API key），5 小时 + 每周窗口 + 月度余额", quotaKinds: ["fiveHour", "weekly", "monthly"] },
 };
 
 export function getPoolQuotaKinds(poolType?: string | null) {
@@ -36,9 +36,6 @@ export function listWindowColumns(poolType?: string | null): [ListWindowColumn |
   const type = poolType || "opencode-go";
   if (type === "xai-grok") return [{ key: "rolling24h", label: "24H", header: "滚动 24 小时" }, null];
   if (type === "open-design-go") return [{ key: "balance", label: "BALANCE", header: "余额" }, { key: "monthly", label: "MONTH", header: "月" }];
-  // command-code：上游 /alpha/usage/summary 只有账期累计口径（单 MONTHLY 信息窗），
-  // 無 5h/weekly 双窗 —— 主列占位、次列由页面按 MONTHLY 信息窗渲染（见 accounts-page 列表与详情）。
-  if (type === "command-code") return [null, { key: "monthly", label: "MONTH", header: "账期累计" }];
   return [{ key: "fiveHour", label: "5H", header: "5 小时" }, { key: "weekly", label: "WEEK", header: "周" }];
 }
 
@@ -196,7 +193,7 @@ export function BillingSafetyBadge({ account }: { account: Account }) {
     return <Badge variant="outline" className="h-5 rounded-sm border-indigo-300/40 bg-indigo-50 px-1.5 text-[11px] text-indigo-700">Coding Plan</Badge>;
   }
   if (poolType === "command-code") {
-    // GOAT 套餐 API key 只能消耗套餐内额度（账期累计 credits，无窗口封顶），无按量扣费风险。
+    // GOAT 套餐 API key 只能消耗套餐内额度（5h/weekly 双窗 + 月度余额），无按量扣费风险。
     return <Badge variant="outline" className="h-5 rounded-sm border-cyan-300/40 bg-cyan-50 px-1.5 text-[11px] text-cyan-700">GOAT Plan</Badge>;
   }
   if (poolType === "openai") {
@@ -425,10 +422,39 @@ export function WalletBalanceCell({ account }: { account: Account }) {
   );
 }
 
-// ─── Command Code 账期累计（MONTHLY 信息窗）展示 ─────────────────────────
+// ─── Command Code 三窗展示（/alpha/billing/credits + subscriptions） ───────
 
-/** Command Code MONTHLY 信息窗 extra 数值字段读取：有限数值才展示，否则「未返回」。 */
+/** Command Code 5h/每周窗口 extra 数值字段读取。 */
+export function commandCodeWindowExtra(account: Account, key: "fiveHour" | "weekly"): {
+  used: number | null;
+  cap: number | null;
+  exceeded: boolean;
+  planId: string | null;
+  lastObservedAt: string | null;
+} {
+  const quota = getQuota(account, key);
+  const extra = (quota?.extra ?? null) as Record<string, unknown> | null;
+  const num = (k: string): number | null =>
+    extra && typeof extra[k] === "number" && Number.isFinite(extra[k]) ? (extra[k] as number) : null;
+  return {
+    used: num("used"),
+    cap: num("cap"),
+    exceeded: extra?.exceeded === true,
+    planId: extra && typeof extra.planId === "string" && extra.planId ? (extra.planId as string) : null,
+    lastObservedAt: quota?.lastObservedAt ?? null,
+  };
+}
+
+/** Command Code MONTHLY 余额窗 extra 读取：remaining/cap/planId/账期/对账字段。 */
 export function commandCodeBillingExtra(account: Account): {
+  remaining: number | null;
+  cap: number | null;
+  purchased: number | null;
+  free: number | null;
+  planId: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  belowThreshold: boolean | null;
   periodBasis: string | null;
   totalCredits: number | null;
   totalCount: number | null;
@@ -443,9 +469,20 @@ export function commandCodeBillingExtra(account: Account): {
   const extra = (quota?.extra ?? null) as Record<string, unknown> | null;
   const num = (key: string): number | null =>
     extra && typeof extra[key] === "number" && Number.isFinite(extra[key]) ? (extra[key] as number) : null;
-  const basis = extra && typeof extra.periodBasis === "string" && extra.periodBasis ? extra.periodBasis as string : null;
+  const str = (key: string): string | null =>
+    extra && typeof extra[key] === "string" && extra[key] ? (extra[key] as string) : null;
   return {
-    periodBasis: basis,
+    remaining: num("remaining"),
+    cap: num("cap"),
+    purchased: num("purchased"),
+    free: num("free"),
+    planId: str("planId") ?? str("plan"),
+    periodStart: str("periodStart"),
+    periodEnd: str("periodEnd"),
+    belowThreshold: typeof extra?.belowThreshold === "boolean" ? (extra.belowThreshold as boolean) : null,
+    // 兼容旧快照：旧 MONTHLY 信息窗（usage/summary 口径）无 remaining/cap，
+    // 只有 totalCredits 等对账字段，此时余额卡回退展示累计消耗。
+    periodBasis: str("periodBasis"),
     totalCredits: num("totalCredits"),
     totalCount: num("totalCount"),
     completedCount: num("completedCount"),
@@ -464,15 +501,23 @@ export function formatCommandCodeCredits(value: number | null | undefined): stri
 }
 
 /**
- * Command Code 账期累计卡片（详情弹窗用）。
- * 数据来自 MONTHLY 信息窗 extra（/alpha/usage/summary 账期累计口径）：
- * totalCredits = 账期累计消耗（不是剩余额度，故不画进度条）；totalCount/completedCount/
- * failedCount = 请求次数；totalTokens/totalTokensIn/totalTokensOut = token 消耗；
- * periodBasis = 统计口径标签。上游无重置时间、无成功率字段，成功率由
- * completed/total 本地计算（total=0 时不展示）。
+ * Command Code MONTHLY 余额卡（详情弹窗用）。
+ * 数据来自 MONTHLY 余额窗 extra（/alpha/billing/credits 剩余 + subscriptions 套餐/账期）：
+ * 大数字「剩余 X credits」（extra.remaining），进度条走 quota usagePercent（有真上限 cap），
+ * 副行「总量 cap · 本账期已消耗（cap−remaining 或 summary 口径）· 账期至 periodEnd」；
+ * 请求次数/tokens/成功率等 summary 对账字段作为卡内次要行保留（extra 里有才展示）。
+ * 兼容旧快照：只有 totalCredits 无 remaining 时，回退展示累计消耗（无进度条）。
  */
 export function CommandCodeBillingCard({ account }: { account: Account }) {
   const billing = commandCodeBillingExtra(account);
+  const quota = getQuota(account, "monthly");
+  const used = quota?.usagePercent == null ? null : Math.round(Math.max(0, Number(quota.usagePercent)) * 100) / 100;
+  const hasBalance = billing.remaining != null;
+  const consumed = billing.cap != null && billing.remaining != null
+    ? billing.cap - billing.remaining
+    : billing.totalCredits;
+  const consumedLabel = consumed != null ? formatCommandCodeCredits(consumed) : "未返回";
+  const periodLabel = billing.periodEnd ? formatDate(billing.periodEnd) : "未返回";
   const successRate =
     billing.totalCount != null && billing.totalCount > 0 && billing.completedCount != null
       ? (billing.completedCount / billing.totalCount) * 100
@@ -485,33 +530,64 @@ export function CommandCodeBillingCard({ account }: { account: Account }) {
     billing.totalTokens != null
       ? `${billing.totalTokens.toLocaleString("zh-CN")}（输入 ${billing.totalTokensIn?.toLocaleString("zh-CN") ?? "—"} / 输出 ${billing.totalTokensOut?.toLocaleString("zh-CN") ?? "—"}）`
       : "未返回";
+  const synced = hasBalance ? billing.remaining != null : billing.totalCount != null;
   return (
     <div className="min-w-0">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          <span className={`size-1.5 shrink-0 rounded-full ${billing.totalCount != null ? "bg-success" : "bg-muted-foreground/40"}`} aria-hidden="true" />
-          <span className="truncate text-xs font-medium text-muted-foreground">账期累计</span>
+          <span className={`size-1.5 shrink-0 rounded-full ${synced ? "bg-success" : "bg-muted-foreground/40"}`} aria-hidden="true" />
+          <span className="truncate text-xs font-medium text-muted-foreground">{hasBalance ? "月度余额" : "账期累计"}</span>
         </div>
-        <span className={`shrink-0 text-[10px] font-medium ${billing.totalCount != null ? "text-success" : "text-muted-foreground"}`}>
-          {billing.totalCount != null ? "已同步" : "待观测"}
+        <span className={`shrink-0 text-[10px] font-medium ${synced ? "text-success" : "text-muted-foreground"}`}>
+          {synced ? "已同步" : "待观测"}
         </span>
       </div>
       <div className="mt-3 flex min-w-0 items-baseline gap-1">
-        <span className="font-mono text-2xl font-medium tracking-[-0.04em] tabular-nums">{formatCommandCodeCredits(billing.totalCredits)}</span>
-        <span className="text-[11px] text-muted-foreground">credits 已消耗</span>
+        <span className="font-mono text-2xl font-medium tracking-[-0.04em] tabular-nums">{formatCommandCodeCredits(hasBalance ? billing.remaining : billing.totalCredits)}</span>
+        <span className="text-[11px] text-muted-foreground">{hasBalance ? "credits 剩余" : "credits 已消耗"}</span>
       </div>
-      <p className="mt-1 text-[10px] leading-4 text-muted-foreground">累计消耗，非剩余额度；不设上限故无进度条。</p>
+      {hasBalance && used != null ? (
+        <div
+          className="mt-2 h-1 overflow-hidden rounded-full bg-black/5"
+          role="progressbar"
+          aria-label="月度余额已使用额度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={used}
+        >
+          <div className={`h-full rounded-full ${used >= 100 ? "bg-warning" : "bg-primary"}`} style={{ width: `${Math.min(100, used)}%` }} />
+        </div>
+      ) : null}
+      {!hasBalance ? (
+        <p className="mt-1 text-[10px] leading-4 text-muted-foreground">累计消耗，非剩余额度；不设上限故无进度条。</p>
+      ) : null}
       <div className="mt-3 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 border-t pt-2.5 text-[10px]">
-        <span className="text-muted-foreground">请求次数</span>
-        <span className="truncate text-right font-mono text-foreground" title={requestsLabel}>{requestsLabel}</span>
-        <span className="text-muted-foreground">Tokens</span>
-        <span className="truncate text-right font-mono text-foreground" title={tokensLabel}>{tokensLabel}</span>
-        <span className="text-muted-foreground">成功率</span>
-        <span className="truncate text-right font-mono text-foreground">{successRate != null ? `${successRate.toFixed(2)}%` : "未返回"}</span>
-        <span className="text-muted-foreground">统计口径</span>
-        <span className="truncate text-right font-mono text-foreground" title={billing.lastObservedAt ?? undefined}>
-          {billing.periodBasis === "billing-period" ? "账期累计" : billing.periodBasis ?? "未返回"}
+        <span className="text-muted-foreground">{hasBalance ? "总量" : "统计口径"}</span>
+        <span className="truncate text-right font-mono text-foreground">
+          {hasBalance
+            ? (billing.cap != null ? `${formatCommandCodeCredits(billing.cap)} credits` : "未返回")
+            : (billing.periodBasis === "billing-period" ? "账期累计" : billing.periodBasis ?? "未返回")}
         </span>
+        <span className="text-muted-foreground">{hasBalance ? "本账期已消耗" : "请求次数"}</span>
+        <span className="truncate text-right font-mono text-foreground">{hasBalance ? `${consumedLabel} credits` : requestsLabel}</span>
+        <span className="text-muted-foreground">{hasBalance ? "账期至" : "Tokens"}</span>
+        <span className="truncate text-right font-mono text-foreground" title={billing.periodEnd ?? undefined}>{hasBalance ? periodLabel : tokensLabel}</span>
+        {billing.planId ? (
+          <>
+            <span className="text-muted-foreground">套餐</span>
+            <span className="truncate text-right font-mono text-foreground">{billing.planId}</span>
+          </>
+        ) : null}
+        {billing.totalCount != null || billing.totalTokens != null ? (
+          <>
+            <span className="text-muted-foreground">请求次数</span>
+            <span className="truncate text-right font-mono text-foreground" title={requestsLabel}>{requestsLabel}</span>
+            <span className="text-muted-foreground">Tokens</span>
+            <span className="truncate text-right font-mono text-foreground" title={tokensLabel}>{tokensLabel}</span>
+            <span className="text-muted-foreground">成功率</span>
+            <span className="truncate text-right font-mono text-foreground">{successRate != null ? `${successRate.toFixed(2)}%` : "未返回"}</span>
+          </>
+        ) : null}
         <span className="text-muted-foreground">最近同步</span>
         <span className="truncate text-right font-mono text-foreground" title={billing.lastObservedAt ?? undefined}>{billing.lastObservedAt ? formatDate(billing.lastObservedAt) : "尚无观测"}</span>
       </div>

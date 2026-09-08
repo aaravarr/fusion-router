@@ -10,15 +10,27 @@
  *
  * 认证：Authorization: Bearer <key>，key 形态 user_...（Studio 创建，长期有效，CLI 与 API 同 key）。
  * 无 OAuth、无指纹要求（CLI 与 API 同端点同 key，无需伪装客户端头）。
+ * 个人号调管理面无需 orgId（2026-09-08 真 key 验证）。
  *
- * 用量：GET https://api.commandcode.ai/alpha/usage/summary（Bearer，2026-09-08 持 key 实测 200）。
- * 实测响应为账期累计口径（periodBasis: "billing-period"），**没有 5h/weekly 双窗、没有重置时间**：
- * {totalCount, totalCost, averageCost, successRate, completedCount, failedCount,
- *  totalTokensIn, totalTokensOut, totalTokens, totalCredits, totalFreeCredits,
- *  totalMonthlyCredits, totalPurchasedCredits, periodBasis}。
+ * 用量/配额（三窗，2026-09-08 真 key 实测）：
+ * - GET /alpha/billing/credits（Bearer，个人号无需 orgId）→
+ *   {credits: {belowThreshold, creditThreshold, monthlyCredits, purchasedCredits,
+ *   freeCredits}（三个 credits 字段都是「剩余」）, windowLimits: {limited, exceeded,
+ *   fiveHour: {used, cap:14, exceeded, resetAt<毫秒时间戳>},
+ *   weekly: {used, cap:35, exceeded, resetAt}}}。
+ *   验证：套餐总量 70 − monthlyCredits 66.2795 = 3.7205 = 5h 窗口 used。
+ * - GET /alpha/billing/subscriptions → {data: {status:"active",
+ *   planId:"individual-goat", currentPeriodStart, currentPeriodEnd,
+ *   cancelAtPeriodEnd}}（套餐/账期）。
+ * - 套餐总量表（CLI 内置）：individual-goat=70、go=10、pro=30、pro-v1=80、
+ *   provider=15、max=150、ultra=300、teams-pro=40。
+ * → FIVE_HOUR / WEEKLY 窗：usagePercent=used/cap*100，resetAt=resetAt；
+ *   MONTHLY 余额窗：unit="credits"，cap=套餐表[planId]（未知 planId 时兜底
+ *   remaining+本账期已消耗），usagePercent=(cap−remaining)/cap*100。
+ * 消耗对账：GET /alpha/usage/summary（纯消耗口径，totalCredits=账期已消耗等）→
+ * 仅合并进 MONTHLY extra 作对账展示，不再单独成窗。
  * 兄弟端点 /alpha/usage/limits、/alpha/usage/rate-limits、/alpha/usage/windows、/alpha/quota 全 404。
- * → 配额展示如实采用账期累计 credits 口径（MONTHLY 单窗，无重置时间）；窗口/套餐调度
- *   依赖被动错误分类（403 MODEL_NOT_IN_PLAN / 429+rateLimit.window，见 providers/command-code.ts）。
+ * 窗口/套餐调度依赖被动错误分类（403 MODEL_NOT_IN_PLAN / 429+rateLimit.window，见 providers/command-code.ts）。
  * key 验证：GET /alpha/whoami（2026-09-08 持 key 实测 200）：
  * {"success":true,"user":{"id","name","email","userName"},"org":null}——无 plan 字段。
  *
@@ -35,7 +47,7 @@ export const COMMAND_CODE_POOL_TYPE = "command-code" as const
 
 /** 推理端点前缀（chat/completions 与 messages 同 base；responses 不存在）。 */
 export const COMMAND_CODE_PROVIDER_BASE = "https://api.commandcode.ai/provider/v1"
-/** 管理面（/alpha/whoami、/alpha/usage/summary）。 */
+/** 管理面（/alpha/whoami、/alpha/billing/*、/alpha/usage/summary）。 */
 export const COMMAND_CODE_API_BASE = "https://api.commandcode.ai"
 
 const REQUEST_TIMEOUT_MS = 30_000
@@ -136,7 +148,289 @@ export async function verifyCommandCodeApiKey(apiKey: string, account?: MirrorSe
   return parseCommandCodeWhoami(await response.json().catch(() => null))
 }
 
-// ─── 用量（/alpha/usage/summary，账期累计口径，2026-09-08 持 key 实测） ───
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value)
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+// ─── 账单/配额（/alpha/billing/credits + /alpha/billing/subscriptions，三窗，2026-09-08 真 key 实测） ───
+
+/** CLI 内置套餐总量表（credits）：planId → 账期总量。未知 planId 时兜底 remaining+本账期已消耗。 */
+export const COMMAND_CODE_PLAN_CREDIT_CAPS: Record<string, number> = {
+  "individual-goat": 70,
+  go: 10,
+  pro: 30,
+  "pro-v1": 80,
+  provider: 15,
+  max: 150,
+  ultra: 300,
+  "teams-pro": 40,
+}
+
+/** planId → 账号 plan 展示名。 */
+export const COMMAND_CODE_PLAN_DISPLAY: Record<string, string> = {
+  "individual-goat": "GOAT",
+  go: "GO",
+  pro: "PRO",
+  "pro-v1": "PRO",
+  provider: "PROVIDER",
+  max: "MAX",
+  ultra: "ULTRA",
+  "teams-pro": "TEAMS",
+}
+
+export interface CommandCodeWindowLimit {
+  /** 窗口已用 credits。 */
+  used: number
+  /** 窗口上限 credits。 */
+  cap: number
+  /** 是否已超窗。 */
+  exceeded: boolean
+  /** 重置时间：上游毫秒时间戳 → ISO 字符串，无则 null。 */
+  resetAt: string | null
+}
+
+export interface CommandCodeCreditsPayload {
+  /** 订阅月度 credits 剩余。 */
+  monthlyRemaining: number
+  /** 购买 credits 剩余。 */
+  purchasedRemaining: number
+  /** 赠送 credits 剩余。 */
+  freeRemaining: number
+  /** 是否低于阈值。 */
+  belowThreshold: boolean
+  /** 阈值（credits）。 */
+  creditThreshold: number | null
+  fiveHour: CommandCodeWindowLimit | null
+  weekly: CommandCodeWindowLimit | null
+}
+
+export interface CommandCodeSubscriptionPayload {
+  status: string
+  planId: string
+  currentPeriodStart: string | null
+  currentPeriodEnd: string | null
+  cancelAtPeriodEnd: boolean
+}
+
+function toResetIso(value: unknown): string | null {
+  const n = toFiniteNumber(value)
+  if (n == null || n <= 0) return null
+  // 上游 resetAt 为毫秒时间戳；若误传秒级同样兼容。
+  return new Date(n > 1e12 ? n : n * 1000).toISOString()
+}
+
+function parseWindowLimit(value: unknown): CommandCodeWindowLimit | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const used = toFiniteNumber(row.used) ?? toFiniteNumber(row.usedCredits)
+  const cap = toFiniteNumber(row.cap) ?? toFiniteNumber(row.limit) ?? toFiniteNumber(row.total)
+  if (used == null || cap == null) return null
+  return {
+    used,
+    cap,
+    exceeded: row.exceeded === true,
+    resetAt: toResetIso(row.resetAt ?? row.reset_at ?? row.resetTime),
+  }
+}
+
+/** 宽容解析 /alpha/billing/credits（兼容 {credits, windowLimits} 直键与 {data:{...}} envelope）。 */
+export function parseCommandCodeCredits(payload: unknown): CommandCodeCreditsPayload | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null
+  const record = payload as Record<string, unknown>
+  const inner = record.data && typeof record.data === "object" && !Array.isArray(record.data)
+    ? record.data as Record<string, unknown>
+    : record
+  const credits = inner.credits && typeof inner.credits === "object" && !Array.isArray(inner.credits)
+    ? inner.credits as Record<string, unknown>
+    : null
+  if (!credits) return null
+  // 三个 credits 字段都是「剩余」（实测：70 − 66.2795 = 3.7205 = 窗口 used）。
+  const monthlyRemaining = toFiniteNumber(credits.monthlyCredits)
+  const purchasedRemaining = toFiniteNumber(credits.purchasedCredits)
+  const freeRemaining = toFiniteNumber(credits.freeCredits)
+  if (monthlyRemaining == null && purchasedRemaining == null && freeRemaining == null) return null
+  const windows = inner.windowLimits && typeof inner.windowLimits === "object" && !Array.isArray(inner.windowLimits)
+    ? inner.windowLimits as Record<string, unknown>
+    : null
+  return {
+    monthlyRemaining: monthlyRemaining ?? 0,
+    purchasedRemaining: purchasedRemaining ?? 0,
+    freeRemaining: freeRemaining ?? 0,
+    belowThreshold: credits.belowThreshold === true,
+    creditThreshold: toFiniteNumber(credits.creditThreshold),
+    fiveHour: windows ? parseWindowLimit(windows.fiveHour ?? windows.five_hour ?? windows["5h"]) : null,
+    weekly: windows ? parseWindowLimit(windows.weekly ?? windows.week) : null,
+  }
+}
+
+/** 宽容解析 /alpha/billing/subscriptions（兼容直键与 {data:{...}} envelope）。 */
+export function parseCommandCodeSubscription(payload: unknown): CommandCodeSubscriptionPayload | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null
+  const record = payload as Record<string, unknown>
+  const inner = record.data && typeof record.data === "object" && !Array.isArray(record.data)
+    ? record.data as Record<string, unknown>
+    : record
+  const status = stringish(inner.status)
+  const planId = stringish(inner.planId) ?? stringish(inner.plan) ?? ""
+  if (!status && !planId) return null
+  return {
+    status: status ?? "",
+    planId,
+    currentPeriodStart: stringish(inner.currentPeriodStart) ?? stringish(inner.current_period_start),
+    currentPeriodEnd: stringish(inner.currentPeriodEnd) ?? stringish(inner.current_period_end),
+    cancelAtPeriodEnd: inner.cancelAtPeriodEnd === true,
+  }
+}
+
+/** planId → 展示名（individual-goat → "GOAT"，未知回原串）。 */
+export function commandCodePlanDisplay(planId: string | null | undefined): string {
+  if (!planId) return ""
+  return COMMAND_CODE_PLAN_DISPLAY[planId] ?? COMMAND_CODE_PLAN_DISPLAY[planId.toLowerCase()] ?? planId
+}
+
+/** GET /alpha/billing/credits。401/403 抛 invalid，其余非 200 抛普通 Error（调用方保留旧快照）。 */
+export async function fetchCommandCodeCredits(apiKey: string, account?: MirrorSelectionAccount): Promise<CommandCodeCreditsPayload | null> {
+  const response = await apiFetchWithMirrorContext(`${COMMAND_CODE_API_BASE}/alpha/billing/credits`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }, { account })
+  if (response.status === 401 || response.status === 403) {
+    const body = await response.text().catch(() => "")
+    throw new CommandCodeApiKeyInvalidError(`Command Code 账单接口拒绝访问（HTTP ${response.status}）: ${body.slice(0, 200)}`, response.status)
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => "")
+    throw new Error(`Command Code 账单接口失败（HTTP ${response.status}）: ${body.slice(0, 200)}`)
+  }
+  return parseCommandCodeCredits(await response.json().catch(() => null))
+}
+
+/** GET /alpha/billing/subscriptions。best-effort：失败/缺结构返回 null（调用方用兜底口径继续）。 */
+export async function fetchCommandCodeSubscription(apiKey: string, account?: MirrorSelectionAccount): Promise<CommandCodeSubscriptionPayload | null> {
+  const response = await apiFetchWithMirrorContext(`${COMMAND_CODE_API_BASE}/alpha/billing/subscriptions`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }, { account })
+  if (response.status === 401 || response.status === 403) {
+    const body = await response.text().catch(() => "")
+    throw new CommandCodeApiKeyInvalidError(`Command Code 订阅接口拒绝访问（HTTP ${response.status}）: ${body.slice(0, 200)}`, response.status)
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => "")
+    throw new Error(`Command Code 订阅接口失败（HTTP ${response.status}）: ${body.slice(0, 200)}`)
+  }
+  return parseCommandCodeSubscription(await response.json().catch(() => null))
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.round(Math.max(0, Math.min(100, value)) * 100) / 100
+}
+
+/** 双窗（FIVE_HOUR/WEEKLY）行 → quota_windows：usagePercent=used/cap*100。 */
+function windowFromLimit(kind: "FIVE_HOUR" | "WEEKLY", label: string, row: CommandCodeWindowLimit, nowMs: number, extra: Record<string, unknown>): QuotaWindow {
+  const usagePercent = row.cap > 0 ? clampPercent((row.used / row.cap) * 100) : 0
+  const resetMs = row.resetAt ? Date.parse(row.resetAt) : Number.NaN
+  return {
+    kind,
+    usagePercent,
+    limitValue: row.cap,
+    remainingValue: row.cap > 0 ? Math.max(0, row.cap - row.used) : null,
+    resetAt: row.resetAt,
+    resetInSeconds: !Number.isNaN(resetMs) ? Math.max(0, Math.ceil((resetMs - nowMs) / 1000)) : null,
+    lastObservedAt: new Date(nowMs).toISOString(),
+    source: "API_PROBE",
+    unit: "credits",
+    extra: { service: label, used: row.used, cap: row.cap, exceeded: row.exceeded, ...extra },
+  }
+}
+
+export interface CommandCodeQuotaInput {
+  credits: CommandCodeCreditsPayload
+  subscription: CommandCodeSubscriptionPayload | null
+  /** /alpha/usage/summary（可选）：仅作 MONTHLY extra 对账数据与兜底 cap 的消耗口径。 */
+  usage?: CommandCodeUsagePayload | null
+}
+
+/**
+ * 账单三窗 → quota_windows：
+ * - FIVE_HOUR / WEEKLY：usagePercent=used/cap*100，resetsAt=resetAt。
+ * - MONTHLY（余额窗）：unit="credits"；cap=套餐表[planId]，找不到时兜底
+ *   remaining + 本账期已消耗（summary 的 totalMonthlyCredits）；usagePercent=
+ *   (cap−remaining)/cap*100；extra 挂 remaining/purchased/free/cap/planId/
+ *   periodStart/periodEnd/belowThreshold + summary 对账字段。
+ * 任意输入都不抛错；credits 为空时至少按 summary 口径产出 MONTHLY 信息窗（兼容旧快照）。
+ */
+export function windowsFromCommandCodeQuota(input: CommandCodeQuotaInput, nowMs = Date.now()): QuotaWindow[] {
+  const nowIso = new Date(nowMs).toISOString()
+  const windows: QuotaWindow[] = []
+  const usage = input.usage ?? null
+  const planId = input.subscription?.planId ?? ""
+  const planCap = planId ? (COMMAND_CODE_PLAN_CREDIT_CAPS[planId] ?? COMMAND_CODE_PLAN_CREDIT_CAPS[planId.toLowerCase()]) : undefined
+  const periodExtra: Record<string, unknown> = planId ? { planId } : {}
+  if (input.subscription?.currentPeriodStart) periodExtra.periodStart = input.subscription.currentPeriodStart
+  if (input.subscription?.currentPeriodEnd) periodExtra.periodEnd = input.subscription.currentPeriodEnd
+  if (input.subscription?.status) periodExtra.subscriptionStatus = input.subscription.status
+
+  if (input.credits.fiveHour) {
+    windows.push(windowFromLimit("FIVE_HOUR", "command-code", input.credits.fiveHour, nowMs, periodExtra))
+  }
+  if (input.credits.weekly) {
+    windows.push(windowFromLimit("WEEKLY", "command-code", input.credits.weekly, nowMs, periodExtra))
+  }
+
+  const remaining = input.credits.monthlyRemaining
+  const consumed = usage?.totalMonthlyCredits ?? usage?.totalCredits ?? 0
+  const cap = planCap ?? remaining + Math.max(0, consumed)
+  const monthlyUsage = cap > 0 ? clampPercent(((cap - remaining) / cap) * 100) : 0
+  const monthlyExtra: Record<string, unknown> = {
+    service: "command-code",
+    remaining,
+    purchased: input.credits.purchasedRemaining,
+    free: input.credits.freeRemaining,
+    cap,
+    ...periodExtra,
+    belowThreshold: input.credits.belowThreshold,
+  }
+  if (input.credits.creditThreshold != null) monthlyExtra.creditThreshold = input.credits.creditThreshold
+  if (usage) {
+    monthlyExtra.periodBasis = usage.periodBasis
+    monthlyExtra.totalCredits = usage.totalCredits
+    monthlyExtra.totalFreeCredits = usage.totalFreeCredits
+    monthlyExtra.totalMonthlyCredits = usage.totalMonthlyCredits
+    monthlyExtra.totalPurchasedCredits = usage.totalPurchasedCredits
+    monthlyExtra.totalCount = usage.totalCount
+    monthlyExtra.completedCount = usage.completedCount
+    monthlyExtra.failedCount = usage.failedCount
+    monthlyExtra.totalTokens = usage.totalTokens
+    monthlyExtra.totalTokensIn = usage.totalTokensIn
+    monthlyExtra.totalTokensOut = usage.totalTokensOut
+  }
+  windows.push({
+    kind: "MONTHLY",
+    usagePercent: monthlyUsage,
+    limitValue: cap > 0 ? cap : null,
+    remainingValue: remaining,
+    resetAt: input.subscription?.currentPeriodEnd ?? null,
+    resetInSeconds: input.subscription?.currentPeriodEnd
+      ? Math.max(0, Math.ceil((Date.parse(input.subscription.currentPeriodEnd) - nowMs) / 1000))
+      : null,
+    lastObservedAt: nowIso,
+    source: "API_PROBE",
+    unit: "credits",
+    extra: monthlyExtra,
+  })
+  return windows
+}
+
+// ─── 用量（/alpha/usage/summary，纯消耗对账，2026-09-08 持 key 实测） ────────
 
 export interface CommandCodeUsagePayload {
   /** 账期内请求总数。 */
@@ -157,7 +451,7 @@ export interface CommandCodeUsagePayload {
   periodBasis: string
 }
 
-function toFiniteNumber(value: unknown): number | null {
+function toFiniteNumberLoose(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value
   if (typeof value === "string" && value.trim()) {
     const n = Number(value)
@@ -186,24 +480,23 @@ export function parseCommandCodeUsage(payload: unknown): CommandCodeUsagePayload
     ? record.data as Record<string, unknown>
     : record
   return {
-    totalCount: toFiniteNumber(inner.totalCount) ?? 0,
-    completedCount: toFiniteNumber(inner.completedCount) ?? 0,
-    failedCount: toFiniteNumber(inner.failedCount) ?? 0,
-    totalCredits: toFiniteNumber(inner.totalCredits) ?? 0,
-    totalFreeCredits: toFiniteNumber(inner.totalFreeCredits) ?? 0,
-    totalMonthlyCredits: toFiniteNumber(inner.totalMonthlyCredits) ?? 0,
-    totalPurchasedCredits: toFiniteNumber(inner.totalPurchasedCredits) ?? 0,
-    totalTokens: toFiniteNumber(inner.totalTokens) ?? 0,
-    totalTokensIn: toFiniteNumber(inner.totalTokensIn) ?? 0,
-    totalTokensOut: toFiniteNumber(inner.totalTokensOut) ?? 0,
+    totalCount: toFiniteNumberLoose(inner.totalCount) ?? 0,
+    completedCount: toFiniteNumberLoose(inner.completedCount) ?? 0,
+    failedCount: toFiniteNumberLoose(inner.failedCount) ?? 0,
+    totalCredits: toFiniteNumberLoose(inner.totalCredits) ?? 0,
+    totalFreeCredits: toFiniteNumberLoose(inner.totalFreeCredits) ?? 0,
+    totalMonthlyCredits: toFiniteNumberLoose(inner.totalMonthlyCredits) ?? 0,
+    totalPurchasedCredits: toFiniteNumberLoose(inner.totalPurchasedCredits) ?? 0,
+    totalTokens: toFiniteNumberLoose(inner.totalTokens) ?? 0,
+    totalTokensIn: toFiniteNumberLoose(inner.totalTokensIn) ?? 0,
+    totalTokensOut: toFiniteNumberLoose(inner.totalTokensOut) ?? 0,
     periodBasis: stringish(inner.periodBasis) ?? "",
   }
 }
 
 /**
- * 账期累计用量 → quota_windows：单 MONTHLY 窗承载账期累计信息性指标。
- * 上游无重置时间、无 cap（订阅制按 credits 计费而非窗口封顶），usagePercent 固定 0
- * ——绝不能落 100，否则路由层会把账号当配额耗尽拉黑。credits/tokens 细分挂 extra 透传管理端。
+ * @deprecated 改用 windowsFromCommandCodeQuota（三窗：双窗已用比 + MONTHLY 余额窗）。
+ * 保留仅为兼容旧快照回放：单 MONTHLY 信息窗（usagePercent 固定 0，不触发路由拉黑）。
  */
 export function windowsFromCommandCodeUsage(payload: CommandCodeUsagePayload, nowMs = Date.now()): QuotaWindow[] {
   const nowIso = new Date(nowMs).toISOString()

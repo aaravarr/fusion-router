@@ -48,10 +48,13 @@ import { getDatabase } from "../db"
 import {
   COMMAND_CODE_PROVIDER_BASE,
   CommandCodeApiKeyInvalidError,
+  commandCodePlanDisplay,
+  fetchCommandCodeCredits,
   fetchCommandCodeModels,
+  fetchCommandCodeSubscription,
   fetchCommandCodeUsage,
   matchCommandCodeModel,
-  windowsFromCommandCodeUsage,
+  windowsFromCommandCodeQuota,
 } from "../command-code"
 
 /**
@@ -60,8 +63,8 @@ import {
  */
 export const COMMAND_CODE_RATE_LIMIT_MAX_RETRIES = 6
 
-/** 上游账期累计统计口径的 quota 窗口 kind（usage/summary 无 5h/weekly 双窗，实测）。 */
-const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["MONTHLY"]
+/** 配额三窗：FIVE_HOUR + WEEKLY（/alpha/billing/credits 双窗）+ MONTHLY 余额窗。 */
+const SUPPORTED_QUOTA_KINDS: readonly QuotaKind[] = ["FIVE_HOUR", "WEEKLY", "MONTHLY"]
 /**
  * 首次 /models 同步成功前的引导目录（全量 67 个模型由 REMOTE 同步覆盖）。
  * 选自 2026-09-07 实测 GET /provider/v1/models 响应。
@@ -181,13 +184,42 @@ export class CommandCodeProvider implements Provider {
       throw cause
     }
     try {
-      const usage = await fetchCommandCodeUsage(credential.token, account)
-      // whoami/usage 均不返回 plan（2026-09-08 实测）：planType 落常量标识。
-      return { valid: true, planType: "command-code", extra: { usage } }
+      const credits = await fetchCommandCodeCredits(credential.token, account)
+      // 套餐/账期 best-effort：失败不影响校验，plan 回退常量标识。
+      let subscription: Awaited<ReturnType<typeof fetchCommandCodeSubscription>> = null
+      try {
+        subscription = await fetchCommandCodeSubscription(credential.token, account)
+      } catch {
+        subscription = null
+      }
+      const planId = subscription?.planId ?? ""
+      const planType = commandCodePlanDisplay(planId) || "command-code"
+      this.backfillCredentialPlan(account.id, planId)
+      return { valid: true, planType, extra: { planId: planId || undefined, subscriptionStatus: subscription?.status } }
     } catch (error) {
       if (error instanceof CommandCodeApiKeyInvalidError) return { valid: false }
-      // 网络/5xx/404 抖动不误杀账号。
+      // 网络/5xx 抖动不误杀账号。
       return { valid: true }
+    }
+  }
+
+  /**
+   * best-effort 回填 subscriptions 发现的套餐（照抄 kimi userLevel / openai-cpa
+   * backfillCredentialIdentity 模式）：只写凭据 commandCodePlan，回填失败不影响校验。
+   */
+  private backfillCredentialPlan(accountId: string, planId: string): void {
+    if (!planId) return
+    try {
+      const db = getDatabase()
+      const row = db.prepare("SELECT credential_data_ciphertext FROM provider_credentials WHERE account_id = ?").get(accountId) as { credential_data_ciphertext: string } | undefined
+      if (!row) return
+      const data = JSON.parse(this.vault.decrypt(row.credential_data_ciphertext)) as ProviderAccountData
+      if (data.commandCodePlan === planId) return
+      data.commandCodePlan = planId
+      db.prepare("UPDATE provider_credentials SET credential_data_ciphertext=?, credential_version=credential_version+1, updated_at=? WHERE account_id=?")
+        .run(this.vault.encrypt(JSON.stringify(data)), new Date().toISOString(), accountId)
+    } catch {
+      // best-effort：回填失败不影响校验结果
     }
   }
 
@@ -209,8 +241,24 @@ export class CommandCodeProvider implements Provider {
   async refreshQuota(_accountId: string, account: AccountRecord): Promise<QuotaWindow[]> {
     void _accountId
     const credential = await this.getCredential(account)
-    const usage = await fetchCommandCodeUsage(credential.token, account)
-    return windowsFromCommandCodeUsage(usage)
+    // 三窗主源 /alpha/billing/credits（双窗 + 余额）；subscriptions 取套餐/账期
+    // best-effort（失败继续，用兜底 cap）；summary 仅作 extra 对账 + 兜底消耗口径。
+    const credits = await fetchCommandCodeCredits(credential.token, account)
+    if (!credits) throw new Error("Command Code 账单接口响应缺少 credits 结构")
+    let subscription: Awaited<ReturnType<typeof fetchCommandCodeSubscription>> = null
+    try {
+      subscription = await fetchCommandCodeSubscription(credential.token, account)
+    } catch {
+      subscription = null
+    }
+    let usage: Awaited<ReturnType<typeof fetchCommandCodeUsage>> | null = null
+    try {
+      usage = await fetchCommandCodeUsage(credential.token, account)
+    } catch {
+      usage = null
+    }
+    if (subscription?.planId) this.backfillCredentialPlan(account.id, subscription.planId)
+    return windowsFromCommandCodeQuota({ credits, subscription, usage })
   }
 
   getAvailableModels(): string[] {

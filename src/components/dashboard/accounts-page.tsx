@@ -141,10 +141,12 @@ function glmPlanLevel(account: Account): string | null {
   return typeof extra?.level === "string" && extra.level ? extra.level : null;
 }
 
-/** Command Code 套餐标识：来自 quota_windows 的 extra.plan（/alpha/usage/summary 上游不返回 plan，恒为空 → 显示「未返回」）。 */
+/** Command Code 套餐标识：来自 quota_windows 的 extra.planId（subscriptions planId，旧快照兼容 plan）。 */
 function commandCodePlan(account: Account): string | null {
   const extra = getQuota(account, "monthly")?.extra as Record<string, unknown> | undefined;
-  return typeof extra?.plan === "string" && extra.plan ? extra.plan : null;
+  const planId = typeof extra?.planId === "string" && extra.planId ? extra.planId as string : null;
+  if (planId) return planId;
+  return typeof extra?.plan === "string" && extra.plan ? extra.plan as string : null;
 }
 
 export function AccountsPage() {
@@ -1016,10 +1018,14 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                     : "尚未取得 Use balance 状态，因此暂不参与路由。服务重启完成字段升级后，点击下方“立即同步”即可重新读取，无需重新录入账号。"}
                 </div>
               ) : null}
-              <DetailSection title="额度窗口" description={isGo ? "来自最近一次 Console 同步。" : poolOf(account) === "command-code" ? "来自 /alpha/usage/summary 账期累计；立即同步会刷新一次。" : "来自真实上游响应头；立即同步会发送一次最小额度探测。"}>
+              <DetailSection title="额度窗口" description={isGo ? "来自最近一次 Console 同步。" : poolOf(account) === "command-code" ? "来自 /alpha/billing 三窗同步（5 小时 + 每周 + 月度余额）；立即同步会刷新一次。" : "来自真实上游响应头；立即同步会发送一次最小额度探测。"}>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(148px,1fr))] gap-2.5">
                   {poolOf(account) === "command-code" ? (
-                    getQuota(account, "monthly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><CommandCodeBillingCard account={account} /></div> : <div className="rounded-md border bg-[#fafafa] px-3.5 py-3 text-xs leading-5 text-muted-foreground">暂无数据，点击下方「立即同步」获取账期累计用量。</div>
+                    <>
+                      <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="5 小时" quota={getQuota(account, "fiveHour")} variant="card" /></div>
+                      <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每周" quota={getQuota(account, "weekly")} variant="card" /></div>
+                      {getQuota(account, "monthly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><CommandCodeBillingCard account={account} /></div> : <div className="rounded-md border bg-[#fafafa] px-3.5 py-3 text-xs leading-5 text-muted-foreground">暂无数据，点击下方「立即同步」获取三窗用量。</div>}
+                    </>
                   ) : (
                     <>
                   {!isCustomPool && quotaKinds.includes("fiveHour") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="5 小时" quota={getQuota(account, "fiveHour")} variant="card" /></div> : null}
@@ -1084,7 +1090,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                     <DetailRow label="号池类型" value={getPoolLabel(account.poolType, account.poolLabel)} title={account.poolLabel || account.poolType || undefined} />
                     <DetailRow label="凭据状态" value={account.authState === "VALID" ? "有效" : account.authState || "未知"} />
                     {poolOf(account) === "glm-coding" ? <DetailRow label="套餐档位" value={glmPlanLevel(account) || "未返回"} mono title="来自 GLM monitor/usage/quota/limit 的 level 字段" /> : null}
-                    {poolOf(account) === "command-code" ? <DetailRow label="套餐" value={commandCodePlan(account) || "未返回"} mono title="来自 Command Code /alpha/usage/summary 的 plan 字段" /> : null}
+                    {poolOf(account) === "command-code" ? <DetailRow label="套餐" value={commandCodePlan(account) || "未返回"} mono title="来自 Command Code /alpha/billing/subscriptions 的 planId 字段" /> : null}
                     <DetailRow label="路由状态" value={account.routeState || "未知"} />
                     {account.routeReason ? <DetailRow label="状态原因" value={account.routeReason} /> : null}
                     {account.blockedUntil ? <DetailRow label="预计恢复" value={formatDate(account.blockedUntil)} mono /> : null}
@@ -1137,28 +1143,11 @@ function WalletCard({ wallet }: { wallet: QuotaWallet }) {
   );
 }
 
-/** 账号列表页主/次额度列渲染：BALANCE 列展示钱包余额，command-code 次列展示账期累计 credits，其余窗口交给 QuotaStatus。 */
+/** 账号列表页主/次额度列渲染：BALANCE 列展示钱包余额，其余窗口交给 QuotaStatus。 */
 function renderListQuotaCell(account: Account, column: ListWindowColumn | null) {
   if (!column) return <span className="font-mono text-[10px] text-muted-foreground">—</span>;
   if (column.key === "balance") return <WalletBalanceCell account={account} />;
-  if (column.key === "monthly" && (account.poolType || "") === "command-code") return <CommandCodeListCell account={account} />;
   return <QuotaStatus label={column.label} quota={getQuota(account, column.key)} />;
-}
-
-/** command-code 列表次列：账期累计消耗 credits（无数据时占位）。 */
-function CommandCodeListCell({ account }: { account: Account }) {
-  const quota = getQuota(account, "monthly");
-  const extra = (quota?.extra ?? null) as Record<string, unknown> | null;
-  const totalCredits = extra && typeof extra.totalCredits === "number" && Number.isFinite(extra.totalCredits) ? extra.totalCredits as number : null;
-  if (totalCredits == null) return <span className="font-mono text-[10px] text-muted-foreground">—/待观测</span>;
-  return (
-    <span
-      className="font-mono text-[11px] font-medium tabular-nums text-foreground"
-      title={`账期累计消耗 ${totalCredits} credits（非剩余额度）`}
-    >
-      {Number(totalCredits).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} credits
-    </span>
-  );
 }
 
 function DetailRow({ label, value, mono, title }: { label: string; value: string; mono?: boolean; title?: string }) {

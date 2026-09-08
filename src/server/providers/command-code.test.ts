@@ -271,8 +271,8 @@ describe("CommandCodeProvider 接口与模型", () => {
     expect(responsesRoute).toMatchObject({ upstreamEndpoint: "chat/completions", requestChain: ["responses->chat"], native: false, reason: "responses_to_chat" })
   })
 
-  it("quota kinds = MONTHLY（usage/summary 实测为账期累计，无双窗）", () => {
-    expect(provider.supportedQuotaKinds()).toEqual(["MONTHLY"])
+  it("quota kinds = FIVE_HOUR + WEEKLY + MONTHLY（三窗：双窗 + 余额窗）", () => {
+    expect(provider.supportedQuotaKinds()).toEqual(["FIVE_HOUR", "WEEKLY", "MONTHLY"])
   })
 
   it("默认引导目录（REMOTE 同步前，含实测可用的 muse）", () => {

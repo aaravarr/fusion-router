@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   commandCodeBillingExtra,
+  commandCodeWindowExtra,
   formatCommandCodeCredits,
   getPoolQuotaKinds,
   listWindowColumns,
@@ -14,14 +15,45 @@ function commandCodeAccount(): Account {
     poolType: "command-code",
     quotaWindows: [
       {
-        kind: "MONTHLY",
-        usagePercent: 0,
+        kind: "FIVE_HOUR",
+        usagePercent: 26.58,
         unit: "credits",
+        limitValue: 14,
+        remainingValue: 10.2795,
+        resetAt: "2026-09-08T15:00:00.000Z",
+        lastObservedAt: "2026-09-08T10:00:00.000Z",
+        extra: { service: "command-code", used: 3.7205, cap: 14, exceeded: false, planId: "individual-goat" },
+      },
+      {
+        kind: "WEEKLY",
+        usagePercent: 10.63,
+        unit: "credits",
+        limitValue: 35,
+        remainingValue: 31.2795,
+        resetAt: "2026-09-15T00:00:00.000Z",
+        lastObservedAt: "2026-09-08T10:00:00.000Z",
+        extra: { service: "command-code", used: 3.7205, cap: 35, exceeded: false, planId: "individual-goat" },
+      },
+      {
+        kind: "MONTHLY",
+        usagePercent: 5.31,
+        unit: "credits",
+        limitValue: 70,
+        remainingValue: 66.2795,
+        resetAt: "2026-10-01T00:00:00.000Z",
         lastObservedAt: "2026-09-08T10:00:00.000Z",
         extra: {
           service: "command-code",
+          remaining: 66.2795,
+          purchased: 0,
+          free: 0,
+          cap: 70,
+          planId: "individual-goat",
+          periodStart: "2026-09-01T00:00:00.000Z",
+          periodEnd: "2026-10-01T00:00:00.000Z",
+          belowThreshold: false,
           periodBasis: "billing-period",
-          totalCredits: 1.1409038200000001,
+          totalCredits: 3.7205,
           totalCount: 37,
           completedCount: 37,
           failedCount: 0,
@@ -34,27 +66,43 @@ function commandCodeAccount(): Account {
   }
 }
 
-describe("command-code 账期累计展示（单 MONTHLY 信息窗）", () => {
-  it("POOL_TYPE_META 注册 Command Code 显示名与 monthly 单窗", () => {
+describe("command-code 三窗展示（/alpha/billing/credits + subscriptions）", () => {
+  it("POOL_TYPE_META 注册 Command Code 显示名与三窗", () => {
     expect(POOL_TYPE_META["command-code"]).toBeDefined()
     expect(POOL_TYPE_META["command-code"].label).toBe("Command Code")
-    expect(POOL_TYPE_META["command-code"].quotaKinds).toEqual(["monthly"])
+    expect(POOL_TYPE_META["command-code"].quotaKinds).toEqual(["fiveHour", "weekly", "monthly"])
   })
 
-  it("getPoolQuotaKinds 对齐后端 supportedQuotaKinds（MONTHLY）", () => {
-    expect(getPoolQuotaKinds("command-code")).toEqual(["monthly"])
+  it("getPoolQuotaKinds 对齐后端 supportedQuotaKinds（三窗）", () => {
+    expect(getPoolQuotaKinds("command-code")).toEqual(["fiveHour", "weekly", "monthly"])
   })
 
-  it("列表主/次列：主列占位、次列为账期累计 monthly 窗", () => {
+  it("列表主/次列：恢复双窗列（5H + WEEK）", () => {
     const [primary, secondary] = listWindowColumns("command-code")
-    expect(primary).toBeNull()
-    expect(secondary).toMatchObject({ key: "monthly", label: "MONTH" })
+    expect(primary).toMatchObject({ key: "fiveHour", label: "5H" })
+    expect(secondary).toMatchObject({ key: "weekly", label: "WEEK" })
   })
 
-  it("commandCodeBillingExtra 读取 MONTHLY extra 账期累计字段", () => {
+  it("commandCodeWindowExtra 读取双窗 used/cap/exceeded", () => {
+    const five = commandCodeWindowExtra(commandCodeAccount(), "fiveHour")
+    expect(five.used).toBeCloseTo(3.7205)
+    expect(five.cap).toBe(14)
+    expect(five.exceeded).toBe(false)
+    expect(five.planId).toBe("individual-goat")
+    const weekly = commandCodeWindowExtra(commandCodeAccount(), "weekly")
+    expect(weekly.used).toBeCloseTo(3.7205)
+    expect(weekly.cap).toBe(35)
+  })
+
+  it("commandCodeBillingExtra 读取 MONTHLY 余额窗字段", () => {
     const billing = commandCodeBillingExtra(commandCodeAccount())
-    // totalCredits 语义是账期累计消耗（非剩余额度）。
-    expect(billing.totalCredits).toBeCloseTo(1.1409038200000001)
+    expect(billing.remaining).toBeCloseTo(66.2795)
+    expect(billing.cap).toBe(70)
+    expect(billing.planId).toBe("individual-goat")
+    expect(billing.periodEnd).toBe("2026-10-01T00:00:00.000Z")
+    expect(billing.belowThreshold).toBe(false)
+    // summary 对账字段仍保留。
+    expect(billing.totalCredits).toBeCloseTo(3.7205)
     expect(billing.totalCount).toBe(37)
     expect(billing.completedCount).toBe(37)
     expect(billing.failedCount).toBe(0)
@@ -65,8 +113,28 @@ describe("command-code 账期累计展示（单 MONTHLY 信息窗）", () => {
     expect(billing.lastObservedAt).toBe("2026-09-08T10:00:00.000Z")
   })
 
+  it("兼容旧快照：只有 totalCredits 无 remaining 时余额字段为空、对账字段仍可读", () => {
+    const legacy: Account = {
+      id: "cc-old",
+      poolType: "command-code",
+      quotaWindows: [{
+        kind: "MONTHLY",
+        usagePercent: 0,
+        unit: "credits",
+        extra: { service: "command-code", periodBasis: "billing-period", totalCredits: 1.14, totalCount: 37 },
+      }],
+    }
+    const billing = commandCodeBillingExtra(legacy)
+    expect(billing.remaining).toBeNull()
+    expect(billing.cap).toBeNull()
+    expect(billing.totalCredits).toBeCloseTo(1.14)
+    expect(billing.totalCount).toBe(37)
+  })
+
   it("无 MONTHLY 窗时各字段为空（页面渲染「暂无数据」）", () => {
     const billing = commandCodeBillingExtra({ id: "cc-empty", poolType: "command-code", quotaWindows: [] })
+    expect(billing.remaining).toBeNull()
+    expect(billing.cap).toBeNull()
     expect(billing.totalCredits).toBeNull()
     expect(billing.totalCount).toBeNull()
     expect(billing.periodBasis).toBeNull()
