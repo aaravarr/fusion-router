@@ -162,6 +162,8 @@ export function responsesJsonToChatCompletion(payload: unknown): Obj {
     prompt_tokens: Number(payload.usage.input_tokens ?? 0),
     completion_tokens: Number(payload.usage.output_tokens ?? 0),
     total_tokens: Number(payload.usage.total_tokens ?? Number(payload.usage.input_tokens ?? 0) + Number(payload.usage.output_tokens ?? 0)),
+    ...(isObj(payload.usage.input_tokens_details) ? { prompt_tokens_details: payload.usage.input_tokens_details } : {}),
+    ...(isObj(payload.usage.output_tokens_details) ? { completion_tokens_details: payload.usage.output_tokens_details } : {}),
   } : undefined
   return {
     id: payload.id ?? "", object: "chat.completion", created: payload.created_at ?? Math.floor(Date.now() / 1000), model: payload.model,
@@ -303,7 +305,13 @@ function chatChunk(data: Obj, state: { id: string; model?: unknown; created: num
   if (type === "response.completed" || type === "response.incomplete") {
     state.terminal = true
     const response = isObj(data.response) ? data.response : {}
-    const usage = isObj(response.usage) ? { prompt_tokens: Number(response.usage.input_tokens ?? 0), completion_tokens: Number(response.usage.output_tokens ?? 0), total_tokens: Number(response.usage.total_tokens ?? 0) } : undefined
+    const usage = isObj(response.usage) ? {
+      prompt_tokens: Number(response.usage.input_tokens ?? 0),
+      completion_tokens: Number(response.usage.output_tokens ?? 0),
+      total_tokens: Number(response.usage.total_tokens ?? 0),
+      ...(isObj(response.usage.input_tokens_details) ? { prompt_tokens_details: response.usage.input_tokens_details } : {}),
+      ...(isObj(response.usage.output_tokens_details) ? { completion_tokens_details: response.usage.output_tokens_details } : {}),
+    } : undefined
     return { ...base, choices: [{ index: 0, delta: {}, finish_reason: mapResponsesFinish(response) }], ...(usage ? { usage } : {}) }
   }
   if (type === "response.failed" || type === "error") {

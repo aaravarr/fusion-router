@@ -975,6 +975,69 @@ upstream = await this.fetcher(mirrorPlan2.url, {
           return new Response(body, { status, headers })
         }
 
+        if (attemptResponsesToChat && stream && !(upstream.headers.get("content-type") ?? "").includes("text/event-stream") && upstream.body) {
+          // Codex /responses 没有 content-type。chat→responses 转换路径不能走下方
+          // `upstream.text()` 缓冲分支，否则客户端要等 response.completed 才收到首个
+          // chat chunk；先嗅探到 SSE 前缀，再复用既有 responses→chat 增量转换链。
+          const sniffed = await sniffResponsesSse(upstream.body.getReader())
+          if (sniffed.isSse) {
+            const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+            if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+            routeMeta.transformSummary = parts.join(" | ")
+            routing.markSuccess(selection.account.id)
+            if (provider?.extractQuotaFromResponse) {
+              const qw = provider.extractQuotaFromResponse(upstream.headers)
+              if (qw) this.recordPassiveQuota(selection.account.id, qw)
+            }
+            let sourceStream: ReadableStream<Uint8Array> = prependChunks(sniffed.chunks, sniffed.reader)
+            if (isDshSanitizeScope(selection.account.poolType, meta.userAgent)) {
+              const sanitizer = createIncrementalSseSanitizer((result) => {
+                if (result.sanitizedEvents > 0) markDshSanitized(routeMeta)
+              })
+              sourceStream = sourceStream.pipeThrough(sanitizer.stream)
+            }
+            const outStream = responsesSseToChatStream(sourceStream)
+            const status = upstream.status
+            const onComplete = (r: CaptureResult) => {
+              this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, r.error ?? null, selection.account.name)
+              this.finalizeRequest(requestId, {
+                status,
+                outcome: "SUCCESS",
+                attempts: attemptNumber,
+                ok: isLogOk(status, r.error) ? 1 : 0,
+                latencyMs: Date.now() - t0,
+                localPrepMs: upstreamStartedAt - t0,
+                // 这里的客户端首个 chunk 是 responses→chat 转换后实际发出的
+                // role/content chunk；不能等 completed，也不应回退到整包结束时间。
+                firstTokenMs: r.firstByteAt != null
+                  ? r.firstByteAt - upstreamStartedAt
+                  : r.firstContentAt != null ? r.firstContentAt - upstreamStartedAt : undefined,
+                usage: r.usage,
+                error: r.error,
+                accountId: selection.account.id,
+                accountName: selection.account.name,
+                responseSizeBytes: r.responseBytes ?? null,
+                logSettings,
+                requestBodyJson,
+                responseBody: logging ? r.response : undefined,
+                responseTruncated: r.responseTruncated,
+                meta,
+                ...routeMeta,
+              })
+            }
+            const headers = responseHeaders(upstream.headers)
+            headers.set("content-type", "text/event-stream")
+            headers.set("x-responses-route", attemptResponsesRoute)
+            if (attemptResponsesRouteReason) headers.set("x-responses-route-reason", attemptResponsesRouteReason)
+            return new Response(teeAndCapture(outStream, onComplete), { status, headers })
+          }
+          await sniffed.reader.releaseLock()
+          upstream = new Response(concatByteChunks(sniffed.chunks).buffer as ArrayBuffer, {
+            status: upstream.status,
+            statusText: upstream.statusText,
+            headers: upstream.headers,
+          })
+        }
         if (attemptResponsesToChat && !(upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
           const raw = await upstream.text()
           // 非流式同理检查：HTTP 200 但报文内 native_finish_reason=network_error 视为可重试的 NETWORK 失败。

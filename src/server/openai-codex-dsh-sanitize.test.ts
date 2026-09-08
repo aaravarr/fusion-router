@@ -81,6 +81,12 @@ const responsesRequest = (key: string, body: unknown, headers?: Record<string, s
   body: JSON.stringify(body),
 })
 
+const chatRequest = (key: string, body: unknown, headers?: Record<string, string>) => new Request("http://localhost/v1/chat/completions", {
+  method: "POST",
+  headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...(headers ?? {}) },
+  body: JSON.stringify(body),
+})
+
 async function drain(response: Response): Promise<void> {
   await response.text()
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -139,6 +145,26 @@ describe("openai 池 DSH function_call 参数清洗（codex 原生直通）", ()
     await new Promise((resolve) => setTimeout(resolve, 0))
     const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
     expect(String(row.transform_summary || "")).toContain("sse-sniff:no-content-type")
+    expect(String(row.transform_summary || "")).toContain(DSH_ARGS_SANITIZE_TAG)
+  })
+
+  it("chat→responses 无头 SSE：done 参数在增量转换前清洗，仍输出 chat 流", async () => {
+    const { apiKey, credentials, hasher } = setupOpenAI()
+    const fetcher = vi.fn().mockImplementation(async () => new Response(codexLfFunctionCallEvents, { status: 200 }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(chatRequest(apiKey, {
+      model: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+    }, { "user-agent": "DeepSeek-Harness/1.2.3" }), "chat/completions")
+    expect(response.status).toBe(200)
+    const text = await response.text()
+    expect(text).toContain("chat.completion.chunk")
+    // delta 原样保留，但 done/completed 的完整快照不会把多余 sandbox_permissions 带入转换后流。
+    expect(text).toContain("justification")
+    expect(text).not.toContain("sandbox_permissions")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(row.transform_summary || "")).toContain("chat->responses")
     expect(String(row.transform_summary || "")).toContain(DSH_ARGS_SANITIZE_TAG)
   })
 

@@ -102,8 +102,11 @@ describe("openai 池 chat→responses 转换层（Codex 参数约束）", () => 
     const choices = payload.choices as Array<{ message: { content: string }; finish_reason: string }>
     expect(choices[0].message.content).toBe("hi")
     expect(choices[0].finish_reason).toBe("stop")
-    expect(payload.usage).toMatchObject({ prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 })
+    expect(payload.usage).toMatchObject({ prompt_tokens: 12, completion_tokens: 6, total_tokens: 18, prompt_tokens_details: { cached_tokens: 7 }, completion_tokens_details: { reasoning_tokens: 2 } })
     expect(getDatabase()).toBe(db)
+    const usageRow = db.prepare("SELECT cached_tokens,reasoning_tokens FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(usageRow.cached_tokens).toBe(7)
+    expect(usageRow.reasoning_tokens).toBe(2)
     const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as { transform_summary: string }
     expect(row.transform_summary).toContain("chat->responses")
     expect(row.transform_summary).toContain("sse-sniff:no-content-type")
@@ -122,7 +125,7 @@ describe("openai 池 chat→responses 转换层（Codex 参数约束）", () => 
     'event: response.output_text.done\ndata: {"type":"response.output_text.done","content_index":0,"item_id":"msg_1","logprobs":[],"output_index":0,"sequence_number":5,"text":"hi"}',
     'event: response.content_part.done\ndata: {"type":"response.content_part.done","content_index":0,"item_id":"msg_1","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"hi"},"sequence_number":6}',
     'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"hi"}],"phase":"final_answer","role":"assistant"},"output_index":0,"sequence_number":7}',
-    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5.4-mini-2026-03-17","service_tier":"default","output":[],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":0},"output_tokens":6,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":18}},"sequence_number":8}',
+    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5.4-mini-2026-03-17","service_tier":"default","output":[],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":7},"output_tokens":6,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":18}},"sequence_number":8}',
     'data: [DONE]',
     "",
   ].join("\n\n")
@@ -143,6 +146,54 @@ describe("openai 池 chat→responses 转换层（Codex 参数约束）", () => 
     expect(text).toContain('"content":"hi"')
     expect(text).toContain('"finish_reason":"stop"')
     expect(text).toContain('"prompt_tokens":12')
+    expect(text).toContain('"cached_tokens":7')
+    expect(text).toContain('"reasoning_tokens":2')
     expect(text).toContain("data: [DONE]")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const row = db.prepare("SELECT first_token_ms,cached_tokens,reasoning_tokens FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.first_token_ms).not.toBeNull()
+    expect(row.cached_tokens).toBe(7)
+    expect(row.reasoning_tokens).toBe(2)
+  })
+
+  it("无 content-type 的 chat→responses 流在上游未结束前转发 chat chunk", async () => {
+    const { apiKey, credentials, hasher } = setupOpenAI()
+    const splitAt = codexRealEvents.indexOf('event: response.output_text.done')
+    const early = codexRealEvents.slice(0, splitAt)
+    const rest = codexRealEvents.slice(splitAt)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const encoder = new TextEncoder()
+    const fetcher = vi.fn().mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(early))
+        void gate.then(() => { controller.enqueue(encoder.encode(rest)); controller.close() })
+      },
+    }), { status: 200 }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(chatRequest(apiKey, {
+      model: "gpt-5.4-mini",
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+    }), "chat/completions")
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toContain("text/event-stream")
+    const reader = response.body!.getReader()
+    const first = await Promise.race([
+      reader.read(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 200)),
+    ])
+    expect(first).not.toBeNull()
+    expect((first as ReadableStreamReadResult<Uint8Array>).done).toBe(false)
+    expect(new TextDecoder().decode((first as ReadableStreamReadResult<Uint8Array>).value)).toContain("chat.completion.chunk")
+    release()
+    for (;;) {
+      const next = await reader.read()
+      if (next.done) break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const row = db.prepare("SELECT first_token_ms,transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.first_token_ms).not.toBeNull()
+    expect(String(row.transform_summary || "")).toContain("chat->responses")
+    expect(String(row.transform_summary || "")).toContain("sse-sniff:no-content-type")
   })
 })

@@ -396,7 +396,7 @@ describe("Codex 真实 SSE 形状（2026-09-08 生产直连实测 gpt-5.4-mini�
     expect(chunks.some((c) => c.includes('"content":"hello'))).toBe(true)
     const finish = terminalFinish(chunks)
     expect(finish).toContain('"finish_reason":"stop"')
-    expect(finish).toContain('"usage":{"prompt_tokens":18,"completion_tokens":8,"total_tokens":26}')
+    expect(finish).toContain('"usage":{"prompt_tokens":18,"completion_tokens":8,"total_tokens":26,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}')
     expect(chunks[chunks.length - 1]).toBe("[DONE]")
     // 无兜底 chunk（终态已见，不应多发）
     expect(terminalFinishCount(chunks)).toBe(1)
