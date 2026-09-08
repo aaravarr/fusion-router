@@ -18,6 +18,7 @@ import { getProxyDispatcher, resolveMirrorPlanForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, hasConvertibleSsePayload, looksLikeResponsesSse, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
+import { isDshSanitizeScope, sanitizeResponsesPayload, sanitizeSseText, withDshSanitizeTag, DSH_ARGS_SANITIZE_TAG } from "./responses/dsh-args-sanitize"
 import { extractCodexNativeStreamStats } from "./responses/codex-native-stats"
 import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
@@ -297,6 +298,36 @@ function embeddedSseErrorStatus(data: string): number | null {
     if (type.includes("authentication_error") || type.includes("invalid_token")) return 401
     return null
   } catch { return null }
+}
+
+/**
+ * DSH（DeepSeek Harness）+ GPT 组合的 function_call 参数清洗（仅 openai 池原生直通）：
+ * - 范围：selection.account.poolType === "openai" 且入站 UA 含 deepseek（大小写不敏感）；
+ * - 流式 SSE 文本：delta 原样透传，只改写 done/终态事件的完整 arguments；
+ * - 非流式聚合 JSON：改写 output 数组里的 function_call arguments。
+ * 解析失败一律原样放行，绝不影响正常流量。
+ * 返回 true 表示发生改写（调用方需打 transformSummary 标记）。
+ */
+function applyDshArgsSanitizeToSseText(rawText: string, poolType: unknown, userAgent: unknown): { text: string; sanitized: boolean; removedKeys: string[]; sanitizedEvents: number } {
+  if (!isDshSanitizeScope(poolType, userAgent)) return { text: rawText, sanitized: false, removedKeys: [], sanitizedEvents: 0 }
+  const result = sanitizeSseText(rawText)
+  if (result.sanitizedEvents === 0) return { text: rawText, sanitized: false, removedKeys: [], sanitizedEvents: 0 }
+  const removed = [...new Set(result.removedKeys)]
+  console.log(`[dsh-args-sanitize] openai 池 deepseek UA 流式清洗：${result.sanitizedEvents} 个事件，去掉参数 ${removed.join(",")}`)
+  return { text: result.text, sanitized: true, removedKeys: removed, sanitizedEvents: result.sanitizedEvents }
+}
+
+function applyDshArgsSanitizeToPayload(payload: unknown, poolType: unknown, userAgent: unknown): { sanitized: boolean; removedKeys: string[]; sanitizedItems: number } {
+  if (!isDshSanitizeScope(poolType, userAgent)) return { sanitized: false, removedKeys: [], sanitizedItems: 0 }
+  const result = sanitizeResponsesPayload(payload)
+  if (result.sanitizedItems === 0) return { sanitized: false, removedKeys: [], sanitizedItems: 0 }
+  const removed = [...new Set(result.removedKeys)]
+  console.log(`[dsh-args-sanitize] openai 池 deepseek UA 非流式清洗：${result.sanitizedItems} 个 function_call，去掉参数 ${removed.join(",")}`)
+  return { sanitized: true, removedKeys: removed, sanitizedItems: result.sanitizedItems }
+}
+
+function markDshSanitized(routeMeta: { transformSummary?: string | null }): void {
+  routeMeta.transformSummary = withDshSanitizeTag(routeMeta.transformSummary)
 }
 
 function responseHeaders(source: Headers): Headers {
@@ -1218,6 +1249,16 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             const aggregated = responsesSseToJson(rawText)
             const aggregatedUsage = aggregated ? extractUsage(aggregated) : undefined
             const usage = aggregatedUsage ?? codexStats.usage
+            // DSH+GPT 清洗（仅 openai 池 + deepseek UA）：聚合 JSON 的完整 item arguments。
+            const dshSanitize = applyDshArgsSanitizeToPayload(aggregated, selection.account.poolType, meta.userAgent)
+            if (dshSanitize.sanitized) {
+              try {
+                const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+                if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+                routeMeta.transformSummary = withDshSanitizeTag(parts.join(" | "))
+                this.db.prepare("UPDATE gateway_requests SET transform_summary=? WHERE id=?").run(routeMeta.transformSummary, requestId)
+              } catch { /* best-effort */ }
+            }
             if (!stream) {
               // 客户端要 JSON：聚合 completed 再一次性返回。
               let outBytes = buf
@@ -1244,10 +1285,17 @@ upstream = await this.fetcher(mirrorPlan2.url, {
                 headers.set("x-responses-route", attemptResponsesRoute)
                 if (attemptResponsesRouteReason) headers.set("x-responses-route-reason", attemptResponsesRouteReason)
               }
+              if (processResponses) {
+                headers.set("x-responses-route", attemptResponsesRoute)
+                if (attemptResponsesRouteReason) headers.set("x-responses-route-reason", attemptResponsesRouteReason)
+              }
+              // DSH+GPT 清洗标记：上游已在 codexNativeBypass 入口判断时写入
+              // routeMeta（本非流分支），此处追加 sse/aggregate 标记时保留它。
               try {
                 const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
                 if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
                 if (aggregated && !parts.some((p) => p.startsWith("aggregate:"))) parts.push("aggregate:sse-to-json")
+                if (dshSanitize.sanitized && !parts.some((p) => p === DSH_ARGS_SANITIZE_TAG)) parts.push(DSH_ARGS_SANITIZE_TAG)
                 routeMeta.transformSummary = parts.join(" | ")
               } catch { /* best-effort */ }
               this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
@@ -1273,8 +1321,12 @@ upstream = await this.fetcher(mirrorPlan2.url, {
               return new Response(outBytes, { status, headers })
             }
             // 客户端要流：remap 后 teeAndCapture（与标准 SSE 分支同 tap）。
+            // DSH+GPT 清洗（仅 openai 池 + deepseek UA）：done/终态完整 arguments，
+            // delta 增量原样透传。
             if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
-            const sseBytes = new TextEncoder().encode(rawText)
+            const dshStreaming = applyDshArgsSanitizeToSseText(rawText, selection.account.poolType, meta.userAgent)
+            if (dshStreaming.sanitized) markDshSanitized(routeMeta)
+            const sseBytes = new TextEncoder().encode(dshStreaming.text)
             const sseStream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(sseBytes); controller.close() } })
             let outStream: ReadableStream<Uint8Array> = sseStream
             // 原生事件已是标准 responses 生命周期，只 remap 不 normalize。
@@ -1342,6 +1394,7 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             try {
               const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
               if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+              if (dshStreaming.sanitized && !parts.some((p) => p === DSH_ARGS_SANITIZE_TAG)) parts.push(DSH_ARGS_SANITIZE_TAG)
               routeMeta.transformSummary = parts.join(" | ")
             } catch { /* best-effort */ }
             return new Response(teeAndCapture(outStream, streamOnComplete), { status, headers: passthroughHeaders })
@@ -1355,6 +1408,13 @@ upstream = await this.fetcher(mirrorPlan2.url, {
             if (attemptChatFallbackUsed) remappedJson = convertChatJsonToResponses(json, responsesModelHint, attemptToolContext)
             else if (attemptToolContext) remappedJson = remapResponsesSuccessBody(json, attemptToolContext)
             else remappedJson = json
+            // DSH+GPT 清洗（仅 openai 池 + deepseek UA）：标准 JSON 整包里的
+            // function_call arguments（转换路径不动，仅本原生直通分支）。
+            const dshStdJson = applyDshArgsSanitizeToPayload(remappedJson, selection.account.poolType, meta.userAgent)
+            if (dshStdJson.sanitized) {
+              routeMeta.transformSummary = withDshSanitizeTag(routeMeta.transformSummary)
+              try { this.db.prepare("UPDATE gateway_requests SET transform_summary=? WHERE id=?").run(routeMeta.transformSummary, requestId) } catch { /* best-effort */ }
+            }
             outBytes = new TextEncoder().encode(JSON.stringify(remappedJson))
           } catch { /* keep original bytes */ }
 
