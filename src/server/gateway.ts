@@ -8,7 +8,7 @@ import { NoEligibleAccountError, QueueWaitAbortedError, QueueWaitTimeoutError, R
 import { getLogSettings, getSystemSettings, type LogSettings } from "./settings"
 import type { PoolType, QuotaKind } from "./types"
 import { collectRequestHeaders } from "./client-meta"
-import { captureJsonResponse, ensureStreamUsage, extractBodyError, extractNetworkError, extractSseNetworkError, extractUsage, isLogOk, safeCloneBody, teeAndCapture, type CaptureResult, type TokenUsage } from "./capture"
+import { captureJsonResponse, ensureStreamUsage, extractBodyError, extractNetworkError, extractResponseFromSse, extractSseNetworkError, extractUsage, isLogOk, safeCloneBody, teeAndCapture, type CaptureResult, type TokenUsage } from "./capture"
 import { convertChatJsonToResponses, convertChatStreamToResponses, prepareChatRequestBody, prepareResponsesRequestBody, remapResponsesSuccessBody, remapResponsesSuccessStream, rememberResponsesTurn, type PrepareResponsesResult } from "./responses/pipeline"
 import type { CodexToolContext } from "./responses/codex-chat-compat"
 import { tryGetProvider, getProviderRegistry, type UpstreamErrorClassification } from "./providers"
@@ -18,6 +18,7 @@ import { getProxyDispatcher, resolveMirrorPlanForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, hasConvertibleSsePayload, looksLikeResponsesSse, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
+import { extractCodexNativeStreamStats } from "./responses/codex-native-stats"
 import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
 import { chatJsonToMessages, chatSseToMessagesStream, messagesRequestToChat } from "./messages/convert"
@@ -1198,10 +1199,158 @@ upstream = await this.fetcher(mirrorPlan2.url, {
           const buf = new Uint8Array(total)
           let off = 0
           for (const chunk of chunks) { buf.set(chunk, off); off += chunk.byteLength }
+          const rawText = new TextDecoder().decode(buf)
+          // 仅原生直通（无 chat-fallback / responsesToChat / messages 接力）才做
+          // Codex 无头嗅探；转换路径保持原整包语义（attemptChatFallbackUsed 时
+          // 上游是 chat JSON，attemptResponsesToChat/messages 接力各有专属分支）。
+          const codexNativeBypass =
+            !attemptChatFallbackUsed && !attemptResponsesToChat && !attemptMessagesFallback
+            && (extractCodexNativeStreamStats(rawText).matched || looksLikeResponsesSse(rawText))
+          // Codex 无头分支（2026-09-08 生产缺口修复）：上游 normalize 强制
+          // stream:true，即使客户端 stream=false，上游回来的也永远是无头 SSE。
+          // 原分支整包 JSON.parse 抛错 → usage/responseBody 全空且非流客户端收
+          // 到原 SSE。命中原生形状则聚合 usage（无头 LF 容错）并按客户端要
+          // 求返回（JSON 聚合 / remap 后 teeAndCapture 回放）；未命中走原整包解析。
+          const codexStats = extractCodexNativeStreamStats(rawText)
+          // 形状判定：matched（≥1 可解析 response.* 载荷）为主，嗅探为辅；
+          // 标准 JSON 两者皆 false，走原整包解析。
+          if (codexNativeBypass) {
+            const aggregated = responsesSseToJson(rawText)
+            const aggregatedUsage = aggregated ? extractUsage(aggregated) : undefined
+            const usage = aggregatedUsage ?? codexStats.usage
+            if (!stream) {
+              // 客户端要 JSON：聚合 completed 再一次性返回。
+              let outBytes = buf
+              let remappedJson: unknown = undefined
+              try {
+                if (aggregated) {
+                  if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
+                  remappedJson = attemptToolContext ? remapResponsesSuccessBody(aggregated, attemptToolContext) : aggregated
+                  outBytes = new TextEncoder().encode(JSON.stringify(remappedJson))
+                }
+              } catch { /* keep original bytes */ }
+              if (responsesProcessMeta) {
+                void rememberResponsesTurn({
+                  responsePayload: remappedJson,
+                  continuityKeys: responsesProcessMeta.continuityKeys,
+                  userMessages: responsesProcessMeta.userMessages,
+                  preferredMode: "responses",
+                  db: this.db,
+                })
+              }
+              const headers = responseHeaders(upstream.headers)
+              headers.set("content-type", "application/json")
+              if (processResponses) {
+                headers.set("x-responses-route", attemptResponsesRoute)
+                if (attemptResponsesRouteReason) headers.set("x-responses-route-reason", attemptResponsesRouteReason)
+              }
+              try {
+                const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+                if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+                if (aggregated && !parts.some((p) => p.startsWith("aggregate:"))) parts.push("aggregate:sse-to-json")
+                routeMeta.transformSummary = parts.join(" | ")
+              } catch { /* best-effort */ }
+              this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, null, selection.account.name)
+              this.finalizeRequest(requestId, {
+                status,
+                outcome: "SUCCESS",
+                attempts: attemptNumber,
+                ok: 1,
+                latencyMs: Date.now() - t0,
+                localPrepMs: upstreamStartedAt - t0,
+                firstTokenMs: codexStats.firstContentIndex !== undefined ? Date.now() - upstreamStartedAt : undefined,
+                usage,
+                accountId: selection.account.id,
+                accountName: selection.account.name,
+                responseSizeBytes: outBytes.byteLength,
+                logSettings,
+                requestBodyJson,
+                responseBody: logging ? remappedJson : undefined,
+                responseTruncated: false,
+                meta,
+                ...routeMeta,
+              })
+              return new Response(outBytes, { status, headers })
+            }
+            // 客户端要流：remap 后 teeAndCapture（与标准 SSE 分支同 tap）。
+            if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
+            const sseBytes = new TextEncoder().encode(rawText)
+            const sseStream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(sseBytes); controller.close() } })
+            let outStream: ReadableStream<Uint8Array> = sseStream
+            // 原生事件已是标准 responses 生命周期，只 remap 不 normalize。
+            if (attemptToolContext) outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
+            const upstreamFirstByteAt = Date.now()
+            const streamOnComplete = (r: CaptureResult) => {
+              const latencyMs = Date.now() - t0
+              this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, r.error ?? null, selection.account.name)
+              try {
+                const respOut = (r.response as unknown as Record<string, unknown>)?.output as unknown;
+                const nestedOut = ((r.response as unknown as Record<string, unknown>)?.response as Record<string, unknown> | undefined)?.output as unknown;
+                const out = (Array.isArray(respOut) ? respOut : Array.isArray(nestedOut) ? nestedOut : undefined) as unknown;
+                const isAllReasoning = Array.isArray(out) && (out as unknown[]).length > 0 && (out as unknown[]).every((it: unknown) => String((it as Record<string, unknown>)?.type || '').toLowerCase().includes('reasoning'));
+                const mergedUsageForTag = r.usage ?? usage
+                if (isAllReasoning && mergedUsageForTag && typeof mergedUsageForTag.reasoningTokens === 'number' && mergedUsageForTag.reasoningTokens > 0 && mergedUsageForTag.reasoningTokens === mergedUsageForTag.completionTokens) {
+                  if (!String(routeMeta.transformSummary || '').includes('usage:reasoning_inferred')) {
+                    routeMeta.transformSummary = (routeMeta.transformSummary ? routeMeta.transformSummary + ' | ' : '') + 'usage:reasoning_inferred';
+                    try { this.db.prepare("UPDATE gateway_requests SET transform_summary=? WHERE id=?").run(routeMeta.transformSummary, requestId); } catch {}
+                  }
+                }
+              } catch {}
+              // capture 结果优先（含精确 firstContentAt）；原文扫描兜底。
+              const finalUsage = r.usage ?? usage
+              const firstTokenMs = r.firstContentAt != null
+                ? r.firstContentAt - upstreamStartedAt
+                : codexStats.firstContentIndex !== undefined
+                  ? upstreamFirstByteAt - upstreamStartedAt
+                  : undefined
+              this.finalizeRequest(requestId, {
+                status,
+                outcome: "SUCCESS",
+                attempts: attemptNumber,
+                ok: isLogOk(status, r.error) ? 1 : 0,
+                latencyMs,
+                localPrepMs: upstreamStartedAt - t0,
+                firstTokenMs,
+                usage: finalUsage,
+                error: r.error,
+                accountId: selection.account.id,
+                accountName: selection.account.name,
+                responseSizeBytes: r.responseBytes ?? total,
+                logSettings,
+                requestBodyJson,
+                responseBody: logging ? (r.response ?? extractResponseFromSse(rawText)) : undefined,
+                responseTruncated: r.responseTruncated,
+                meta,
+                ...routeMeta,
+              })
+              if (responsesProcessMeta) {
+                void rememberResponsesTurn({
+                  responsePayload: r.response ?? extractResponseFromSse(rawText),
+                  continuityKeys: responsesProcessMeta.continuityKeys,
+                  userMessages: responsesProcessMeta.userMessages,
+                  preferredMode: "responses",
+                  db: this.db,
+                })
+              }
+            }
+            const passthroughHeaders = responseHeaders(upstream.headers)
+            passthroughHeaders.set("content-type", "text/event-stream")
+            if (processResponses) {
+              passthroughHeaders.set("x-responses-route", attemptResponsesRoute)
+              if (attemptResponsesRouteReason) passthroughHeaders.set("x-responses-route-reason", attemptResponsesRouteReason)
+            }
+            try {
+              const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+              if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+              routeMeta.transformSummary = parts.join(" | ")
+            } catch { /* best-effort */ }
+            return new Response(teeAndCapture(outStream, streamOnComplete), { status, headers: passthroughHeaders })
+          }
+          // 未命中 Codex 形状：标准 JSON 整包解析（原语义，保持零回归）。
           let outBytes = buf
           let remappedJson: unknown = undefined
           try {
-            const json = JSON.parse(new TextDecoder().decode(buf))
+            const json = JSON.parse(rawText)
             if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
             if (attemptChatFallbackUsed) remappedJson = convertChatJsonToResponses(json, responsesModelHint, attemptToolContext)
             else if (attemptToolContext) remappedJson = remapResponsesSuccessBody(json, attemptToolContext)

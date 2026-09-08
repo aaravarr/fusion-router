@@ -451,6 +451,19 @@ describe("Codex 真实 SSE 形状（2026-09-08 生产直连实测 gpt-5.4-mini�
     expect(b).toEqual(a)
   })
 
+  it("[DONE] 与上一事件 data 行相邻（LF 无空行）时独立成帧，不污染 completed 载荷", () => {
+    // 2026-09-08 codex 原生直通日志缺口同因：`data: {...completed}\ndata: [DONE]`
+    // 若拼成一个 payload，JSON 解析失败导致 completed 的 usage 丢失。
+    const raw = 'event: response.completed\ndata: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}}}\ndata: [DONE]'
+    expect(iterSseDataPayloads(raw)).toEqual([
+      '{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}}}',
+      "[DONE]",
+    ])
+    // 标准 \n\n 形状不受影响（空行已提前 flush，行为不变）
+    const framed = 'event: response.completed\ndata: {"type":"response.completed"}\n\ndata: [DONE]\n\n'
+    expect(iterSseDataPayloads(framed)).toEqual(['{"type":"response.completed"}', "[DONE]"])
+  })
+
   it("hasConvertibleSsePayload：真实/截断流通过，空流与伪装 SSE 不通过", () => {
     expect(hasConvertibleSsePayload(codexRealSse)).toBe(true)
     expect(hasConvertibleSsePayload(codexRealSse.replaceAll("\n\n", "\n"))).toBe(true)

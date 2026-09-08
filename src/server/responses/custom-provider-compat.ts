@@ -184,7 +184,17 @@ export function iterSseDataPayloads(rawText: string): string[] {
     if (!line.trim()) { flush(); continue }
     if (line.startsWith(":")) continue
     if (line.startsWith("event:")) { flush(); continue }
-    if (line.startsWith("data:")) { dataLines.push(line.slice(5).trimStart()); continue }
+    if (line.startsWith("data:")) {
+      const payload = line.slice(5).trimStart()
+      // [DONE] 恒为独立终结帧：OpenAI 惯例里它独占一次 dispatch，但 Codex
+      // LF 无空行流里它与上一事件的 data 行直接相邻（无 event:/空行分隔）。
+      // 不在此切分会把 `{...completed}\n[DONE]` 拼成一个 payload，JSON 解析
+      // 失败导致 completed 的 usage 丢失（2026-09-08 codex 原生直通日志缺口
+      // 的同因）。标准 \n\n 流不受影响（空行已提前 flush）。
+      if (payload === "[DONE]") { flush(); payloads.push(payload); continue }
+      dataLines.push(payload)
+      continue
+    }
   }
   flush()
   return payloads
