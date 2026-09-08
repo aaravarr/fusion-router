@@ -304,6 +304,10 @@ describe("Codex 真实 SSE 形状（2026-09-08 生产直连实测 gpt-5.4-mini�
   // output_text.delta* → output_text.done → content_part.done → output_item.done → completed。
   // 特征：event: 行 + 单行 data:（无 content-type 响应头，网关靠嗅探识别），
   // 每事件带 sequence_number，delta 带 obfuscation，completed 带 usage + service_tier 回显。
+  // 关键真实形状（2026-09-08 生产直连抓包确认，此前 fixture 想当然地写成
+  // completed.response.output 含 message，导致单测全绿但生产 content:null）：
+  // completed 事件的 response.output 是空数组 []，文本只出现在
+  // response.output_item.done 的 item.content[].text；usage 齐全（含 attribution）。
   const codexRealSse = [
     'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_abc","object":"response","created_at":1788791349,"status":"in_progress","model":"gpt-5.4-mini-2026-03-17","service_tier":"auto","output":[]},"sequence_number":0}\n\n',
     'event: response.in_progress\ndata: {"type":"response.in_progress","response":{"id":"resp_abc","status":"in_progress"},"sequence_number":1}\n\n',
@@ -313,8 +317,8 @@ describe("Codex 真实 SSE 形状（2026-09-08 生产直连实测 gpt-5.4-mini�
     'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","content_index":0,"delta":" world","item_id":"msg_1","logprobs":[],"obfuscation":"MDsamTfzxIV","output_index":0,"sequence_number":5}\n\n',
     'event: response.output_text.done\ndata: {"type":"response.output_text.done","content_index":0,"item_id":"msg_1","logprobs":[],"output_index":0,"sequence_number":8,"text":"hello world"}\n\n',
     'event: response.content_part.done\ndata: {"type":"response.content_part.done","content_index":0,"item_id":"msg_1","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"hello world"},"sequence_number":9}\n\n',
-    'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello world"}],"role":"assistant"},"output_index":0,"sequence_number":10}\n\n',
-    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_abc","status":"completed","model":"gpt-5.4-mini-2026-03-17","service_tier":"default","output":[{"type":"message","content":[{"type":"output_text","text":"hello world"}],"role":"assistant"}],"usage":{"input_tokens":18,"input_tokens_details":{"cached_tokens":0},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":26}},"sequence_number":11}\n\n',
+    'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"hello world"}],"phase":"final_answer","role":"assistant"},"output_index":0,"sequence_number":10}\n\n',
+    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_abc","status":"completed","model":"gpt-5.4-mini-2026-03-17","service_tier":"default","output":[],"usage":{"input_tokens":18,"input_tokens_details":{"cached_tokens":0},"output_tokens":8,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":26}},"sequence_number":11}\n\n',
   ].join("")
 
   const sseStreamOf = (text: string, chunkBytes?: number[]) => {
@@ -399,16 +403,36 @@ describe("Codex 真实 SSE 形状（2026-09-08 生产直连实测 gpt-5.4-mini�
     expect(finish).toContain('"finish_reason":"length"')
   })
 
-  it("非流式聚合：真实形状聚出 completed（含 usage），供 chat JSON", () => {
+  it("非流式聚合：真实形状（completed.output=[]）经 output_item.done 回填补齐文本，供 chat JSON", () => {
     expect(responsesSseToJson(codexRealSse)).toMatchObject({
       id: "resp_abc",
       status: "completed",
       usage: { input_tokens: 18, output_tokens: 8, total_tokens: 26 },
+      output: [{ type: "message", content: [{ type: "output_text", text: "hello world" }] }],
     })
     expect(responsesJsonToChatCompletion(responsesSseToJson(codexRealSse))).toMatchObject({
       object: "chat.completion",
       choices: [{ message: { content: "hello world" }, finish_reason: "stop" }],
       usage: { prompt_tokens: 18, completion_tokens: 8, total_tokens: 26 },
+    })
+  })
+
+  it("非流式聚合：completed.response.output 已含完整 message 时不重复回填（标准 OpenAI 形状）", () => {
+    const standardSse = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hi there"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_std","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi there"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}\n\n'
+    const aggregated = responsesSseToJson(standardSse)
+    expect(aggregated).not.toBeNull()
+    expect(aggregated!.output).toHaveLength(1)
+    expect(responsesJsonToChatCompletion(aggregated)).toMatchObject({
+      choices: [{ message: { content: "hi there" } }],
+    })
+  })
+
+  it("非流式聚合：截断流（无 completed）回退最后一个 response 并回填 done items", () => {
+    const truncated = codexRealSse.split("event: response.completed")[0]
+    const aggregated = responsesSseToJson(truncated)
+    expect(aggregated).toMatchObject({ id: "resp_abc", status: "in_progress" })
+    expect(responsesJsonToChatCompletion(aggregated)).toMatchObject({
+      choices: [{ message: { content: "hello world" } }],
     })
   })
 

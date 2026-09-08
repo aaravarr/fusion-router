@@ -1160,6 +1160,39 @@ describe("opencode-go muse-* 强制原生 responses", () => {
     expect(row.converted).toBe(1)
   })
 
+  it("chat 入口 + muse（非流式）：聚合上游 SSE（response.completed 标准形状）转回 chat JSON", async () => {
+    const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
+    // muse 上游（opencode-go）SSE 是标准带 content-type 的：终态 response 自带完整
+    // output（文本在 content[].text），与 Codex 的空 output 形状不同——回归
+    // output_item.done 回填逻辑不破坏该形状（不走 sse-sniff，直接按 content-type 聚合）。
+    const sse = [
+      `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_muse_nf", model: MUSE_MODEL } })}`,
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok-via-" })}`,
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "sse" })}`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_muse_nf", model: MUSE_MODEL, status: "completed", output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "ok-via-sse" }] }], usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } } })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n")
+    const fetcher = vi.fn().mockImplementation(async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: MUSE_MODEL, stream: false, messages: [{ role: "user", content: "hi" }] }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toContain("application/json")
+    const payload = await response.json()
+    expect(payload).toMatchObject({
+      object: "chat.completion",
+      choices: [{ message: { role: "assistant", content: "ok-via-sse" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    })
+    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(row.transform_summary || "")).toContain("aggregate:sse-to-chat-json")
+    expect(String(row.transform_summary || "")).not.toContain("sse-sniff")
+  })
+
   it("messages 入口 + muse：经 messages->chat->responses 接力上行 /responses，响应转回 Anthropic messages", async () => {
     const { db, apiKey, credentials, hasher } = setup("opencode-go", 1)
     const sent = { url: "", body: {} as Record<string, unknown> }

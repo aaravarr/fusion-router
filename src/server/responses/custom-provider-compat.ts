@@ -232,11 +232,19 @@ export function mapResponsesFinish(response: Obj): "tool_calls" | "length" | "co
 }
 /**
  * 把上游 responses SSE 全文聚合成单个 response 对象（供 chat 非流式聚合）：
- * 优先取 `response.completed` 事件的 response；缺失时回退最后一个带 response 的事件；
- * 无任何可用事件（空流/[DONE]/乱码）返回 null，调用方回 invalid_upstream_response。
+ * 优先取 `response.completed` 事件的 response；并把 `response.output_item.done`
+ * 的 item 归并回填（2026-09-08 生产直连抓包 gpt-5.4-mini 确认：Codex 上游
+ * completed.response.output 是空数组 []，最终文本/工具调用只出现在 output_item.done
+ * 的 item.content[].text——不回填则聚合结果 content 恒为 null）。上游本就把完整
+ * output 放进终态 response（opencode-go/标准 OpenAI）时原样保留，不重复回填；
+ * 缺失 completed 时回退最后一个带 response 的事件；无任何可用事件（空流/
+ * [DONE]/乱码）返回 null，调用方回 invalid_upstream_response。
  */
 export function responsesSseToJson(rawText: string): Obj | null {
+  const items: Obj[] = []
+  const seenItems = new Set<string>()
   let fallback: Obj | null = null
+  let completed: Obj | null = null
   for (const raw of iterSseDataPayloads(rawText)) {
     if (!raw || raw === "[DONE]") continue
     let data: unknown
@@ -245,11 +253,27 @@ export function responsesSseToJson(rawText: string): Obj | null {
     } catch {
       continue
     }
-    if (!isObj(data) || !isObj(data.response)) continue
+    if (!isObj(data)) continue
+    // 只认 output_item.done（output_item.added 的 item content 为空，不能收）；
+    // 按 item.id 去重（无 id 时退化为追加）。
+    if (String(data.type ?? "") === "response.output_item.done" && isObj(data.item)) {
+      const key = typeof data.item.id === "string" ? data.item.id : `#${items.length}`
+      if (!seenItems.has(key)) {
+        seenItems.add(key)
+        items.push(data.item)
+      }
+    }
+    if (!isObj(data.response)) continue
     fallback = data.response
-    if (String(data.type ?? "") === "response.completed") return data.response
+    if (String(data.type ?? "") === "response.completed") {
+      completed = data.response
+      break
+    }
   }
-  return fallback
+  const result = completed ?? fallback
+  if (!result) return null
+  if ((!Array.isArray(result.output) || result.output.length === 0) && items.length > 0) result.output = items
+  return result
 }
 
 function chatChunk(data: Obj, state: { id: string; model?: unknown; created: number; terminal: boolean }): Obj | null {
