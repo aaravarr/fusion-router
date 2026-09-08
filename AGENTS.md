@@ -47,6 +47,13 @@
 - **已知上游特性**：muse 经 GOAT 时需 `max_tokens≥512`（否则 reasoning 吃光返回空 content）；偶发 finish_reason=stop 但 content 为空串（上游重试节点问题，网关侧不特判）。
 - **业务错误码禁用 401**：key 无效回 400（同 Kimi/GLM 的 sessionFetch 语义）。
 
+### 代理连接复用与传输层重试（2026-09-08，7890 实测）
+
+- 关键代码：`src/server/api-fetch.ts`（`getProxyDispatcher` 连接池参数）、`src/server/gateway.ts`（`isRetryableTransportError` + catch 分支传输层退避重试）。
+- **ProxyAgent 参数**（按代理地址全进程共享实例）：`keepAliveTimeout: 60_000`（undici 默认仅 4s，每请求几乎新建 CONNECT 隧道+TLS 握手；实测远端空闲隧道存活 ≥180s，60s 为兼顾复用与新鲜度的安全值）、`keepAliveMaxTimeout: 600_000`（显式写出 undici 默认）、`connectTimeout: 15_000` + `requestTls: { timeout: 15_000 }`（undici 源码确认隧道内 TLS 握手超时走 `requestTls.timeout`，顶层 `connectTimeout` 只管到代理的 TCP，两者都需设置；实测握手 p50≈1.7s/p95≈6.2s，旧默认 10s 下新建握手失败率 25%，15s 留抖动余量）。
+- **h2 不开**：`requestTls: { allowH2: true }` 确能协商 h2，但 h2 首请求不稳定（新建 ECONNRESET/超时约 20%，h1 同条件几乎 0 失败；且 codex 端点 h1 握手 p95 已可接受），故保持 h1。
+- **传输层退避重试**：fetch 直接 throw（未收到任何上游字节）且文本命中传输类（UND_ERR_CONNECT_TIMEOUT/UND_ERR_SOCKET/UND_ERR_HEADERS_TIMEOUT/UND_ERR_ABORTED/ECONNRESET/ECONNREFUSED/ETIMEDOUT/EPIPE/ENOTFOUND/EAI_AGAIN）时，同账号重试最多 2 次（300ms/800ms 退避），attempts 记 `RETRY_SAME_ACCOUNT_BACKOFF`；用尽后 502。流式响应在 `return new Response(stream)` 之后才写字节，走不到该分支，故绝不重试已写流。
+
 ### 各 provider 原生接口格式能力（2026-08-09 确认）
 
 - opencode-go：chat completions + Anthropic messages（上游 opencode.ai 原生支持 /messages）；responses 入口对**白名单模型**（`OPENCODE_GO_RESPONSES_MODELS`，见 `src/server/providers/opencode-go.ts`）原生直通，其余模型走网关转 chat 的兼容链路。**muse-\* 模型上游仅支持 /v1/responses**（2026-09-03 实测，commit `40aecd5`）：网关对 `/^muse-/i` 命中模型只声明 responses 能力，chat/messages 入口自动转换接力上行。

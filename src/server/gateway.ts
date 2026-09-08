@@ -210,6 +210,33 @@ const NETWORK_ERROR_TYPE = "network_error"
 const NETWORK_ERROR_MAX_SAME_ACCOUNT_RETRIES = 1
 
 /**
+ * 上游传输层异常（fetch 本身 throw，未收到任何上游响应头/字节）同账号退避重试配置：
+ * 沿用 GLM/Kimi 的 retrySameAccount 退避结构（computeBackoffMs 指数退避，无 retry-after
+ * 时 base 1s：2^retries），此处固定 300ms/800ms 两档、最多重试 2 次。
+ * 实测依据（2026-09，经 7890 代理）：新建 CONNECT 隧道+TLS 握手失败率约 25%
+ *（UND_ERR_CONNECT_TIMEOUT / ECONNRESET），复用连接几乎 0 失败——抖动多为瞬时，
+ * 短退避后重试大概率换隧道成功。
+ */
+export const UPSTREAM_TRANSPORT_MAX_RETRIES = 2
+export const UPSTREAM_TRANSPORT_BACKOFF_MS = [300, 800] as const
+
+/**
+ * 是否为可重试的上游传输层异常：fetch 未返回 Response 即 throw，且尚未向客户端
+ * 写出任何字节。判定沿用仓库 NETWORK 口径的错误文本（formatErrorDetail 把
+ * code/cause 链序列化进 message，见既有单测对 ECONNRESET 的断言）：
+ * - undici 超时/套接字类：UND_ERR_CONNECT_TIMEOUT / UND_ERR_SOCKET /
+ *   UND_ERR_HEADERS_TIMEOUT / UND_ERR_ABORTED（隧道内握手中断常以此形态出现）
+ * - Node 网络 syscall：ECONNRESET / ECONNREFUSED / ETIMEDOUT / EPIPE / ENOTFOUND / EAI_AGAIN
+ * 明确不重试：客户端主动断开（request.signal.aborted，此时写 499，无需重试）、
+ * HTTP 状态类错误（走 provider.classifyError / network_error 既有链路）。
+ */
+export function isRetryableTransportError(cause: unknown): boolean {
+  if (typeof cause !== "object" || cause === null) return false
+  const text = formatErrorDetail(cause)
+  return /UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|UND_ERR_HEADERS_TIMEOUT|UND_ERR_ABORTED|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN/i.test(text)
+}
+
+/**
  * 检测上游在 HTTP 200 响应体里以 native_finish_reason=network_error 报出的网络错误
  * （OpenRouter custom 上游不支持 tools 等情况：单 chunk、finish_reason=stop、content 为空）。
  * 返回人类可读错误说明；未检测到返回 null。
@@ -1285,6 +1312,19 @@ upstream = await this.fetcher(mirrorPlan2.url, {
         if (processMessages) noBodyHeaders.set("x-messages-route", "native")
         return new Response(upstream.body, { status, headers: noBodyHeaders })
       } catch (cause) {
+        // 传输层异常（fetch throw，未收到任何上游响应字节）：同账号短退避重试，
+        // 复用 retrySameAccount 的 attempts 记录结构；已写字节的流式响应走不到
+        // 这里（流在 return new Response(stream) 之后才写字节），故绝不会误重试已写流。
+        if (isRetryableTransportError(cause) && !request.signal.aborted) {
+          const transportRetries = sameAccountRetryCounts.get(selection.account.id) ?? 0
+          if (transportRetries < UPSTREAM_TRANSPORT_MAX_RETRIES) {
+            const backoffMs = UPSTREAM_TRANSPORT_BACKOFF_MS[Math.min(transportRetries, UPSTREAM_TRANSPORT_BACKOFF_MS.length - 1)]
+            sameAccountRetryCounts.set(selection.account.id, transportRetries + 1)
+            if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs))
+            this.finishAttempt(attemptId, 502, "RETRY_SAME_ACCOUNT_BACKOFF", "NETWORK", Date.now() - attemptStartedAt, `${formatErrorDetail(cause)} (传输层重试 ${transportRetries + 1}/${UPSTREAM_TRANSPORT_MAX_RETRIES})`, selection.account.name, null)
+            continue
+          }
+        }
         const message = formatErrorDetail(cause)
         this.finishAttempt(attemptId, 502, "RETURN_DIRECTLY", "NETWORK", Date.now() - attemptStartedAt, message, selection.account.name, null)
         this.finalizeRequest(requestId, { status: 502, outcome: "NETWORK", attempts: attemptNumber, ok: 0, latencyMs: Date.now() - t0, localPrepMs: upstreamStartedAt - t0, error: message, accountId: selection.account.id, accountName: selection.account.name, logSettings, requestBodyJson, meta, ...routeMeta })

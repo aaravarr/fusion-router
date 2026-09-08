@@ -3,7 +3,7 @@ import { createDatabase, getDatabase } from "./db"
 import { ApiKeyHasher, SecretVault } from "./crypto"
 import { AccountRepository, ApiKeyRepository, ProviderCredentialRepository } from "./repository"
 import { CustomProviderRepository } from "./custom-providers"
-import { classifyGoUsageLimit, computeBackoffMs, GatewayService, planSameAccountRetry, type CredentialProvider } from "./gateway"
+import { classifyGoUsageLimit, computeBackoffMs, GatewayService, isRetryableTransportError, planSameAccountRetry, type CredentialProvider } from "./gateway"
 import { RoutingService } from "./routing"
 import { getSystemSettings, initializeSystemSettings, updateSystemSettings } from "./settings"
 import { OPENROUTER_CACHE_KEY } from "./mcp/openrouter-models"
@@ -549,9 +549,13 @@ describe("gateway", () => {
     const { db, apiKey, credentials, hasher } = setup()
     const root = Object.assign(new Error("socket hang up"), { code: "ECONNRESET", syscall: "read" })
     const wrapped = new Error("fetch failed", { cause: root })
+    // 传输层重试：首次 ECONNRESET 触发同账号退避（300ms），持续失败才 502。
+    // 为保持本用例聚焦日志断言，两次都失败、验证最终 502 与日志。
     const fetcher = vi.fn().mockRejectedValue(wrapped)
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
     expect(response.status).toBe(502)
+    // 首次失败重试 + 2 次退避重试 = 共 3 次 fetch
+    expect(fetcher).toHaveBeenCalledTimes(3)
     const body = await response.json() as { error?: { type?: string; message?: string } }
     expect(body.error?.type).toBe("upstream_transport_error")
     expect(body.error?.message).toContain("fetch failed")
@@ -568,6 +572,83 @@ describe("gateway", () => {
     const attempt = db.prepare("SELECT error_type,error_message FROM gateway_attempts ORDER BY started_at DESC LIMIT 1").get() as { error_type: string; error_message: string | null }
     expect(attempt.error_type).toBe("NETWORK")
     expect(attempt.error_message).toContain("ECONNRESET")
+  })
+
+  it("isRetryableTransportError 只认传输类异常文本", () => {
+    const timeout = new Error("fetch failed", {
+      cause: Object.assign(new Error("Connect Timeout Error (attempted address: chatgpt.com:443, timeout: 15000ms)"), { code: "UND_ERR_CONNECT_TIMEOUT" }),
+    })
+    expect(isRetryableTransportError(timeout)).toBe(true)
+    const reset = new Error("fetch failed", { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) })
+    expect(isRetryableTransportError(reset)).toBe(true)
+    const socket = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" })
+    expect(isRetryableTransportError(socket)).toBe(true)
+    const refused = new Error("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:7890"), { code: "ECONNREFUSED" }) })
+    expect(isRetryableTransportError(refused)).toBe(true)
+    // 非传输类：普通 Error、无 code 的业务错误不重试
+    expect(isRetryableTransportError(new Error("Upstream request failed"))).toBe(false)
+    expect(isRetryableTransportError(null)).toBe(false)
+    expect(isRetryableTransportError("UND_ERR_CONNECT_TIMEOUT")).toBe(false)
+  })
+
+  it("传输层首次失败→重试成功：客户端拿到 200，attempts 记录重试", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const root = Object.assign(new Error("socket hang up"), { code: "ECONNRESET", syscall: "read" })
+    const fetcher = vi.fn()
+      .mockRejectedValueOnce(new Error("fetch failed", { cause: root }))
+      .mockResolvedValueOnce(Response.json({ id: "ok" }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await response.text(); await new Promise((resolve) => setTimeout(resolve, 0))
+    const attempts = db.prepare("SELECT attempt_number,status,decision,error_type,account_id FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; status: number; decision: string; error_type: string | null; account_id: string }>
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({ attempt_number: 1, status: 502, decision: "RETRY_SAME_ACCOUNT_BACKOFF", error_type: "NETWORK" })
+    expect(attempts[1]).toMatchObject({ attempt_number: 2, status: 200, decision: "SUCCESS" })
+    // 同账号重试：两次尝试落在同一账号
+    expect(attempts[1].account_id).toBe(attempts[0].account_id)
+    const row = db.prepare("SELECT status,outcome,attempt_count FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as { status: number; outcome: string; attempt_count: number }
+    expect(row).toMatchObject({ status: 200, outcome: "SUCCESS", attempt_count: 2 })
+  })
+
+  it("传输层两次重试都失败→502：共 3 次 fetch，最后一次报文透传", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const root = Object.assign(new Error("socket hang up"), { code: "ECONNRESET", syscall: "read" })
+    const fetcher = vi.fn().mockRejectedValue(new Error("fetch failed", { cause: root }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(request(apiKey), "responses")
+    expect(response.status).toBe(502)
+    // 1 次原始 + 最多 2 次退避重试
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    const body = await response.json() as { error?: { type?: string; message?: string } }
+    expect(body.error?.type).toBe("upstream_transport_error")
+    expect(body.error?.message).toContain("ECONNRESET")
+    const attempts = db.prepare("SELECT attempt_number,decision,error_type FROM gateway_attempts ORDER BY attempt_number").all() as Array<{ attempt_number: number; decision: string; error_type: string | null }>
+    expect(attempts).toHaveLength(3)
+    expect(attempts[0].decision).toBe("RETRY_SAME_ACCOUNT_BACKOFF")
+    expect(attempts[1].decision).toBe("RETRY_SAME_ACCOUNT_BACKOFF")
+    expect(attempts[2]).toMatchObject({ decision: "RETURN_DIRECTLY", error_type: "NETWORK" })
+    const row = db.prepare("SELECT status,outcome,attempt_count FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as { status: number; outcome: string; attempt_count: number }
+    expect(row).toMatchObject({ status: 502, outcome: "NETWORK", attempt_count: 3 })
+  })
+
+  it("已写字节的流式响应不触发传输层重试：首字节后上游中断直接结束流", async () => {
+    const { db, apiKey, credentials, hasher } = setup()
+    const encoder = new TextEncoder()
+    // 首个 SSE 事件正常（网关读首事件后即 markSuccess 并向客户端返回流），
+    // 流中途中断属于已写字节场景——网关不再发起新的上游 fetch。
+    const okChunk = "data: " + JSON.stringify({ id: "gen-ok", object: "chat.completion.chunk", model: "grok-4.5", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] }) + "\n\n"
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode(okChunk + "data: [DONE]\n\n")); c.close(); } })
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(stream, { headers: { "content-type": "text/event-stream" } }))
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "grok-4.5", messages: [{ role: "user", content: "hello" }], stream: true }),
+    })
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(req, "chat/completions")
+    expect(response.status).toBe(200)
+    await response.text()
+    // 全程只有一次上游 fetch：流式路径不做传输层重试
+    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 })
 

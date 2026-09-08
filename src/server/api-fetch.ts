@@ -29,7 +29,24 @@ export function getProxyDispatcher(proxyUrl: string): ProxyAgent {
     // bodyTimeout: 0 关闭 undici 默认 300s 响应体超时：SSE 长流（如 reasoning 模型长时间思考）
     // 可能数分钟无字节，网关做流式转发必须容忍；headersTimeout 保持默认即可。
     // connections/pipelining 不压小——基准实测 undici 7.28 默认（无上限）并发流性能最优。
-    agent = new ProxyAgent({ uri: proxyUrl, bodyTimeout: 0 })
+    //
+    // 代理连接复用（2026-09 实测依据见 AGENTS.md「代理连接复用与传输层重试」）：
+    // - keepAliveTimeout 60s：undici 默认仅 4s，每请求几乎新建 CONNECT 隧道+TLS 握手；
+    //   实测空闲隧道 10s/30s/60s/120s/180s 均可复用（远端存活窗 ≥180s），60s 为兼顾复用与新鲜度的安全值。
+    // - keepAliveMaxTimeout 600s：单连接总寿命上限（undici 默认即 600s，此处显式写出）。
+    // - connectTimeout 15s + requestTls.timeout 15s：undici 源码确认 CONNECT 隧道内 TLS
+    //   握手超时走 requestTls.timeout（顶层 connectTimeout 只管到代理的 TCP），两者都需显式设置；
+    //   实测握手 p50≈1.7s/p95≈6.2s，旧默认 10s 下新建握手失败率 25%，15s 留足抖动余量。
+    // - allowH2 不开：实测 requestTls.allowH2 确能协商 h2，但 h2 首请求不稳定
+    //   （ECONNRESET/超时约 20-50%，h1 同条件下几乎 0 失败），故保持 h1。
+    agent = new ProxyAgent({
+      uri: proxyUrl,
+      bodyTimeout: 0,
+      keepAliveTimeout: 60_000,
+      keepAliveMaxTimeout: 600_000,
+      connectTimeout: 15_000,
+      requestTls: { timeout: 15_000 },
+    })
     proxyAgents.set(proxyUrl, agent)
   }
   return agent
