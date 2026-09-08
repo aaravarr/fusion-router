@@ -16,7 +16,7 @@ describe("custom provider protocol compatibility", () => {
       model: "gpt-test", max_output_tokens: 123,
       input: expect.arrayContaining([
         { role: "user", content: "hello" },
-        { type: "function_call", id: "call_1", call_id: "call_1", name: "lookup", arguments: "{\"id\":1}" },
+        { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{\"id\":1}" },
         { type: "function_call_output", call_id: "call_1", output: "ok" },
       ]),
       tools: [{ type: "function", name: "lookup", parameters: { type: "object" } }],
@@ -83,6 +83,19 @@ describe("custom provider protocol compatibility", () => {
     expect(responsesJsonToChatCompletion({ id: "resp_1", model: "gpt-test", output: [{ type: "message", content: [{ type: "output_text", text: "hello" }] }], usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } })).toMatchObject({
       id: "resp_1", object: "chat.completion", choices: [{ message: { role: "assistant", content: "hello" }, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
     })
+  })
+
+  it("maps Responses function_call id from call_id for chat round-trip", () => {
+    const result = responsesJsonToChatCompletion({
+      id: "resp_tools",
+      model: "gpt-test",
+      output: [
+        { type: "function_call", id: "fc_provider_owned", call_id: "call_client_owned", name: "lookup", arguments: "{\"id\":1}" },
+        { type: "function_call_output", id: "fc_output_provider_owned", call_id: "call_client_owned", output: "ok" },
+      ],
+    })
+    const message = (result.choices as Array<{ message: Record<string, unknown> }>)[0].message
+    expect(message.tool_calls).toEqual([{ id: "call_client_owned", type: "function", function: { name: "lookup", arguments: "{\"id\":1}" } }])
   })
 
   it("converts Responses text SSE events to Chat chunks", async () => {
@@ -209,22 +222,50 @@ describe("call_id length guard (opencode-go /v1/responses 限制 call_id <= 64)"
     return found
   }
 
-  it("真实请求的 32-35 字符 tool_call id 全部原样透传（不改写）", () => {
+  it("真实请求的 32-35 字符 tool_call id 仅作为 call_id 透传", () => {
     const out = chatRequestToResponses(productionLikeBody)
     const input = out.input as Array<Record<string, unknown>>
-    // 真实事故的报错位置形态：function_call 的 id/call_id 与 function_call_output 的 call_id
-    expect(input[2]).toEqual({ type: "function_call", id: "call_00_ET_HnjCQGrGcym287ojyIRw5855", call_id: "call_00_ET_HnjCQGrGcym287ojyIRw5855", name: "CallDynamicTool", arguments: "{\"arguments\":{\"description\":\"screenshot\"}}" })
+    // Responses 的 function_call item 不带客户端 call_* id；对应关系只由 call_id 建立。
+    expect(input[2]).toEqual({ type: "function_call", call_id: "call_00_ET_HnjCQGrGcym287ojyIRw5855", name: "CallDynamicTool", arguments: "{\"arguments\":{\"description\":\"screenshot\"}}" })
     expect(input[3]).toMatchObject({ type: "function_call_output", call_id: "call_00_ET_HnjCQGrGcym287ojyIRw5855" })
-    expect(input[5]).toMatchObject({ type: "function_call", id: "call_00_7chRippdDvO9rNY1r9KI8718", call_id: "call_00_7chRippdDvO9rNY1r9KI8718" })
-    expect(input[6]).toMatchObject({ type: "function_call", id: "call_01_Kfco8hGpYjHUWDctA3aZ9708", call_id: "call_01_Kfco8hGpYjHUWDctA3aZ9708" })
+    expect(input[5]).toMatchObject({ type: "function_call", call_id: "call_00_7chRippdDvO9rNY1r9KI8718" })
+    expect(input[6]).toMatchObject({ type: "function_call", call_id: "call_01_Kfco8hGpYjHUWDctA3aZ9708" })
     expect(input[7]).toMatchObject({ type: "function_call_output", call_id: "call_00_7chRippdDvO9rNY1r9KI8718" })
     expect(input[8]).toMatchObject({ type: "function_call_output", call_id: "call_01_Kfco8hGpYjHUWDctA3aZ9708" })
-    // 全部 id 字段均在 64 内且与客户端原始值逐一相等
+    // 客户端 call_* 不得出现在任何 Responses item 的 id 字段。
+    expect(collectIds(input as unknown[]).filter(({ field }) => field === "id")).toEqual([])
     const originals = new Set(["call_00_ET_HnjCQGrGcym287ojyIRw5855", "call_00_7chRippdDvO9rNY1r9KI8718", "call_01_Kfco8hGpYjHUWDctA3aZ9708"])
-    for (const { value } of collectIds(input as unknown[])) {
+    for (const { field, value } of collectIds(input as unknown[])) {
       expect(value.length).toBeLessThanOrEqual(64)
-      expect(originals.has(value)).toBe(true)
+      if (field === "call_id") expect(originals.has(value)).toBe(true)
     }
+  })
+
+  it("故障单 7b98fd36 的 call_* id 不进入 Responses item.id，且 round-trip 保持一致", () => {
+    // 从生产 request_bodies.request_body_json 提取的最小 fixture（2026-09-08）。
+    const callId = "call_Yymyjb5870YHM7TYdY2i79Nb"
+    const body = {
+      model: "gpt-5.6-luna",
+      stream: true,
+      messages: [
+        { role: "assistant", content: "", tool_calls: [{ id: callId, type: "function", function: { name: "skill_view", arguments: "{\"file_path\":\"\",\"name\":\"hermes-agent\"}" } }] },
+        { role: "tool", tool_call_id: callId, content: "{\"success\":true}" },
+      ],
+    }
+    const input = chatRequestToResponses(body).input as Array<Record<string, unknown>>
+    const call = input.find((item) => item.type === "function_call")!
+    const output = input.find((item) => item.type === "function_call_output")!
+    expect(call).toEqual({ type: "function_call", call_id: callId, name: "skill_view", arguments: "{\"file_path\":\"\",\"name\":\"hermes-agent\"}" })
+    expect(call).not.toHaveProperty("id")
+    expect(output).toEqual({ type: "function_call_output", call_id: callId, output: "{\"success\":true}" })
+
+    const chat = responsesJsonToChatCompletion({
+      id: "resp_roundtrip",
+      output: [{ type: "function_call", id: "fc_provider_id", call_id: callId, name: "skill_view", arguments: "{\"file_path\":\"\",\"name\":\"hermes-agent\"}" }],
+    })
+    expect((chat.choices as Array<{ message: Record<string, unknown> }>)[0].message.tool_calls).toEqual([
+      { id: callId, type: "function", function: { name: "skill_view", arguments: "{\"file_path\":\"\",\"name\":\"hermes-agent\"}" } },
+    ])
   })
 
   it("超长 tool_call id（80 字符）压缩到 <=64，且 function_call 与 function_call_output 对应一致", () => {
@@ -244,10 +285,9 @@ describe("call_id length guard (opencode-go /v1/responses 限制 call_id <= 64)"
     const output = input.find((item) => item.type === "function_call_output")!
     expect(typeof call.call_id).toBe("string")
     expect((call.call_id as string).length).toBeLessThanOrEqual(64)
-    expect((call.id as string).length).toBeLessThanOrEqual(64)
+    expect(call).not.toHaveProperty("id")
     // call/output 的 call_id 一致对应（同一原始值 → 同一压缩结果）
     expect(output.call_id).toBe(call.call_id)
-    expect(call.id).toBe(call.call_id)
     // 压缩结果稳定（确定性映射，重跑一致），且保留可辨识前缀
     expect(run()).toEqual(input)
     expect((call.call_id as string).startsWith("call_00_ET_")).toBe(true)

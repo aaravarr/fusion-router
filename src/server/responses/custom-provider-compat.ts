@@ -123,7 +123,10 @@ export function chatRequestToResponses(body: unknown): Obj {
       for (const call of message.tool_calls) {
         if (!isObj(call) || !isObj(call.function)) continue
         const callId = clampResponsesCallId(call.id)
-        input.push({ type: "function_call", id: callId, call_id: callId, name: call.function.name, arguments: call.function.arguments ?? "{}" })
+        // Responses item `id` is provider-owned and must use the `fc_` namespace.
+        // Chat tool-call ids (`call_*`) belong only in `call_id`, which is also
+        // the key referenced by the subsequent function_call_output item.
+        input.push({ type: "function_call", call_id: callId, name: call.function.name, arguments: call.function.arguments ?? "{}" })
       }
     }
   }
