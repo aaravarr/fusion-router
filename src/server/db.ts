@@ -372,6 +372,18 @@ CREATE TABLE IF NOT EXISTS user_mirror_groups (
   updated_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS user_mirror_groups_owner_idx ON user_mirror_groups(owner_user_id, enabled);
+
+CREATE TABLE IF NOT EXISTS pool_model_config (
+  id             TEXT PRIMARY KEY,
+  owner_user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pool_type      TEXT NOT NULL,
+  model          TEXT NOT NULL,
+  fast_enabled   INTEGER NOT NULL DEFAULT 0,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  UNIQUE(owner_user_id, pool_type, model)
+);
+CREATE INDEX IF NOT EXISTS pool_model_config_pool_idx ON pool_model_config(pool_type, model, fast_enabled);
 `
 
 export function createDatabase(filename: string): AppDatabase {
@@ -579,7 +591,7 @@ function resetLegacyAccountDomain(db: AppDatabase): void {
   }
 }
 
-const CURRENT_ACCOUNT_SCHEMA_VERSION = 11
+const CURRENT_ACCOUNT_SCHEMA_VERSION = 12
 const globalDatabase = globalThis as typeof globalThis & {
   __opencodeApiDb?: AppDatabase
   __opencodeApiAccountSchemaVersion?: number
@@ -605,6 +617,8 @@ export function getDatabase(): AppDatabase {
     ensureCurrentImportJobColumns(globalDatabase.__opencodeApiDb)
     ensureSharedPoolColumns(globalDatabase.__opencodeApiDb)
     globalDatabase.__opencodeApiDb.exec("CREATE INDEX IF NOT EXISTS accounts_provider_external_idx ON accounts(owner_user_id, pool_type, external_id)")
+    globalDatabase.__opencodeApiDb.exec("CREATE TABLE IF NOT EXISTS pool_model_config (\n  id             TEXT PRIMARY KEY,\n  owner_user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  pool_type      TEXT NOT NULL,\n  model          TEXT NOT NULL,\n  fast_enabled   INTEGER NOT NULL DEFAULT 0,\n  created_at     TEXT NOT NULL,\n  updated_at     TEXT NOT NULL,\n  UNIQUE(owner_user_id, pool_type, model)\n)")
+    globalDatabase.__opencodeApiDb.exec("CREATE INDEX IF NOT EXISTS pool_model_config_pool_idx ON pool_model_config(pool_type, model, fast_enabled)")
     migrateLegacyMirrorAndUpstream(globalDatabase.__opencodeApiDb)
     globalDatabase.__opencodeApiAccountSchemaVersion = CURRENT_ACCOUNT_SCHEMA_VERSION
   }

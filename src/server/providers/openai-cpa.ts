@@ -27,6 +27,7 @@ import type { PoolType } from "../types"
 import { SecretVault } from "../crypto"
 import { getDatabase } from "../db"
 import { apiFetchWithMirrorContext, type MirrorSelectionContext } from "../api-fetch"
+import { isPoolModelFastEnabled } from "../pool-model-config"
 import { OPENAI_OAUTH_CLIENT_ID, OPENAI_OAUTH_TOKEN_URL, parseOpenAIIdentity } from "../openai-oauth"
 
 // ─── Constants ───────────────────────────────────────────────────────────
@@ -424,8 +425,19 @@ function identifyExhaustedWindow(
  * 非 JSON body 原样透传。
  * 覆盖两条入口：responses 原生直通与 chat→responses 转换（网关转换后统一经
  * buildForwardTarget 走到这里）。
+ *
+ * Codex fast 开关（预埋）：按请求 model 查 pool_model_config，开关打开时注入
+ * service_tier:"priority"。service_tier 优先级规则：客户端显式传 "priority"
+ * 时保留不动（客户端显式意图优先）；客户端传其他值会被既有的 strip 逻辑删除，
+ * 之后开关打开才由网关注入 "priority" —— 即网关配置 > 客户端非 priority 值 >
+ * 无配置。客户端传非 "priority" 但开关未开时，仅删除不注入（维持既有行为）。
+ *
+ * 已知事实（诚实提示，见账号池页 UI）：当前 Codex 上游 HTTP POST 链路下该字段
+ * 被静默忽略（按 standard 调度，响应回显 default），priority 仅 websocket 传输
+ * 生效；Plus 套餐接受该字段无副作用，故为预埋能力，不承诺 HTTP 链路加速。
+ * fast 配置读取走 pool-model-config 的 10s TTL 内存缓存，热路径零额外打库。
  */
-export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null): Uint8Array<ArrayBuffer> | null {
+export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null, ownerUserId?: string, model?: string): Uint8Array<ArrayBuffer> | null {
   if (!body || body.byteLength === 0) return body
   let parsed: unknown
   try {
@@ -444,7 +456,11 @@ export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null
       content: [{ type: "input_text", text: record.input }],
     }]
   }
-  if (record.service_tier !== "priority") delete record.service_tier
+  // service_tier 仅保留 "priority"（CLIProxyAPI 同款）；fast 开启时由网关注入。
+  const clientPriority = record.service_tier === "priority"
+  if (!clientPriority) delete record.service_tier
+  const fastEnabled = Boolean(ownerUserId && model && isPoolModelFastEnabled(ownerUserId, model))
+  if (!clientPriority && fastEnabled) record.service_tier = "priority"
   if (record.instructions === null || record.instructions === undefined) record.instructions = ""
   for (const key of CODEX_BODY_STRIP_KEYS) delete record[key]
   return new TextEncoder().encode(JSON.stringify(record)) as Uint8Array<ArrayBuffer>
@@ -896,7 +912,11 @@ export class OpenAICPAProvider implements Provider {
     return {
       url,
       headers,
-      body: input.method.toUpperCase() === "GET" ? input.body : normalizeCodexResponsesBody(input.body),
+      // 传账号归属 + 请求模型：responses/chat 两条入口统一在这里做 body 规范化，
+      // fast 开关（service_tier:"priority" 注入）因此同时覆盖两条入口。
+      body: input.method.toUpperCase() === "GET"
+        ? input.body
+        : normalizeCodexResponsesBody(input.body, _account.ownerUserId, input.model),
     }
   }
 

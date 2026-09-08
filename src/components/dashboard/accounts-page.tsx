@@ -22,6 +22,7 @@ import {
 import { FileUp } from "lucide-react";
 import { copyToClipboard } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -48,6 +49,9 @@ import { PoolTypeFilterBar, type PoolFilterOption } from "./pool-type-filter";
 import { useConfirm } from "@/components/ui/confirm-provider";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Info } from "lucide-react";
+import { AlertTriangle, Zap } from "lucide-react";
 
 interface AccountStats {
   total: number;
@@ -71,6 +75,20 @@ interface AccountsPayload {
   stats?: AccountStats;
   poolPreferences?: Record<string, string | null>;
   poolTypes?: { type: string; label: string; description: string; quotaKinds: string[] }[];
+}
+
+interface ProviderModelCatalog {
+  poolType: string;
+  label: string;
+  models: string[];
+  source: string;
+}
+
+interface PoolModelConfig {
+  id: string;
+  poolType: string;
+  model: string;
+  fastEnabled: boolean;
 }
 
 const POOL_FILTERS = [
@@ -183,6 +201,9 @@ export function AccountsPage() {
   const accounts = resource.data?.items ?? resource.data?.accounts ?? [];
   const total = resource.data?.total ?? accounts.length;
   const stats = resource.data?.stats;
+  // openai 池模型级 fast 开关（预埋）：仅 openai 池加载模型目录与 per-model 配置。
+  const providerModelsResource = useAdminResource<{ catalogs?: ProviderModelCatalog[] }>("/api/admin/provider-models");
+  const modelConfigResource = useAdminResource<{ configs?: PoolModelConfig[] }>("/api/admin/pool-model-config?poolType=openai");
   const visibleAccountIds = accounts.map((account) => account.id);
   const allVisibleSelected = visibleAccountIds.length > 0 && visibleAccountIds.every((id) => selectedIds.has(id));
   const someVisibleSelected = visibleAccountIds.some((id) => selectedIds.has(id));
@@ -384,6 +405,31 @@ export function AccountsPage() {
       setActionError(cause instanceof Error ? cause.message : "更新训练数据模型开关失败");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  // openai 池 per-model fast 开关（service_tier:"priority" 预埋）。
+  async function setModelFast(model: string, fastEnabled: boolean) {
+    setActionError(null);
+    setActionNotice(null);
+    // 乐观更新：开关立即回显，失败后回滚并提示。
+    const previous = modelConfigResource.data?.configs ?? [];
+    modelConfigResource.setData?.({
+      configs: previous.some((item) => item.model === model)
+        ? previous.map((item) => (item.model === model ? { ...item, fastEnabled } : item))
+        : [...previous, { id: `optimistic:${model}`, poolType: "openai", model, fastEnabled }],
+    });
+    try {
+      const response = await adminFetch("/api/admin/pool-model-config", {
+        method: "PUT",
+        body: JSON.stringify({ poolType: "openai", model, fastEnabled }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || "fast 开关保存失败");
+      await modelConfigResource.refresh();
+    } catch (cause) {
+      await modelConfigResource.refresh();
+      setActionError(cause instanceof Error ? cause.message : "fast 开关保存失败");
     }
   }
 
@@ -778,6 +824,14 @@ export function AccountsPage() {
         ) : null}
       </Panel>
 
+      <FastModelConfigPanel
+        active={poolFilter === "openai"}
+        catalogs={providerModelsResource.data?.catalogs ?? []}
+        configs={modelConfigResource.data?.configs ?? []}
+        loading={providerModelsResource.loading || modelConfigResource.loading}
+        onToggleModel={(model, next) => void setModelFast(model, next)}
+      />
+
       <ConnectorSheet open={connectorOpen} onOpenChange={setConnectorOpen} downloadInfo={downloadInfo} />
      <Sub2ApiImportDialog open={importOpen} poolType={poolFilter === "all" ? "openai" : poolFilter} onOpenChange={setImportOpen} onCreated={() => setJobVersion((value) => value + 1)} />
       <OpenAIOauthLoginDialog open={openaiOauthOpen} onOpenChange={setOpenaiOauthOpen} onCreated={() => { setJobVersion((v) => v + 1); void resource.refresh(); }} />
@@ -802,6 +856,67 @@ export function AccountsPage() {
         busy={Boolean(selected && busyId === selected.id)}
       />
     </>
+  );
+}
+
+/**
+ * openai 池 per-model fast 开关（预埋能力）。
+ * 数据源：provider-models 目录（模型清单）+ pool-model-config（fast 配置）。
+ * 诚实提示：fast = service_tier:"priority"，当前 Codex 上游 HTTP POST 链路下被
+ * 静默忽略（按 standard 调度），priority 仅 websocket 传输生效；Plus 套餐接受
+ * 该字段无副作用，因此当前不加速，为后续链路切换预埋。
+ */
+function FastModelConfigPanel({ active, catalogs, configs, loading, onToggleModel }: {
+  active: boolean;
+  catalogs: ProviderModelCatalog[];
+  configs: PoolModelConfig[];
+  loading: boolean;
+  onToggleModel: (model: string, next: boolean) => void;
+}) {
+  const fastByModel = useMemo(() => new Map(configs.map((item) => [item.model, item.fastEnabled])), [configs]);
+  const openaiModels = useMemo(() => {
+    const catalog = catalogs.find((item) => item.poolType === "openai");
+    return catalog?.models ?? [];
+  }, [catalogs]);
+  const fastCount = openaiModels.filter((model) => fastByModel.get(model)).length;
+
+  return (
+    <Panel
+      title="模型 fast 加速（预埋）"
+      description='为 openai 池指定模型在转发 Codex 时注入 service_tier:"priority"。'
+      action={<Badge variant="outline" className="h-5 rounded-sm px-1.5 text-[11px]">{fastCount} 个已开启</Badge>}
+    >
+      {!active ? (
+        <div className="flex items-start gap-2.5 px-4 py-4 text-xs leading-5 text-muted-foreground sm:px-5">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span>切换到 OpenAI 号池后可按模型配置 fast 开关（当前为预埋能力：当前 HTTP 链路下不加速，priority 仅 websocket 传输生效）。</span>
+        </div>
+      ) : loading ? (
+        <LoadingTable rows={2} columns={3} />
+      ) : openaiModels.length ? (
+        <div className="divide-y">
+          <div className="flex items-start gap-2 border-b bg-warning-soft/60 px-4 py-2.5 text-xs leading-5 text-warning sm:px-5">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+            <span>当前 HTTP 链路下不加速（priority 仅 websocket 传输生效），为预埋能力；Plus 套餐接受该字段无副作用。</span>
+          </div>
+          {openaiModels.map((model) => (
+            <div key={model} className="flex items-center justify-between gap-3 px-4 py-2.5 sm:px-5">
+              <div className="flex min-w-0 items-center gap-2">
+                <Zap className={`size-3.5 shrink-0 ${fastByModel.get(model) ? "text-warning" : "text-muted-foreground/40"}`} aria-hidden="true" />
+                <code className="truncate font-mono text-xs">{model}</code>
+              </div>
+              <Switch
+                checked={Boolean(fastByModel.get(model))}
+                onCheckedChange={(next) => onToggleModel(model, next)}
+                aria-label={`fast 开关 ${model}`}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState title="暂无 openai 模型清单" description="先在 openai 池导入至少一个账号，模型清单来自内置目录或上游 /models 同步。" />
+      )}
+    </Panel>
   );
 }
 
