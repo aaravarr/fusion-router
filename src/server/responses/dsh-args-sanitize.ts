@@ -227,6 +227,87 @@ export function sanitizeSseText(rawText: string): { text: string; sanitizedEvent
   return { text: lines.join("\n"), sanitizedEvents, removedKeys }
 }
 
+export interface IncrementalSseSanitizeResult {
+  sanitizedEvents: number
+  removedKeys: string[]
+}
+
+/**
+ * 创建按行处理的 SSE 清洗流。完整 data 行才会被解析，跨 chunk 的半行留在
+ * buffer 中；除目标 done/终态事件外，其余字节（包括 delta、非法 JSON 和行尾）
+ * 原样透传。这样无头 Codex SSE 可以在上游仍未结束时持续送达客户端。
+ */
+export function createIncrementalSseSanitizer(
+  onSanitized?: (result: IncrementalSseSanitizeResult) => void,
+): { stream: TransformStream<Uint8Array, Uint8Array>; result: () => IncrementalSseSanitizeResult } {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffer = ""
+  let sanitizedEvents = 0
+  const removedKeys: string[] = []
+
+  const processLine = (lineWithEnding: string, controller: TransformStreamDefaultController<Uint8Array>) => {
+    const ending = lineWithEnding.endsWith("\r\n") ? "\r\n" : lineWithEnding.endsWith("\n") ? "\n" : ""
+    const line = ending ? lineWithEnding.slice(0, -ending.length) : lineWithEnding
+    if (!line.startsWith("data:")) {
+      controller.enqueue(encoder.encode(lineWithEnding))
+      return
+    }
+    const payload = line.slice(5).trimStart()
+    if (!payload || payload === "[DONE]") {
+      controller.enqueue(encoder.encode(lineWithEnding))
+      return
+    }
+    let parsed: unknown
+    try { parsed = JSON.parse(payload) } catch {
+      controller.enqueue(encoder.encode(lineWithEnding))
+      return
+    }
+    const type = String((parsed as Record<string, unknown> | null)?.type ?? "")
+    if (!isRecord(parsed) || type === "response.function_call_arguments.delta" || type === "response.output_item.added") {
+      controller.enqueue(encoder.encode(lineWithEnding))
+      return
+    }
+    const removed = sanitizeSseEventObject(parsed)
+    if (removed.length === 0) {
+      controller.enqueue(encoder.encode(lineWithEnding))
+      return
+    }
+    try {
+      const rewritten = `data: ${JSON.stringify(parsed)}${ending}`
+      controller.enqueue(encoder.encode(rewritten))
+      sanitizedEvents += 1
+      removedKeys.push(...removed)
+      onSanitized?.({ sanitizedEvents, removedKeys: [...removedKeys] })
+    } catch {
+      // 序列化失败时保留原始字节，不能让清洗影响正常流量。
+      controller.enqueue(encoder.encode(lineWithEnding))
+    }
+  }
+
+  const stream = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true })
+      for (;;) {
+        const match = /\r?\n/.exec(buffer)
+        if (!match || match.index == null) break
+        const end = match.index + match[0].length
+        processLine(buffer.slice(0, end), controller)
+        buffer = buffer.slice(end)
+      }
+    },
+    flush(controller) {
+      buffer += decoder.decode()
+      if (buffer) processLine(buffer, controller)
+      buffer = ""
+    },
+  })
+  return {
+    stream,
+    result: () => ({ sanitizedEvents, removedKeys: [...removedKeys] }),
+  }
+}
+
 /** transformSummary 追加观测标记（幂等）。 */
 export function withDshSanitizeTag(transformSummary: unknown): string {
   const parts = String(transformSummary || "").split(" | ").filter(Boolean)

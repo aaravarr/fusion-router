@@ -78,6 +78,14 @@ async function drain(response: Response): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength }
+  return out
+}
+
 beforeEach(() => {
   vi.unstubAllGlobals()
 })
@@ -120,6 +128,57 @@ describe("openai 池原生直通流日志指标（Codex 无头 SSE 缺口回归�
     // 首个 output_text.delta 到达即打点（缓冲重放下为首包时间，非 null）
     expect(row.first_token_ms).not.toBeNull()
     expect(String(row.transform_summary || "")).toContain("responses-native")
+    expect(String(row.transform_summary || "")).toContain("sse-sniff:no-content-type")
+  })
+
+  it("无头 SSE 在上游未结束前就增量透传早期 chunk", async () => {
+    const { apiKey, credentials, hasher } = setupOpenAI()
+    const splitAt = codexLfEvents.indexOf('event: response.output_text.done')
+    const early = codexLfEvents.slice(0, splitAt)
+    const rest = codexLfEvents.slice(splitAt)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const encoder = new TextEncoder()
+    const fetcher = vi.fn().mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(early))
+        void gate.then(() => {
+          controller.enqueue(encoder.encode(rest))
+          controller.close()
+        })
+      },
+    }), { status: 200 }))
+    const response = await new GatewayService(credentials, db, fetcher, hasher).handle(responsesRequest(apiKey, {
+      model: "gpt-5.4-mini",
+      input: "hi",
+      stream: true,
+    }), "responses")
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toContain("text/event-stream")
+    const reader = response.body!.getReader()
+    const first = await Promise.race([
+      reader.read(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 200)),
+    ])
+    expect(first).not.toBeNull()
+    expect((first as ReadableStreamReadResult<Uint8Array>).done).toBe(false)
+    expect(new TextDecoder().decode((first as ReadableStreamReadResult<Uint8Array>).value)).toContain("response.output_text.delta")
+
+    release()
+    const chunks: Uint8Array[] = [(first as ReadableStreamReadResult<Uint8Array>).value!]
+    for (;;) {
+      const next = await reader.read()
+      if (next.done) break
+      chunks.push(next.value)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const text = new TextDecoder().decode(concat(chunks))
+    expect(text).toContain("response.completed")
+    const row = db.prepare("SELECT completion_tokens,total_tokens,first_token_ms,transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(row.completion_tokens).toBe(6)
+    expect(row.total_tokens).toBe(18)
+    expect(row.first_token_ms).not.toBeNull()
     expect(String(row.transform_summary || "")).toContain("sse-sniff:no-content-type")
   })
 

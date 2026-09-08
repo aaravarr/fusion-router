@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   DSH_ARGS_SANITIZE_TAG,
+  createIncrementalSseSanitizer,
   isDshSanitizeScope,
   sanitizeFunctionCallArgumentsString,
   sanitizeResponsesPayload,
@@ -96,6 +97,31 @@ describe("dsh-args-sanitize 纯函数", () => {
     const result = sanitizeSseText(sse)
     expect(result.sanitizedEvents).toBe(0)
     expect(result.text).toBe(sse)
+  })
+
+  it("增量清洗：跨 chunk 半行缓存，delta/非法 JSON 原样透传", async () => {
+    const sse = [
+      'data: {"type":"response.function_call_arguments.delta","delta":"{\\"justification\\":\\"x\\"}"}',
+      `data: {"type":"response.output_item.done","item":{"type":"function_call","arguments":${JSON.stringify(dirtyArgs)}}}`,
+      "data: {broken-json",
+      "data: [DONE]",
+    ].join("\n")
+    const split = sse.indexOf("sandbox_permissions") + 8
+    const encoder = new TextEncoder()
+    const sanitizer = createIncrementalSseSanitizer()
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(sse.slice(0, split)))
+        controller.enqueue(encoder.encode(sse.slice(split)))
+        controller.close()
+      },
+    }).pipeThrough(sanitizer.stream))
+    const text = await response.text()
+    expect(sanitizer.result().sanitizedEvents).toBe(1)
+    expect(text).toContain('response.function_call_arguments.delta')
+    expect(text).toContain('\\"justification\\"')
+    expect(text).not.toContain("sandbox_permissions")
+    expect(text).toContain("data: {broken-json")
   })
 
   it("聚合载荷清洗：output 数组 function_call 清洗，非对象原样", () => {

@@ -18,7 +18,7 @@ import { getProxyDispatcher, resolveMirrorPlanForContext } from "./api-fetch"
 import { upsertLocalRollingUsage } from "./quota-usage"
 import { buildChatFallbackFromResponsesWithContext } from "./responses/responses-fallback"
 import { chatRequestToResponses, hasConvertibleSsePayload, looksLikeResponsesSse, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
-import { isDshSanitizeScope, sanitizeResponsesPayload, sanitizeSseText, withDshSanitizeTag, DSH_ARGS_SANITIZE_TAG } from "./responses/dsh-args-sanitize"
+import { createIncrementalSseSanitizer, isDshSanitizeScope, sanitizeResponsesPayload, sanitizeSseText, withDshSanitizeTag, DSH_ARGS_SANITIZE_TAG } from "./responses/dsh-args-sanitize"
 import { extractCodexNativeStreamStats } from "./responses/codex-native-stats"
 import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
@@ -344,6 +344,56 @@ function prependChunk(first: Uint8Array, reader: ReadableStreamDefaultReader<Uin
     async pull(controller) { const value = await reader.read(); if (value.done) controller.close(); else controller.enqueue(value.value) },
     async cancel(reason) { await reader.cancel(reason) },
   })
+}
+
+function prependChunks(chunks: Uint8Array[], reader: ReadableStreamDefaultReader<Uint8Array>): ReadableStream<Uint8Array> {
+  let index = 0
+  return new ReadableStream({
+    async pull(controller) {
+      if (index < chunks.length) {
+        controller.enqueue(chunks[index++])
+        return
+      }
+      const value = await reader.read()
+      if (value.done) controller.close()
+      else controller.enqueue(value.value)
+    },
+    async cancel(reason) { await reader.cancel(reason) },
+  })
+}
+
+function concatByteChunks(chunks: Uint8Array[]): Uint8Array {
+  let total = 0
+  for (const chunk of chunks) total += chunk.byteLength
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength }
+  return out
+}
+
+async function sniffResponsesSse(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<{
+  reader: ReadableStreamDefaultReader<Uint8Array>
+  chunks: Uint8Array[]
+  text: string
+  isSse: boolean
+}> {
+  const chunks: Uint8Array[] = []
+  let text = ""
+  const decoder = new TextDecoder()
+  for (;;) {
+    const next = await reader.read()
+    if (next.done) {
+      text += decoder.decode()
+      return { reader, chunks, text, isSse: looksLikeResponsesSse(text) }
+    }
+    if (next.value) {
+      chunks.push(next.value)
+      text += decoder.decode(next.value, { stream: true })
+      // Codex normally sends event/data in its first chunk. Once the shape is
+      // known, return immediately and leave the reader locked for live relay.
+      if (looksLikeResponsesSse(text)) return { reader, chunks, text, isSse: true }
+    }
+  }
 }
 
 async function readFirstSseEvent(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<{ bytes: Uint8Array; text: string }> {
@@ -1216,6 +1266,84 @@ upstream = await this.fetcher(mirrorPlan2.url, {
           if (qw) this.recordPassiveQuota(selection.account.id, qw)
         }
         const status = upstream.status
+        // Codex 原生 responses 的 SSE 没有 content-type。流式客户端先只嗅探到
+        // event/data 形状，确认后立即把已读前缀 + 后续 reader 交给客户端，不能
+        // 像非流式聚合路径一样等待整个 body 结束。
+        const codexNativeRoute = processResponses
+          && !attemptChatFallbackUsed && !attemptResponsesToChat && !attemptMessagesFallback
+          && !contentType.includes("text/event-stream")
+        if (stream && codexNativeRoute && upstream.body) {
+          const sniffed = await sniffResponsesSse(upstream.body.getReader())
+          if (sniffed.isSse) {
+            const parts = String(routeMeta.transformSummary || "").split(" | ").filter(Boolean)
+            if (!parts.some((p) => p.startsWith("sse-sniff:"))) parts.push("sse-sniff:no-content-type")
+            routeMeta.transformSummary = parts.join(" | ")
+            routing.markSuccess(selection.account.id)
+            if (provider?.extractQuotaFromResponse) {
+              const qw = provider.extractQuotaFromResponse(upstream.headers)
+              if (qw) this.recordPassiveQuota(selection.account.id, qw)
+            }
+            if (attemptToolContext) (attemptToolContext as unknown as Record<string, unknown>).poolType = selection.account.poolType
+            let outStream: ReadableStream<Uint8Array> = prependChunks(sniffed.chunks, sniffed.reader)
+            if (isDshSanitizeScope(selection.account.poolType, meta.userAgent)) {
+              const sanitizer = createIncrementalSseSanitizer((result) => {
+                if (result.sanitizedEvents > 0) markDshSanitized(routeMeta)
+              })
+              outStream = outStream.pipeThrough(sanitizer.stream)
+            }
+            // 原生 responses 事件只需做工具上下文 remap；其余上游字节增量透传。
+            if (attemptToolContext && selection.account.poolType !== "openai") outStream = remapResponsesSuccessStream(outStream, attemptToolContext)
+            const streamOnComplete = (r: CaptureResult) => {
+              const latencyMs = Date.now() - t0
+              this.finishAttempt(attemptId, status, "SUCCESS", null, Date.now() - attemptStartedAt, r.error ?? null, selection.account.name)
+              this.finalizeRequest(requestId, {
+                status,
+                outcome: "SUCCESS",
+                attempts: attemptNumber,
+                ok: isLogOk(status, r.error) ? 1 : 0,
+                latencyMs,
+                localPrepMs: upstreamStartedAt - t0,
+                // 无头 SSE 已在前缀嗅探后立即转发；首字节时间比首内容更
+                // 稳定，避免把 completed 聚合时间误记成首 token。
+                firstTokenMs: r.firstByteAt != null
+                  ? r.firstByteAt - upstreamStartedAt
+                  : r.firstContentAt != null ? r.firstContentAt - upstreamStartedAt : undefined,
+                usage: r.usage,
+                error: r.error,
+                accountId: selection.account.id,
+                accountName: selection.account.name,
+                responseSizeBytes: r.responseBytes ?? null,
+                logSettings,
+                requestBodyJson,
+                responseBody: logging ? r.response : undefined,
+                responseTruncated: r.responseTruncated,
+                meta,
+                ...routeMeta,
+              })
+              if (responsesProcessMeta) {
+                void rememberResponsesTurn({
+                  responsePayload: r.response,
+                  continuityKeys: responsesProcessMeta.continuityKeys,
+                  userMessages: responsesProcessMeta.userMessages,
+                  preferredMode: "responses",
+                  db: this.db,
+                })
+              }
+            }
+            const headers = responseHeaders(upstream.headers)
+            headers.set("content-type", "text/event-stream")
+            headers.set("x-responses-route", attemptResponsesRoute)
+            if (attemptResponsesRouteReason) headers.set("x-responses-route-reason", attemptResponsesRouteReason)
+            return new Response(teeAndCapture(outStream, streamOnComplete), { status, headers })
+          }
+          // 非 SSE（通常是错误 JSON）保持原有整包兜底逻辑。
+          await sniffed.reader.releaseLock()
+          upstream = new Response(concatByteChunks(sniffed.chunks).buffer as ArrayBuffer, {
+            status: upstream.status,
+            statusText: upstream.statusText,
+            headers: upstream.headers,
+          })
+        }
         // Non-stream JSON path for processed /v1/responses (native or chat-fallback).
         if (processResponses && upstream.body) {
           const reader = upstream.body.getReader()
