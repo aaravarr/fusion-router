@@ -256,6 +256,9 @@ export function AccountsPage() {
 
   // Show monthly column only when opencode-go accounts are in the visible set
   const showMonthly = accounts.some((a) => poolOf(a) === "opencode-go") || poolFilter === "opencode-go" || poolFilter === "all";
+  // command-code：5H + WEEK + MONTH 三列（GOAT 三窗齐全）；其余池保持主/次双列。
+  // 月列仍由 showMonthly 独立渲染（仅 opencode-go 行有值），与本三列正交。
+  const showTripleQuota = poolFilter === "command-code" || accounts.some((a) => poolOf(a) === "command-code");
 
   async function patchAccount(account: Account, body: Record<string, unknown>) {
     setBusyId(account.id);
@@ -685,7 +688,7 @@ export function AccountsPage() {
             <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => void runBulkAction("delete")} disabled={Boolean(bulkBusy)}><Trash2 data-icon="inline-start" />{bulkBusy === "delete" ? "删除中" : "批量删除"}</Button>
           </div>
         ) : null}
-        {resource.loading ? <LoadingTable rows={6} columns={showMonthly ? 10 : 9} /> : null}
+        {resource.loading ? <LoadingTable rows={6} columns={(showMonthly ? 10 : 9) + (showTripleQuota ? 1 : 0)} /> : null}
         {resource.error ? <ErrorState message={resource.error} onRetry={() => void resource.refresh()} /> : null}
         {!resource.loading && !resource.error && !total ? (
           <EmptyState
@@ -716,7 +719,7 @@ export function AccountsPage() {
         ) : null}
         {!resource.loading && !resource.error && total ? (
           <div className="overflow-x-auto">
-            <Table className={showMonthly ? "min-w-[1244px]" : "min-w-[1124px]"}>
+            <Table className={showMonthly || showTripleQuota ? "min-w-[1244px]" : "min-w-[1124px]"}>
             <TableHeader className="bg-[#fafafa]">
               <TableRow className="hover:bg-[#fafafa]">
                 <TableHead className="w-11 px-4">
@@ -731,6 +734,7 @@ export function AccountsPage() {
                 <TableHead className="w-[150px] text-xs text-muted-foreground">状态</TableHead>
                 <TableHead className="text-xs text-muted-foreground">{poolFilter.startsWith("custom:") ? "余额" : poolFilter === "all" ? "主额度窗口" : listWindowColumns(poolFilter)[0]?.header ?? "主额度窗口"}</TableHead>
                 <TableHead className="text-xs text-muted-foreground">{poolFilter.startsWith("custom:") ? "周期" : poolFilter === "all" ? "次额度窗口" : listWindowColumns(poolFilter)[1]?.header ?? "—"}</TableHead>
+                {showTripleQuota ? <TableHead className="text-xs text-muted-foreground">{poolFilter === "command-code" ? listWindowColumns("command-code", true)[2]?.header ?? "月" : "月"}</TableHead> : null}
                 {showMonthly ? <TableHead className="text-xs text-muted-foreground">月</TableHead> : null}
                 <TableHead className="w-[150px] text-xs text-muted-foreground">订阅 / 凭据</TableHead>
                 <TableHead className="w-[130px] text-xs text-muted-foreground">最近同步</TableHead>
@@ -771,11 +775,15 @@ export function AccountsPage() {
                       </>
                     ) : (() => {
                       // 按号池实际 quotaKinds 渲染主/次窗口；open-design-go 主列显示钱包余额、次列显示月度周期用量。
+                      // command-code 追加第三列 MONTH（MONTHLY 余额窗 usagePercent，走通用 QuotaStatus compact）。
+                      const isCommandCode = poolOf(account) === "command-code";
                       const [primary, secondary] = listWindowColumns(account.poolType);
+                      const monthly = isCommandCode ? listWindowColumns(account.poolType, true)[2] : null;
                       return (
                         <>
                           <TableCell>{renderListQuotaCell(account, primary)}</TableCell>
                           <TableCell>{renderListQuotaCell(account, secondary)}</TableCell>
+                          {showTripleQuota ? <TableCell>{isCommandCode ? renderListQuotaCell(account, monthly) : <span className="font-mono text-[10px] text-muted-foreground">—</span>}</TableCell> : null}
                         </>
                       );
                     })()}

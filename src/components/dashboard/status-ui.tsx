@@ -28,14 +28,33 @@ export interface ListWindowColumn {
 }
 
 /**
- * 账号列表页“主/次额度窗口”两列的渲染口径：按号池实际支持的 quotaKinds 决定，
- * 不再照抄 opencode-go 的 5H/WEEK 硬编码。次窗口为 null 时该列显示“—”。
- * custom: 池由页面单独按余额/周期渲染，不经过本函数。
+ * 账号列表页额度窗口列的渲染口径：按号池实际支持的 quotaKinds 决定。
+ * 默认返回 [主, 次] 双列；triple=true 时返回 [主, 次, 月] 三列：
+ * - opencode-go：[5H, WEEK] / [5H, WEEK, MONTH]（月列恒为 MONTH 窗）。
+ * - command-code：[5H, WEEK] / [5H, WEEK, MONTH]（GOAT 三窗齐全，月列走 MONTHLY
+ *   余额窗 usagePercent，cap 语义合法）。
+ * - open-design-go：两列恒为 [BALANCE, MONTH]（triple 忽略）。
+ * - xai-grok：[24H, null]（triple 下补 null 对齐，不渲染第三列）。
+ * 次/月列为 null 时该列显示"—"。custom: 池由页面单独按余额/周期渲染，不经过本函数。
  */
-export function listWindowColumns(poolType?: string | null): [ListWindowColumn | null, ListWindowColumn | null] {
+export function listWindowColumns(poolType?: string | null, triple?: false): [ListWindowColumn | null, ListWindowColumn | null];
+export function listWindowColumns(poolType: string | null | undefined, triple: true): [ListWindowColumn | null, ListWindowColumn | null, ListWindowColumn | null];
+export function listWindowColumns(poolType?: string | null, triple?: boolean): (ListWindowColumn | null)[] {
   const type = poolType || "opencode-go";
-  if (type === "xai-grok") return [{ key: "rolling24h", label: "24H", header: "滚动 24 小时" }, null];
-  if (type === "open-design-go") return [{ key: "balance", label: "BALANCE", header: "余额" }, { key: "monthly", label: "MONTH", header: "月" }];
+  if (type === "xai-grok") return triple ? [{ key: "rolling24h", label: "24H", header: "滚动 24 小时" }, null, null] : [{ key: "rolling24h", label: "24H", header: "滚动 24 小时" }, null];
+  if (type === "open-design-go") return triple ? [{ key: "balance", label: "BALANCE", header: "余额" }, { key: "monthly", label: "MONTH", header: "月" }, null] : [{ key: "balance", label: "BALANCE", header: "余额" }, { key: "monthly", label: "MONTH", header: "月" }];
+  if (type === "command-code") {
+    const tripleCols: [ListWindowColumn, ListWindowColumn, ListWindowColumn] = [
+      { key: "fiveHour", label: "5H", header: "5 小时" },
+      { key: "weekly", label: "WEEK", header: "周" },
+      { key: "monthly", label: "MONTH", header: "月" },
+    ];
+    return triple ? tripleCols : [tripleCols[0], tripleCols[1]];
+  }
+  if (triple) {
+    if (type === "opencode-go") return [{ key: "fiveHour", label: "5H", header: "5 小时" }, { key: "weekly", label: "WEEK", header: "周" }, { key: "monthly", label: "MONTH", header: "月" }];
+    return [{ key: "fiveHour", label: "5H", header: "5 小时" }, { key: "weekly", label: "WEEK", header: "周" }, null];
+  }
   return [{ key: "fiveHour", label: "5H", header: "5 小时" }, { key: "weekly", label: "WEEK", header: "周" }];
 }
 
@@ -286,9 +305,16 @@ export function QuotaStatus({
   variant?: "compact" | "card";
 }) {
   const state = quota?.status || "unknown";
-  // Balance-style windows (custom providers like DeepSeek expose remaining CNY/USD)
-  // should show the remaining amount as the primary figure instead of a percentage.
-  const isBalance = quota?.unit != null && quota?.remainingValue != null;
+  // Balance-style windows (custom providers like DeepSeek expose remaining CNY/USD
+  // without a total cap) show the remaining amount as the primary figure instead of
+  // a percentage. Windows that carry a real usagePercent against a cap (e.g. the
+  // command-code 5h/weekly/monthly credits windows) prefer the percentage figure;
+  // the credit amounts move to the sub-row (used · remaining / total).
+  // NOTE: 史实是 DeepSeek 类纯余额窗 total 为空 → 后端按 usagePercent=0、limitValue=null
+  // 落库（见 custom.ts balanceWindow），usagePercent 并非 null；故纯余额判定不能只看
+  // usagePercent == null，必须同时豁免 limitValue == null，否则线上 DeepSeek 余额卡会被
+  // 误切成 0.00% 百分比。command-code 三窗 limitValue 恒为 cap（非空），不受此豁免影响。
+  const isBalance = quota?.unit != null && quota?.remainingValue != null && (quota?.usagePercent == null || quota?.limitValue == null);
   // Keep real over-limit percentages (can exceed 100%) so free-tier overspend is visible.
   const used = quota?.usagePercent == null ? null : Math.round(Math.max(0, Number(quota.usagePercent)) * 100) / 100;
   const usedTokens = quota?.limitValue != null && quota?.remainingValue != null
@@ -336,7 +362,11 @@ export function QuotaStatus({
         {!isBalance && usedTokens != null && limitTokens != null ? (
           <p className="mt-2 font-mono text-[10px] text-muted-foreground">
             {quota?.unit
-              ? `剩余 ${Number(quota.remainingValue).toLocaleString()} / ${Number(quota.limitValue).toLocaleString()} ${quota.unit}`
+              ? quota.unit === "credits"
+                // credits 窗（command-code 三窗）保留 4 位小数，与月度余额卡口径一致；
+                // toLocaleString 默认最多 3 位小数还会吃掉浮点尾差（如 3.7204999…→3.72）。
+                ? `已用 ${formatCommandCodeCredits(usedTokens)} · 剩余 ${formatCommandCodeCredits(Number(quota.remainingValue))} / 总量 ${formatCommandCodeCredits(Number(quota.limitValue))} ${quota.unit}`
+                : `已用 ${formatUnitAmount(usedTokens)} · 剩余 ${formatUnitAmount(Number(quota.remainingValue))} / 总量 ${formatUnitAmount(Number(quota.limitValue))} ${quota.unit}`
               : `${compactNumber(usedTokens)} / ${compactNumber(limitTokens)} tokens${overLimit ? ` · 超 ${compactNumber(usedTokens - limitTokens)}` : ""}`}
           </p>
         ) : null}
@@ -371,8 +401,8 @@ export function QuotaStatus({
         <div className={`h-full rounded-full ${used != null && used >= 100 ? "bg-warning" : "bg-primary"}`} style={{ width: `${Math.min(100, used ?? 0)}%` }} />
       </div>
       {usedTokens != null && limitTokens != null ? (
-        <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={`${usedTokens} / ${limitTokens} tokens`}>
-          {compactNumber(usedTokens)} / {compactNumber(limitTokens)} tokens
+        <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={quota?.unit ? `${usedTokens} / ${limitTokens} ${quota.unit}` : `${usedTokens} / ${limitTokens} tokens`}>
+          {quota?.unit ? `${compactNumber(usedTokens)} / ${compactNumber(limitTokens)} ${quota.unit}` : `${compactNumber(usedTokens)} / ${compactNumber(limitTokens)} tokens`}
           {overLimit ? ` · 超 ${compactNumber(usedTokens - limitTokens)}` : ""}
         </p>
       ) : (
@@ -500,11 +530,18 @@ export function formatCommandCodeCredits(value: number | null | undefined): stri
   return Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 }
 
+/** Non-credits unit 窗副行数值格式化：默认千分位（无 credits 的 4 位小数要求）。 */
+function formatUnitAmount(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 4 });
+}
+
 /**
  * Command Code MONTHLY 余额卡（详情弹窗用）。
  * 数据来自 MONTHLY 余额窗 extra（/alpha/billing/credits 剩余 + subscriptions 套餐/账期）：
- * 大数字「剩余 X credits」（extra.remaining），进度条走 quota usagePercent（有真上限 cap），
- * 副行「总量 cap · 本账期已消耗（cap−remaining 或 summary 口径）· 账期至 periodEnd」；
+ * 大数字「X% 已用」（quota usagePercent，有真上限 cap）；无 usagePercent 时（如旧快照
+ * 信息窗）回退展示累计消耗 credits；进度条保留；
+ * 明细行「总量 / 本账期已消耗 / 剩余」三行 credits（cap−remaining 口径，summary 口径兜底消耗）；
  * 请求次数/tokens/成功率等 summary 对账字段作为卡内次要行保留（extra 里有才展示）。
  * 兼容旧快照：只有 totalCredits 无 remaining 时，回退展示累计消耗（无进度条）。
  */
@@ -543,8 +580,8 @@ export function CommandCodeBillingCard({ account }: { account: Account }) {
         </span>
       </div>
       <div className="mt-3 flex min-w-0 items-baseline gap-1">
-        <span className="font-mono text-2xl font-medium tracking-[-0.04em] tabular-nums">{formatCommandCodeCredits(hasBalance ? billing.remaining : billing.totalCredits)}</span>
-        <span className="text-[11px] text-muted-foreground">{hasBalance ? "credits 剩余" : "credits 已消耗"}</span>
+        <span className="font-mono text-2xl font-medium tracking-[-0.04em] tabular-nums">{hasBalance && used != null ? used.toFixed(2) : formatCommandCodeCredits(hasBalance ? billing.remaining : billing.totalCredits)}</span>
+        <span className="text-[11px] text-muted-foreground">{hasBalance && used != null ? "% 已用" : hasBalance ? "credits 剩余" : "credits 已消耗"}</span>
       </div>
       {hasBalance && used != null ? (
         <div
@@ -570,6 +607,8 @@ export function CommandCodeBillingCard({ account }: { account: Account }) {
         </span>
         <span className="text-muted-foreground">{hasBalance ? "本账期已消耗" : "请求次数"}</span>
         <span className="truncate text-right font-mono text-foreground">{hasBalance ? `${consumedLabel} credits` : requestsLabel}</span>
+        <span className="text-muted-foreground">{hasBalance ? "剩余" : "Tokens"}</span>
+        <span className="truncate text-right font-mono text-foreground" title={hasBalance ? (billing.remaining != null ? formatCommandCodeCredits(billing.remaining) : undefined) : undefined}>{hasBalance ? `${billing.remaining != null ? formatCommandCodeCredits(billing.remaining) : "未返回"} credits` : tokensLabel}</span>
         <span className="text-muted-foreground">{hasBalance ? "账期至" : "Tokens"}</span>
         <span className="truncate text-right font-mono text-foreground" title={billing.periodEnd ?? undefined}>{hasBalance ? periodLabel : tokensLabel}</span>
         {billing.planId ? (

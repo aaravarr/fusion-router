@@ -8,10 +8,21 @@ describe("listWindowColumns", () => {
     expect(secondary).toEqual({ key: "monthly", label: "MONTH", header: "月" })
   })
 
-  it("opencode-go 保持 5H + WEEK 两档", () => {
+  it("command-code 默认双列 5H + WEEK；triple 下为 5H/WEEK/MONTH 三列", () => {
+    const [primary, secondary] = listWindowColumns("command-code")
+    expect(primary).toMatchObject({ key: "fiveHour", label: "5H" })
+    expect(secondary).toMatchObject({ key: "weekly", label: "WEEK" })
+    const triple = listWindowColumns("command-code", true)
+    expect(triple.map((column) => column?.key)).toEqual(["fiveHour", "weekly", "monthly"])
+    expect(triple[2]).toMatchObject({ label: "MONTH", header: "月" })
+  })
+
+  it("opencode-go triple 下对齐 5H/WEEK/MONTH 三列；默认仍为双列", () => {
     const [primary, secondary] = listWindowColumns("opencode-go")
     expect(primary).toMatchObject({ key: "fiveHour", label: "5H" })
     expect(secondary).toMatchObject({ key: "weekly", label: "WEEK" })
+    const triple = listWindowColumns("opencode-go", true)
+    expect(triple.map((column) => column?.key)).toEqual(["fiveHour", "weekly", "monthly"])
   })
 
   it("openai / kimi-code 保持 5H + WEEK 两档", () => {

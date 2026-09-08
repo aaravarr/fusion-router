@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest"
+import { createElement } from "react"
+import { renderToString } from "react-dom/server"
 import {
   commandCodeBillingExtra,
   commandCodeWindowExtra,
+  CommandCodeBillingCard,
   formatCommandCodeCredits,
   getPoolQuotaKinds,
+  getQuota,
   listWindowColumns,
   POOL_TYPE_META,
+  QuotaStatus,
 } from "./status-ui"
 import type { Account } from "./types"
 
@@ -77,10 +82,26 @@ describe("command-code 三窗展示（/alpha/billing/credits + subscriptions）"
     expect(getPoolQuotaKinds("command-code")).toEqual(["fiveHour", "weekly", "monthly"])
   })
 
-  it("列表主/次列：恢复双窗列（5H + WEEK）", () => {
+  it("列表主/次列默认仍为双窗（5H + WEEK，零视觉变化）", () => {
     const [primary, secondary] = listWindowColumns("command-code")
     expect(primary).toMatchObject({ key: "fiveHour", label: "5H" })
     expect(secondary).toMatchObject({ key: "weekly", label: "WEEK" })
+  })
+
+  it("列表 triple=true 返回 5H/WEEK/MONTH 三列（对齐 opencode-go 月列形态）", () => {
+    const [fiveHour, weekly, monthly] = listWindowColumns("command-code", true)
+    expect(fiveHour).toMatchObject({ key: "fiveHour", label: "5H", header: "5 小时" })
+    expect(weekly).toMatchObject({ key: "weekly", label: "WEEK", header: "周" })
+    expect(monthly).toMatchObject({ key: "monthly", label: "MONTH", header: "月" })
+    // 月列走 MONTHLY 余额窗：cap 语义真实，百分比合法。
+    expect(getQuota(commandCodeAccount(), "monthly")?.usagePercent).toBeCloseTo(5.31, 2)
+  })
+
+  it("opencode-go triple=true 同为 5H/WEEK/MONTH 三列", () => {
+    const [fiveHour, weekly, monthly] = listWindowColumns("opencode-go", true)
+    expect(fiveHour).toMatchObject({ key: "fiveHour", label: "5H" })
+    expect(weekly).toMatchObject({ key: "weekly", label: "WEEK" })
+    expect(monthly).toMatchObject({ key: "monthly", label: "MONTH" })
   })
 
   it("commandCodeWindowExtra 读取双窗 used/cap/exceeded", () => {
@@ -158,5 +179,110 @@ describe("command-code 三窗展示（/alpha/billing/credits + subscriptions）"
     for (const poolType of ["kimi-code", "openai"]) {
       expect(getPoolQuotaKinds(poolType)).toEqual(["fiveHour", "weekly"])
     }
+  })
+
+  it("详情 5h 卡：大数字=已用百分比，副行展示已用·剩余/总量 credits", () => {
+    const html = renderToString(createElement(QuotaStatus, { label: "5 小时", quota: getQuota(commandCodeAccount(), "fiveHour"), variant: "card" }))
+    // 大数字 26.58（百分比路径），后缀 % 已用。
+    expect(html).toContain(">26.58<")
+    expect(html).toContain("% 已用")
+    // 副行三数：已用 3.7205 · 剩余 10.2795 / 总量 14.0000 credits。
+    expect(html).toContain("已用 3.7205")
+    expect(html).toContain("剩余 10.2795 / 总量 14.0000 credits")
+    // 不再走余额大数字路径。
+    expect(html).not.toContain(">10.2795<")
+  })
+
+  it("纯余额窗（DeepSeek 类：usagePercent 非 null 但 limitValue 缺失）保持余额大数字", () => {
+    const balance: Account = {
+      id: "deepseek-1",
+      poolType: "custom:deepseek",
+      quotaWindows: [{
+        kind: "PERMANENT",
+        usagePercent: 0,
+        unit: "CNY",
+        limitValue: null,
+        remainingValue: 123.45,
+      }],
+    }
+    const card = renderToString(createElement(QuotaStatus, { label: "永久余额", quota: getQuota(balance, "permanent"), variant: "card" }))
+    expect(card).toContain("¥123.45")
+    expect(card).toContain("余额")
+    expect(card).not.toContain("% 已用")
+    const compact = renderToString(createElement(QuotaStatus, { label: "余额", quota: getQuota(balance, "permanent") }))
+    expect(compact).toContain("¥123.45")
+  })
+
+  it("GLM/Kimi/OpenAI 窗（unit 为空）零视觉变化：百分比大数字 + tokens 副行", () => {
+    const account: Account = {
+      id: "glm-1",
+      poolType: "glm-coding",
+      quotaWindows: [{
+        kind: "FIVE_HOUR",
+        usagePercent: 36,
+        limitValue: 12000,
+        remainingValue: 7680,
+        resetInSec: 3600,
+        lastObservedAt: "2026-09-08T10:00:00.000Z",
+      }],
+    }
+    const card = renderToString(createElement(QuotaStatus, { label: "5 小时", quota: getQuota(account, "fiveHour"), variant: "card" }))
+    expect(card).toContain(">36.00<")
+    expect(card).toContain("% 已用")
+    expect(card).toContain("tokens")
+    const compact = renderToString(createElement(QuotaStatus, { label: "5H", quota: getQuota(account, "fiveHour") }))
+    expect(compact).toContain("36.00")
+    expect(compact).toContain("%")
+    expect(compact).toContain("tokens")
+  })
+
+  it("列表单元格：command-code 副行单位为 credits（非 tokens）", () => {
+    const html = renderToString(createElement(QuotaStatus, { label: "5H", quota: getQuota(commandCodeAccount(), "fiveHour") }))
+    expect(html).toContain("26.58%")
+    expect(html).toContain("credits")
+    expect(html).not.toContain("tokens")
+  })
+
+  it("详情月卡：大数字=X% 已用，明细含总量/已消耗/剩余三行 credits", () => {
+    const html = renderToString(createElement(CommandCodeBillingCard, { account: commandCodeAccount() }))
+    // 大数字 5.31 % 已用（百分比优先）。
+    expect(html).toContain(">5.31<")
+    expect(html).toContain("% 已用")
+    expect(html).toContain("总量")
+    expect(html).toContain("70.0000 credits")
+    expect(html).toContain("本账期已消耗")
+    expect(html).toContain("3.7205 credits")
+    expect(html).toContain("剩余")
+    expect(html).toContain("66.2795 credits")
+    // 对账行不动。
+    expect(html).toContain("请求次数")
+    expect(html).toContain("Tokens")
+    expect(html).toContain("成功率")
+    expect(html).toContain("账期至")
+    expect(html).toContain("最近同步")
+  })
+
+  it("详情月卡回退：无 usagePercent 时仍显示剩余 credits 大数字", () => {
+    const noUsage: Account = {
+      id: "cc-nopercent",
+      poolType: "command-code",
+      quotaWindows: [{
+        kind: "MONTHLY",
+        usagePercent: null,
+        unit: "credits",
+        limitValue: 70,
+        remainingValue: 66.2795,
+        extra: {
+          service: "command-code",
+          remaining: 66.2795,
+          cap: 70,
+          planId: "individual-goat",
+          periodEnd: "2026-10-01T00:00:00.000Z",
+        },
+      }],
+    }
+    const html = renderToString(createElement(CommandCodeBillingCard, { account: noUsage }))
+    expect(html).toContain("66.2795")
+    expect(html).toContain("credits 剩余")
   })
 })
