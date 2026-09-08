@@ -40,7 +40,7 @@ import {
 import { PageIntro, Panel, ErrorState, LoadingTable, EmptyState, PaginationBar, StatsStrip, formatDate } from "./page-kit";
 import { QuotaForecastPanel } from "./quota-forecast-panel";
 import { InviteRewardsSection } from "./invite-rewards";
-import { AccountBadges, BillingSafetyBadge, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, listWindowColumns, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge, WalletBalanceCell, type ListWindowColumn } from "./status-ui";
+import { AccountBadges, BillingSafetyBadge, CommandCodeBillingCard, displayWorkspaceId, getPoolLabel, getPoolQuotaKinds, getQuota, listWindowColumns, PoolTypeBadge, POOL_TYPE_META, QuotaStatus, StatusBadge, WalletBalanceCell, type ListWindowColumn } from "./status-ui";
 import { useAdminResource } from "./use-admin-resource";
 import { useAdmin } from "./admin-context";
 import type { Account, QuotaWallet } from "./types";
@@ -141,9 +141,9 @@ function glmPlanLevel(account: Account): string | null {
   return typeof extra?.level === "string" && extra.level ? extra.level : null;
 }
 
-/** Command Code 套餐标识：来自 quota_windows 的 extra.plan（/alpha/usage/summary，契约待实测）。 */
+/** Command Code 套餐标识：来自 quota_windows 的 extra.plan（/alpha/usage/summary 上游不返回 plan，恒为空 → 显示「未返回」）。 */
 function commandCodePlan(account: Account): string | null {
-  const extra = (getQuota(account, "fiveHour") ?? getQuota(account, "weekly"))?.extra as Record<string, unknown> | undefined;
+  const extra = getQuota(account, "monthly")?.extra as Record<string, unknown> | undefined;
   return typeof extra?.plan === "string" && extra.plan ? extra.plan : null;
 }
 
@@ -1016,14 +1016,20 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                     : "尚未取得 Use balance 状态，因此暂不参与路由。服务重启完成字段升级后，点击下方“立即同步”即可重新读取，无需重新录入账号。"}
                 </div>
               ) : null}
-              <DetailSection title="额度窗口" description={isGo ? "来自最近一次 Console 同步。" : "来自真实上游响应头；立即同步会发送一次最小额度探测。"}>
+              <DetailSection title="额度窗口" description={isGo ? "来自最近一次 Console 同步。" : poolOf(account) === "command-code" ? "来自 /alpha/usage/summary 账期累计；立即同步会刷新一次。" : "来自真实上游响应头；立即同步会发送一次最小额度探测。"}>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(148px,1fr))] gap-2.5">
+                  {poolOf(account) === "command-code" ? (
+                    getQuota(account, "monthly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><CommandCodeBillingCard account={account} /></div> : <div className="rounded-md border bg-[#fafafa] px-3.5 py-3 text-xs leading-5 text-muted-foreground">暂无数据，点击下方「立即同步」获取账期累计用量。</div>
+                  ) : (
+                    <>
                   {!isCustomPool && quotaKinds.includes("fiveHour") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="5 小时" quota={getQuota(account, "fiveHour")} variant="card" /></div> : null}
                   {!isCustomPool && quotaKinds.includes("weekly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每周" quota={getQuota(account, "weekly")} variant="card" /></div> : null}
                   {!isCustomPool && quotaKinds.includes("monthly") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="每月" quota={getQuota(account, "monthly")} variant="card" /></div> : null}
                   {!isCustomPool && quotaKinds.includes("rolling24h") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="滚动 24 小时" quota={getQuota(account, "rolling24h")} variant="card" /></div> : null}
                   {quotaKinds.includes("permanent") && getQuota(account, "permanent") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="永久余额" quota={getQuota(account, "permanent")} variant="card" /></div> : null}
                   {quotaKinds.includes("customPeriod") && getQuota(account, "customPeriod") ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><QuotaStatus label="自定义周期" quota={getQuota(account, "customPeriod")} variant="card" /></div> : null}
+                    </>
+                  )}
                   {poolOf(account) === "kimi-code" ? (() => { const wallet = getQuota(account, "weekly")?.wallet; return wallet ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><WalletCard wallet={wallet} /></div> : null; })() : null}
                   {poolOf(account) === "open-design-go" ? (() => { const wallet = getQuota(account, "monthly")?.wallet; return wallet ? <div className="min-w-0 rounded-md border bg-[#fafafa] p-3.5"><WalletCard wallet={wallet} /></div> : null; })() : null}
                   {isCustomPool && !getQuota(account, "permanent") && !getQuota(account, "customPeriod") ? <div className="rounded-md border bg-[#fafafa] px-3.5 py-3 text-xs leading-5 text-muted-foreground">尚未探测到余额，点击下方「立即同步」获取。</div> : null}
@@ -1131,11 +1137,28 @@ function WalletCard({ wallet }: { wallet: QuotaWallet }) {
   );
 }
 
-/** 账号列表页主/次额度列渲染：BALANCE 列展示钱包余额，其余窗口交给 QuotaStatus。 */
+/** 账号列表页主/次额度列渲染：BALANCE 列展示钱包余额，command-code 次列展示账期累计 credits，其余窗口交给 QuotaStatus。 */
 function renderListQuotaCell(account: Account, column: ListWindowColumn | null) {
   if (!column) return <span className="font-mono text-[10px] text-muted-foreground">—</span>;
   if (column.key === "balance") return <WalletBalanceCell account={account} />;
+  if (column.key === "monthly" && (account.poolType || "") === "command-code") return <CommandCodeListCell account={account} />;
   return <QuotaStatus label={column.label} quota={getQuota(account, column.key)} />;
+}
+
+/** command-code 列表次列：账期累计消耗 credits（无数据时占位）。 */
+function CommandCodeListCell({ account }: { account: Account }) {
+  const quota = getQuota(account, "monthly");
+  const extra = (quota?.extra ?? null) as Record<string, unknown> | null;
+  const totalCredits = extra && typeof extra.totalCredits === "number" && Number.isFinite(extra.totalCredits) ? extra.totalCredits as number : null;
+  if (totalCredits == null) return <span className="font-mono text-[10px] text-muted-foreground">—/待观测</span>;
+  return (
+    <span
+      className="font-mono text-[11px] font-medium tabular-nums text-foreground"
+      title={`账期累计消耗 ${totalCredits} credits（非剩余额度）`}
+    >
+      {Number(totalCredits).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} credits
+    </span>
+  );
 }
 
 function DetailRow({ label, value, mono, title }: { label: string; value: string; mono?: boolean; title?: string }) {

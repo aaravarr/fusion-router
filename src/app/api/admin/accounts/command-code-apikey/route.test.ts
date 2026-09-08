@@ -37,7 +37,7 @@ describe("POST /api/admin/accounts/command-code-apikey", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.requireSession.mockReturnValue({ id: "owner" })
-    mocks.createProviderAccount.mockReturnValue({ id: "acct-1", name: "Command Code (GOAT)", email: null, poolType: "command-code" })
+    mocks.createProviderAccount.mockReturnValue({ id: "acct-1", name: "a@b.c", email: null, poolType: "command-code" })
   })
 
   it("拒绝过短的 key", async () => {
@@ -127,9 +127,8 @@ describe("POST /api/admin/accounts/command-code-apikey", () => {
 
     const accountInput = mocks.createProviderAccount.mock.calls[0]?.[0] as { poolType: string; name: string; externalId: string; email: string | null }
     expect(accountInput.poolType).toBe("command-code")
-    // 无 plan 时账号名不再拼 plan 后缀，改拼 email 便于辨识。
-    expect(accountInput.name).toContain("GOAT")
-    expect(accountInput.name).toContain("a@b.c")
+    // 账号名直接用标识（邮箱），不含固定前缀。
+    expect(accountInput.name).toBe("a@b.c")
     expect(accountInput.email).toBe("a@b.c")
     expect(accountInput.externalId).toMatch(/^[0-9a-f]{24}$/)
 
@@ -158,5 +157,19 @@ describe("POST /api/admin/accounts/command-code-apikey", () => {
     const credentialInput = mocks.upsert.mock.calls[0]?.[0] as { credentialData: Record<string, string> }
     expect(credentialInput.credentialData.commandCodePlan).toBeUndefined()
     expect(credentialInput.credentialData.commandCodeUserId).toBeUndefined()
+    // 无邮箱时账号名回退裸名 `Command Code`，不含固定前缀。
+    const accountInput = mocks.createProviderAccount.mock.calls[0]?.[0] as { name: string }
+    expect(accountInput.name).toBe("Command Code")
+  })
+
+  it("无邮箱时账号名回退裸名且 NOT_FOUND 降级同样无前缀", async () => {
+    mocks.verifyCommandCodeApiKey.mockRejectedValue(new CommandCodeProbeUnavailableError("404 not found", "NOT_FOUND"))
+    const response = await POST(new Request("http://x/api/admin/accounts/command-code-apikey", {
+      method: "POST",
+      body: JSON.stringify({ apiKey: VALID_KEY }),
+    }))
+    expect(response.status).toBe(200)
+    const accountInput = mocks.createProviderAccount.mock.calls[0]?.[0] as { name: string }
+    expect(accountInput.name).toBe("Command Code")
   })
 })

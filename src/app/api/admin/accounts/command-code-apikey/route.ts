@@ -70,8 +70,10 @@ export async function POST(request: Request) {
   const accountRepo = new AccountRepository(user.id, db)
   const credRepo = new ProviderCredentialRepository(user.id, db)
 
+  // 账号名直接用标识（邮箱），不加固定前缀（用户要求去掉 `Command Code (GOAT) · ` 前缀；
+  // GLM 的 `GLM Coding (CN) · pro` 命名保持不动）。无邮箱时回退裸名 `Command Code`。
   const account = accountRepo.createProviderAccount({
-    name: `Command Code (GOAT)${email ? ` · ${email}` : ""}`,
+    name: email || "Command Code",
     poolType: "command-code",
     email,
     externalId: commandCodeExternalId(apiKey),
