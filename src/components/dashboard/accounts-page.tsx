@@ -141,11 +141,12 @@ function glmPlanLevel(account: Account): string | null {
   return typeof extra?.level === "string" && extra.level ? extra.level : null;
 }
 
-/** Command Code 套餐标识：来自 quota_windows 的 extra.planId（subscriptions planId，旧快照兼容 plan）。 */
+/** Command Code 套餐标识：来自 quota_windows 的 extra.planId（subscriptions planId，旧快照兼容 plan）。展示名映射与后端 COMMAND_CODE_PLAN_DISPLAY 保持一致。 */
+const COMMAND_CODE_PLAN_LABEL: Record<string, string> = { "individual-goat": "GOAT", go: "GO", pro: "PRO", "pro-v1": "PRO", provider: "PROVIDER", max: "MAX", ultra: "ULTRA", "teams-pro": "TEAMS" };
 function commandCodePlan(account: Account): string | null {
   const extra = getQuota(account, "monthly")?.extra as Record<string, unknown> | undefined;
   const planId = typeof extra?.planId === "string" && extra.planId ? extra.planId as string : null;
-  if (planId) return planId;
+  if (planId) return COMMAND_CODE_PLAN_LABEL[planId] ?? COMMAND_CODE_PLAN_LABEL[planId.toLowerCase()] ?? planId;
   return typeof extra?.plan === "string" && extra.plan ? extra.plan as string : null;
 }
 
