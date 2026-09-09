@@ -14,16 +14,18 @@ function visitSchema(node: unknown, seen: WeakSet<object>): number {
 
   let patched = 0
   if (isObj(node)) {
-    // A declared properties object proves this is a record schema even when
-    // the producer omitted `type: "object"`. An object without properties is
-    // intentionally treated as a free-form map and left untouched.
-    if (isObj(node.properties) && !hasOwn(node, "additionalProperties")) {
-      node.additionalProperties = false
-      patched += 1
-    }
-    // Only walk schema-bearing keywords. Do not inspect arbitrary examples,
-    // defaults, or descriptions as if they were schema nodes.
+    // A declared properties map proves this is a record schema even when the
+    // producer omitted `type: "object"`. The upstream only honors the
+    // false-schema sentinel when it is the final member of this map, so never
+    // add a sibling JSON-Schema keyword here. Objects without properties are
+    // intentionally treated as free-form maps and left untouched.
     if (isObj(node.properties)) {
+      if (!hasOwn(node.properties, "additionalProperties") && !hasOwn(node, "additionalProperties")) {
+        node.properties.additionalProperties = false
+        patched += 1
+      }
+      // Only walk schema-bearing keywords. Do not inspect arbitrary examples,
+      // defaults, or descriptions as if they were schema nodes.
       for (const child of Object.values(node.properties)) patched += visitSchema(child, seen)
     }
     for (const key of ["items", "additionalProperties", "contains", "propertyNames", "if", "then", "else", "not"]) {

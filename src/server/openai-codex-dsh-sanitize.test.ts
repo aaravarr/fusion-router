@@ -269,7 +269,7 @@ describe("openai 池 DSH function_call 参数清洗（codex 原生直通）", ()
     }), "responses")
     expect(response.status).toBe(200)
     const tools = forwarded?.tools as Array<Record<string, unknown>>
-    expect((tools[0].parameters as Record<string, unknown>).additionalProperties).toBe(false)
+    expect(((tools[0].parameters as Record<string, unknown>).properties as Record<string, unknown>).additionalProperties).toBe(false)
     await new Promise((resolve) => setTimeout(resolve, 0))
     const strictRow = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
     expect(String(strictRow.transform_summary || "")).toContain("schema-strict:1")
@@ -287,6 +287,6 @@ describe("openai 池 DSH function_call 参数清洗（codex 原生直通）", ()
     }), "chat/completions")
     expect(response.status).toBe(200)
     const tools = forwarded?.tools as Array<Record<string, unknown>>
-    expect((tools[0].parameters as Record<string, unknown>).additionalProperties).toBe(false)
+    expect(((tools[0].parameters as Record<string, unknown>).properties as Record<string, unknown>).additionalProperties).toBe(false)
   })
 })

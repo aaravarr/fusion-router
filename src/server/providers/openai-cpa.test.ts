@@ -409,9 +409,9 @@ describe("normalizeCodexResponsesBody（CLIProxyAPI body 契约）", () => {
     const converted = decode(normalizeCodexResponsesBody(encode(chatRequestToResponses({
       tools: [{ type: "function", function: { name: "SendToUser", parameters: { type: "object", properties: { type: { type: "string" }, content: { type: "string" } } } } }],
     }))))
-    expect((chat.tools as Array<Record<string, unknown>>)[0].function).toMatchObject({ parameters: { additionalProperties: false } })
-    expect((converted.tools as Array<Record<string, unknown>>)[0]).toMatchObject({ parameters: { additionalProperties: false } })
-    expect((responses.tools as Array<Record<string, unknown>>)[0]).toMatchObject({ parameters: { additionalProperties: false } })
+    expect((chat.tools as Array<Record<string, unknown>>)[0].function).toMatchObject({ parameters: { properties: { additionalProperties: false } } })
+    expect((converted.tools as Array<Record<string, unknown>>)[0]).toMatchObject({ parameters: { properties: { additionalProperties: false } } })
+    expect((responses.tools as Array<Record<string, unknown>>)[0]).toMatchObject({ parameters: { properties: { additionalProperties: false } } })
   })
 
   it("非 JSON / 数组 / 空 body 原样透传", () => {
