@@ -10,6 +10,7 @@ import {
   OpenAITokenRevokedError,
   parseCodexModelsPayload,
 } from "./openai-cpa"
+import { chatRequestToResponses } from "../responses/custom-provider-compat"
 
 // CLIProxyAPI 契约（2026-09-07 源码核实）指纹常量，与 provider 内部保持一致。
 const EXPECTED_UA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
@@ -396,6 +397,21 @@ describe("normalizeCodexResponsesBody（CLIProxyAPI body 契约）", () => {
     }
     // service_tier 仅保留 priority（CLIProxyAPI 同款）
     expect(decode(normalizeCodexResponsesBody(encode({ model: "gpt-5.4-mini", input: [], service_tier: "priority" }))).service_tier).toBe("priority")
+  })
+
+  it("chat/responses 两种 tools 形态都在最终上行体补封闭记录", () => {
+    const chat = decode(normalizeCodexResponsesBody(encode({
+      tools: [{ type: "function", function: { name: "SendToUser", parameters: { type: "object", properties: { type: { type: "string" }, content: { type: "string" } } } } }],
+    })))
+    const responses = decode(normalizeCodexResponsesBody(encode({
+      tools: [{ type: "function", name: "SendToUser", parameters: { type: "object", properties: { type: { type: "string" }, content: { type: "string" } } } }],
+    })))
+    const converted = decode(normalizeCodexResponsesBody(encode(chatRequestToResponses({
+      tools: [{ type: "function", function: { name: "SendToUser", parameters: { type: "object", properties: { type: { type: "string" }, content: { type: "string" } } } } }],
+    }))))
+    expect((chat.tools as Array<Record<string, unknown>>)[0].function).toMatchObject({ parameters: { additionalProperties: false } })
+    expect((converted.tools as Array<Record<string, unknown>>)[0]).toMatchObject({ parameters: { additionalProperties: false } })
+    expect((responses.tools as Array<Record<string, unknown>>)[0]).toMatchObject({ parameters: { additionalProperties: false } })
   })
 
   it("非 JSON / 数组 / 空 body 原样透传", () => {

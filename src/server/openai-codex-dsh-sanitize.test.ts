@@ -20,7 +20,7 @@ const DIRTY_ARGS = JSON.stringify({
   justification: "需要更宽权限执行",
   sandbox_permissions: "workspace-write",
 })
-const GENERIC_TOOL = { type: "function", function: { name: "pwsh", parameters: { type: "object", properties: { command: { type: "string" }, description: { type: "string" } }, required: ["command"] } } }
+const STRICT_TOOL = { type: "function", function: { name: "SendToUser", parameters: { type: "object", properties: { type: { type: "string" }, content: { type: "string" }, end_turn: { type: "boolean" } }, required: ["type"] } } }
 
 // Codex LF 真实流形状（openai-codex-native-stats.test.ts 同形 fixture）+
 // function_call item：output_item.added → function_call_arguments.delta 增量 ×2 →
@@ -257,29 +257,36 @@ describe("openai 池 DSH function_call 参数清洗（codex 原生直通）", ()
     expect(String(row.transform_summary || "")).not.toContain(DSH_ARGS_SANITIZE_TAG)
   })
 
-  it("通用 schema 修剪：responses 原生直通不区分 UA 删除未知 key", async () => {
+  it("schema-strict：responses 原生上行最终体收紧并记录补丁计数", async () => {
     const { apiKey, credentials, hasher } = setupOpenAI()
-    const fetcher = vi.fn().mockImplementation(async () => new Response(codexLfFunctionCallEvents, { status: 200 }))
+    let forwarded: Record<string, unknown> | undefined
+    const fetcher = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      forwarded = JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({ id: "resp_strict", object: "response", model: "gpt-5.6-luna", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } })
+    })
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(responsesRequest(apiKey, {
-      model: "gpt-5.6-luna", input: "hi", stream: false, tools: [GENERIC_TOOL],
-    }, { "user-agent": "codex-cli-client/9.9.9" }), "responses")
-    const payload = await response.json() as Record<string, unknown>
-    const output = payload.output as Array<Record<string, unknown>>
-    expect(JSON.parse(String(output.find((item) => item.type === "function_call")?.arguments))).toEqual({ command: "Get-Process", description: "列出进程" })
+      model: "gpt-5.6-luna", input: "hi", stream: false, tools: [{ ...STRICT_TOOL }],
+    }), "responses")
+    expect(response.status).toBe(200)
+    const tools = forwarded?.tools as Array<Record<string, unknown>>
+    expect((tools[0].parameters as Record<string, unknown>).additionalProperties).toBe(false)
     await new Promise((resolve) => setTimeout(resolve, 0))
-    const row = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
-    expect(String(row.transform_summary || "")).toContain("args-schema-prune")
+    const strictRow = db.prepare("SELECT transform_summary FROM gateway_requests ORDER BY started_at DESC LIMIT 1").get() as Record<string, unknown>
+    expect(String(strictRow.transform_summary || "")).toContain("schema-strict:1")
   })
 
-  it("通用 schema 修剪：chat→responses 增量转换后交付参数已修剪", async () => {
+  it("schema-strict：chat→responses 转换后最终 tools 保留收紧补丁", async () => {
     const { apiKey, credentials, hasher } = setupOpenAI()
-    const fetcher = vi.fn().mockImplementation(async () => new Response(codexLfFunctionCallEvents, { status: 200 }))
+    let forwarded: Record<string, unknown> | undefined
+    const fetcher = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      forwarded = JSON.parse(new TextDecoder().decode(init?.body as Uint8Array)) as Record<string, unknown>
+      return Response.json({ id: "resp_strict_chat", object: "response", model: "gpt-5.6-luna", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } })
+    })
     const response = await new GatewayService(credentials, db, fetcher, hasher).handle(chatRequest(apiKey, {
-      model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }], stream: true, tools: [GENERIC_TOOL],
-    }, { "user-agent": "codex-cli-client/9.9.9" }), "chat/completions")
-    const text = await response.text()
-    expect(text).toContain("chat.completion.chunk")
-    expect(text).not.toContain("sandbox_permissions")
-    expect(text).toContain("justification")
+      model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }], stream: false, tools: [{ ...STRICT_TOOL }],
+    }), "chat/completions")
+    expect(response.status).toBe(200)
+    const tools = forwarded?.tools as Array<Record<string, unknown>>
+    expect((tools[0].parameters as Record<string, unknown>).additionalProperties).toBe(false)
   })
 })

@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest"
 import { extractToolSchemas, pruneFunctionArguments, pruneResponsesPayload, pruneSseText } from "./args-schema-prune"
 
 describe("args-schema-prune", () => {
-  it("R1 removes unknown keys from flat object and recurses", () => {
-    const schemas = extractToolSchemas({ tools: [{ type: "function", function: { name: "SendToUser", parameters: { type: "object", properties: { type: { type: "string" }, content: { type: "string" }, meta: { type: "object", properties: { ok: { type: "boolean" } } } } } } }] })
-    const payload = { output: [{ type: "function_call", name: "SendToUser", arguments: JSON.stringify({ type: "text", content: "ok", unused: "x", meta: { ok: true, extra: 1 } }) }] }
+  it("flat object and default values remain untouched (only R2 is active)", () => {
+    const schemas = extractToolSchemas({ tools: [{ type: "function", function: { name: "SendToUser", parameters: { type: "object", properties: { content: { type: "string" }, mode: { type: "string", default: "auto" } } } } }] })
+    const payload = { output: [{ type: "function_call", name: "SendToUser", arguments: JSON.stringify({ content: "ok", extra: "x", mode: "auto" }) }] }
     const result = pruneResponsesPayload(payload, schemas)
-    expect(result.rules).toContain("r1")
-    expect(JSON.parse(String(payload.output[0].arguments))).toEqual({ type: "text", content: "ok", meta: { ok: true } })
+    expect(result.changed).toBe(false)
+    expect(JSON.parse(String(payload.output[0].arguments))).toEqual({ content: "ok", extra: "x", mode: "auto" })
   })
 
   it("R2 chooses oneOf branch by const discriminator", () => {
@@ -18,27 +18,18 @@ describe("args-schema-prune", () => {
     const summary = { removedKeys: [], rules: [], changed: false }
     const output = pruneFunctionArguments(JSON.stringify({ type: "text", content: "ok", widget: { unused: true } }), schema, summary)
     expect(JSON.parse(String(output))).toEqual({ type: "text", content: "ok" })
-    expect(summary.rules).toContain("r1")
-    expect(summary.rules).toContain("r2")
-  })
-
-  it("R3 removes optional values equal to schema defaults, but keeps required", () => {
-    const schema = { type: "object", properties: { mode: { type: "string", default: "auto" }, count: { type: "number", default: 1 } }, required: ["count"] }
-    const summary = { removedKeys: [], rules: [], changed: false }
-    const output = pruneFunctionArguments(JSON.stringify({ mode: "auto", count: 1 }), schema, summary)
-    expect(JSON.parse(String(output))).toEqual({ count: 1 })
-    expect(summary.rules).toEqual(["r3"])
+    expect(summary.rules).toEqual(["r2"])
   })
 
   it("SSE tracks tool name from added and prunes arguments.done and output_item.done", () => {
-    const schemas = extractToolSchemas({ tools: [{ name: "echo", parameters: { type: "object", properties: { text: { type: "string" } } } }] })
+    const schemas = extractToolSchemas({ tools: [{ name: "echo", parameters: { oneOf: [{ properties: { kind: { const: "echo" }, text: { type: "string" } } }] } }] })
     const raw = [
       'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","name":"echo","arguments":""}}',
-      `data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":${JSON.stringify(JSON.stringify({ text: "ok", extra: 1 }))}}`,
-      `data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","name":"echo","arguments":${JSON.stringify(JSON.stringify({ text: "ok", extra: 1 }))}}}`,
+      `data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":${JSON.stringify(JSON.stringify({ kind: "echo", text: "ok", extra: 1 }))}}`,
+      `data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","name":"echo","arguments":${JSON.stringify(JSON.stringify({ kind: "echo", text: "ok", extra: 1 }))}}}`,
     ].join("\n")
     const result = pruneSseText(raw, schemas)
-    expect(result.summary.rules).toContain("r1")
+    expect(result.summary.rules).toEqual(["r2"])
     expect(result.text).not.toContain("extra")
   })
 

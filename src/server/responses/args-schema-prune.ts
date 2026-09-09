@@ -73,29 +73,19 @@ function record(summary: ArgsSchemaPruneSummary, rule: string, key: string): voi
 
 function pruneObject(value: Obj, rawSchema: unknown, summary: ArgsSchemaPruneSummary, path: string): void {
   if (!isObj(rawSchema)) return
-  const schema = rawSchema
-  const { properties, branchSelected, branchUncertain } = branchProperties(schema, value)
-  // A branch without a provable discriminator is intentionally untouched.
-  if (branchUncertain) return
-  const hasProperties = isObj(schema.properties) || (branchSelected && Object.keys(properties).length > 0) || schema.type === "object"
-  const additionalAllowed = schema.additionalProperties === true
+  const { properties, branchSelected, branchUncertain } = branchProperties(rawSchema, value)
+  // R2 only: without one uniquely selected const/enum branch, fail open.
+  if (!branchSelected || branchUncertain) return
   for (const key of Object.keys(value)) {
     const childSchema = properties[key]
     const keyPath = path ? `${path}.${key}` : key
-    if (!childSchema && hasProperties && !additionalAllowed) {
+    if (!childSchema) {
       delete value[key]
-      record(summary, "r1", keyPath)
-      continue
-    }
-    if (!isObj(childSchema)) continue
-    const required = Array.isArray(schema.required) ? schema.required : []
-    if (own(childSchema, "default") && !required.includes(key) && deepEqual(value[key], childSchema.default)) {
-      delete value[key]
-      record(summary, "r3", keyPath)
+      record(summary, "r2", keyPath)
       continue
     }
     if (isObj(value[key])) pruneObject(value[key], childSchema, summary, keyPath)
-    else if (Array.isArray(value[key]) && isObj(childSchema.items)) {
+    else if (Array.isArray(value[key]) && isObj(childSchema) && isObj(childSchema.items)) {
       for (let i = 0; i < value[key].length; i++) if (isObj(value[key][i])) pruneObject(value[key][i], childSchema.items, summary, `${keyPath}[${i}]`)
     }
   }

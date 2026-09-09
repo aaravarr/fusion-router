@@ -29,6 +29,7 @@ import { getDatabase } from "../db"
 import { apiFetchWithMirrorContext, type MirrorSelectionContext } from "../api-fetch"
 import { isPoolModelFastEnabled } from "../pool-model-config"
 import { OPENAI_OAUTH_CLIENT_ID, OPENAI_OAUTH_TOKEN_URL, parseOpenAIIdentity } from "../openai-oauth"
+import { strictifyToolSchemasBytes } from "../responses/schema-strict"
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
@@ -421,8 +422,8 @@ function identifyExhaustedWindow(
  * CLIProxyAPI codex 转发约束（2026-09-08 源码核实，见 CODEX_BODY_STRIP_KEYS 注释）：
  * 强制 stream:true、store:false；instructions 为 null/缺失时置 ""；input 为字符串时
  * 包装为标准列表形态 [{type:"message",role:"user",content:[{type:"input_text",text}]}]；
- * service_tier 仅保留 "priority"；删除 strip 清单字段。
- * 非 JSON body 原样透传。
+ * service_tier 仅保留 "priority"；删除 strip 清单字段；最终 tools schema 的封闭记录补
+ * additionalProperties:false。非 JSON body 原样透传。
  * 覆盖两条入口：responses 原生直通与 chat→responses 转换（网关转换后统一经
  * buildForwardTarget 走到这里）。
  *
@@ -440,10 +441,15 @@ function identifyExhaustedWindow(
 export function normalizeCodexResponsesBody(body: Uint8Array<ArrayBuffer> | null, ownerUserId?: string, model?: string): Uint8Array<ArrayBuffer> | null {
   if (!body || body.byteLength === 0) return body
   let parsed: unknown
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(body))
-  } catch {
-    return body
+  // 最终 provider 出口再做一次幂等 schema 收紧，覆盖原生 responses 和 chat 转 responses。
+  const strictified = strictifyToolSchemasBytes(body)
+  if (strictified.changed) parsed = strictified.json
+  else {
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(body))
+    } catch {
+      return body
+    }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return body
   const record = { ...(parsed as Record<string, unknown>) }

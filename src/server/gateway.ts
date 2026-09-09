@@ -20,6 +20,7 @@ import { buildChatFallbackFromResponsesWithContext } from "./responses/responses
 import { chatRequestToResponses, hasConvertibleSsePayload, looksLikeResponsesSse, responsesJsonToChatCompletion, responsesSseToChatStream, responsesSseToJson } from "./responses/custom-provider-compat"
 import { createIncrementalSseSanitizer, isDshSanitizeScope, sanitizeResponsesPayload, sanitizeSseText, withDshSanitizeTag, DSH_ARGS_SANITIZE_TAG } from "./responses/dsh-args-sanitize"
 import { createIncrementalArgsSchemaPruner, extractToolSchemas, isArgsSchemaPruneScope, pruneResponsesPayload, pruneSseText, withArgsSchemaPruneTag, type ArgsSchemaPruneSummary, type ArgsSchemaToolSchemas } from "./responses/args-schema-prune"
+import { isSchemaStrictScope, strictifyToolSchemasBytes, withSchemaStrictTag } from "./responses/schema-strict"
 import { extractCodexNativeStreamStats } from "./responses/codex-native-stats"
 import { normalizeOpenCodeGoResponsesSse, stripUnsupportedOpenCodeGoResponsesParams } from "./responses/opencode-go-compat"
 import { fixOpenCodeGoChatStreamEnding } from "./providers/opencode-go-chat-stream"
@@ -347,6 +348,17 @@ function applyArgsSchemaPruneToSseText(rawText: string, poolType: unknown, schem
   const result = pruneSseText(rawText, schemas)
   if (result.summary.changed) console.log(`[args-schema-prune] openai pool SSE: rules=${result.summary.rules.join(",")} removed=${[...new Set(result.summary.removedKeys)].join(",")}`)
   return result
+}
+
+function applySchemaStrictToUpstreamBytes(bytes: Uint8Array<ArrayBuffer> | null, poolType: unknown, routeMeta: { transformSummary?: string | null }): Uint8Array<ArrayBuffer> | null {
+  if (!isSchemaStrictScope(poolType) || !bytes) return bytes
+  const result = strictifyToolSchemasBytes(bytes)
+  if (result.changed && result.body) {
+    routeMeta.transformSummary = withSchemaStrictTag(routeMeta.transformSummary, result.patchedObjects)
+    console.log(`[schema-strict] openai pool: patched ${result.patchedObjects} object schemas`)
+    return result.body
+  }
+  return bytes
 }
 
 function responseHeaders(source: Headers): Headers {
@@ -875,6 +887,8 @@ export class GatewayService {
               }
             } catch { /* keep original body */ }
           }
+          // OpenAI 的 chat→responses 重组已经完成；在 provider 统一出口前对最终上行体收紧 schema，避免转换器丢失补丁。
+          attemptUpstreamBytes = applySchemaStrictToUpstreamBytes(attemptUpstreamBytes, selection.account.poolType, routeMeta)
           const target = provider.buildForwardTarget({
             method: request.method, endpoint: attemptEndpoint, model: model ?? "", upstreamModel,
             body: attemptUpstreamBytes, headers: request.headers,
