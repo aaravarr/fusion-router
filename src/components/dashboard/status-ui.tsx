@@ -268,6 +268,23 @@ export function getQuota(account: Account, key: "permanent" | "fiveHour" | "week
 }
 
 /**
+ * Resolve the single month cell used by the account list.
+ *
+ * Both Command Code and OpenCode Go are persisted as the normalized MONTHLY
+ * quota kind, but their extra fields have different meanings. Keep the
+ * provider-specific branches explicit and check Command Code first so a future
+ * snapshot carrying both provider-specific month slots has a deterministic
+ * preference. A current account can only belong to one pool, so each branch
+ * reads that pool's existing monthly window without changing its semantics.
+ */
+export function getUnifiedMonthlyQuota(account: Account): QuotaWindow | null {
+  const poolType = account.poolType || "opencode-go";
+  if (poolType === "command-code") return getQuota(account, "monthly");
+  if (poolType === "opencode-go") return getQuota(account, "monthly");
+  return null;
+}
+
+/**
  * Compact a workspace id for display: custom pools render the provider slug
  * instead of the long `custom:<uuid>` segment and trailing ids are shortened,
  * while non-custom ids stay untouched.

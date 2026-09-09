@@ -1,7 +1,30 @@
 import { describe, expect, it } from "vitest"
-import { listWindowColumns } from "./status-ui"
+import type { Account } from "./types"
+import { getUnifiedMonthlyQuota, listWindowColumns } from "./status-ui"
 
 describe("listWindowColumns", () => {
+  it("统一月列按账号号池读取 Command Code / OpenCode Go 月窗，无月窗显示空值", () => {
+    const commandCode: Account = {
+      id: "command-code-1",
+      poolType: "command-code",
+      quotaWindows: [{ kind: "MONTHLY", usagePercent: 12.5, remainingValue: 61.25, extra: { service: "command-code" } }],
+    }
+    const openCodeGo: Account = {
+      id: "opencode-go-1",
+      poolType: "opencode-go",
+      quotaWindows: [{ kind: "MONTHLY", usagePercent: 34.5, remainingValue: 65.5, extra: { service: "opencode-go" } }],
+    }
+    const noMonthly: Account = {
+      id: "glm-1",
+      poolType: "glm-coding",
+      quotaWindows: [{ kind: "WEEKLY", usagePercent: 10 }],
+    }
+
+    expect(getUnifiedMonthlyQuota(commandCode)).toMatchObject({ usagePercent: 12.5, extra: { service: "command-code" } })
+    expect(getUnifiedMonthlyQuota(openCodeGo)).toMatchObject({ usagePercent: 34.5, extra: { service: "opencode-go" } })
+    expect(getUnifiedMonthlyQuota(noMonthly)).toBeNull()
+  })
+
   it("open-design-go 主列展示余额、次列展示月度周期用量", () => {
     const [primary, secondary] = listWindowColumns("open-design-go")
     expect(primary).toEqual({ key: "balance", label: "BALANCE", header: "余额" })
