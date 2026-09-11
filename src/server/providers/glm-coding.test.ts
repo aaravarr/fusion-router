@@ -176,14 +176,15 @@ describe("GlmCodingProvider 接口与模型", () => {
   })
 })
 
-describe("GLM quota 映射（实测响应样例 2026-09-04）", () => {
-  // GET /api/monitor/usage/quota/limit 真实响应（脱敏）。
+describe("GLM quota 映射（生产实测响应样例 2026-09-11）", () => {
+  // GET /api/monitor/usage/quota/limit 生产真实响应（脱敏，仅保留额度字段）。
   const payload = parseGlmQuotaPayload({
     code: 200,
+    msg: "操作成功",
     data: {
       limits: [
-        { type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 12000, currentValue: 4422, remaining: 7577, percentage: 36, nextResetTime: 1788504305572 },
-        { type: "CREDIT_LIMIT", unit: 6, number: 1, usage: 60000, currentValue: 10155, remaining: 49844, percentage: 16, nextResetTime: 1788923564994 },
+        { type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 12000, currentValue: 1277, remaining: 10722, percentage: 10, nextResetTime: 1789127069989 },
+        { type: "CREDIT_LIMIT", unit: 6, number: 1, usage: 60000, currentValue: 17130, remaining: 42869, percentage: 28, nextResetTime: 1789528364997 },
       ],
       level: "pro",
     },
@@ -197,19 +198,19 @@ describe("GLM quota 映射（实测响应样例 2026-09-04）", () => {
   })
 
   it("unit=3 → FIVE_HOUR、unit=6 → WEEKLY；percentage → usagePercent；nextResetTime → resetAt", () => {
-    const now = 1788400000000
+    const now = 1789000000000
     const windows = windowsFromGlmQuota(payload!, now)
     expect(windows).toHaveLength(2)
     const fiveHour = windows.find((w) => w.kind === "FIVE_HOUR")
     const weekly = windows.find((w) => w.kind === "WEEKLY")
     expect(fiveHour).toMatchObject({
-      usagePercent: 36,
+      usagePercent: 10,
       limitValue: 12000,
-      remainingValue: 7577,
-      resetAt: new Date(1788504305572).toISOString(),
+      remainingValue: 10722,
+      resetAt: new Date(1789127069989).toISOString(),
       source: "API_PROBE",
     })
-    expect(weekly).toMatchObject({ usagePercent: 16, limitValue: 60000, remainingValue: 49844 })
+    expect(weekly).toMatchObject({ usagePercent: 28, limitValue: 60000, remainingValue: 42869 })
     // percentage 语义与网关阻塞口径（usage_percent >= 100 阻塞）同向。
     expect(fiveHour!.usagePercent).toBeLessThan(100)
     // level 挂 extra 透传。
@@ -234,6 +235,37 @@ describe("GLM quota 映射（实测响应样例 2026-09-04）", () => {
     })
     expect(windows).toHaveLength(1)
     expect(windows[0].usagePercent).toBe(50)
+  })
+
+  it("当前实测 currentValue/usage 与 percentage 存在舍入差异时仍采用上游 percentage", () => {
+    expect(payload!.limits[0].currentValue / payload!.limits[0].usage * 100).toBeCloseTo(10.6416667, 5)
+    expect(payload!.limits[0].usage - payload!.limits[0].remaining).toBe(1278)
+    expect(windowsFromGlmQuota(payload!).find((window) => window.kind === "FIVE_HOUR")?.usagePercent).toBe(10)
+  })
+
+  it("percentage 缺失或非有限时安全归零，不从 currentValue 倒推", () => {
+    const parsed = parseGlmQuotaPayload({
+      data: {
+        limits: [
+          { type: "CREDIT_LIMIT", unit: 3, usage: 12000, currentValue: 9000, remaining: 3000, nextResetTime: 1789127069989 },
+          { type: "CREDIT_LIMIT", unit: 6, usage: 60000, currentValue: 30000, remaining: 30000, percentage: "not-a-number", nextResetTime: 1789528364997 },
+        ],
+      },
+    })
+    expect(parsed).not.toBeNull()
+    expect(windowsFromGlmQuota(parsed!).map((window) => window.usagePercent)).toEqual([0, 0])
+  })
+
+  it("percentage 越界时只钳制展示值，不改变窗口金额", () => {
+    const windows = windowsFromGlmQuota({
+      level: "",
+      limits: [
+        { type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 100, currentValue: 200, remaining: -100, percentage: 150, nextResetTime: 1788504305572 },
+        { type: "CREDIT_LIMIT", unit: 6, number: 1, usage: 100, currentValue: -2, remaining: 102, percentage: -5, nextResetTime: 1788504305572 },
+      ],
+    })
+    expect(windows.map((window) => window.usagePercent)).toEqual([100, 0])
+    expect(windows[0]).toMatchObject({ limitValue: 100, remainingValue: -100 })
   })
 })
 

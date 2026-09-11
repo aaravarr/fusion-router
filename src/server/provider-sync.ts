@@ -31,7 +31,12 @@ export async function syncProviderAccount(ownerUserId: string, accountId: string
         ) {
           continue
         }
-        const conflictUpdate = account.poolType.startsWith("custom:")
+        // GLM 的 quota/limit 是完整的、权威的当前快照：窗口消耗会随 5h
+        // 滚动窗口自然下降，不能沿用历史防回退合并，否则旧的高值会永久压住
+        // 新的真实值。custom provider 已有同样的精确快照语义；其他内置池继续
+        // 保留历史合并策略（尤其不触碰 xAI 的 LOCAL_USAGE 逻辑）。
+        const authoritativeSnapshot = account.poolType === "glm-coding" || account.poolType.startsWith("custom:")
+        const conflictUpdate = authoritativeSnapshot
           ? `usage_percent=excluded.usage_percent,
           reset_at=excluded.reset_at,
           source=excluded.source,

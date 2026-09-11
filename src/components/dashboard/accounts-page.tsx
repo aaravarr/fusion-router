@@ -1029,7 +1029,7 @@ function AccountDetailSheet({ account, onOpenChange, onPreferred, onToggle, onRe
                     : "尚未取得 Use balance 状态，因此暂不参与路由。服务重启完成字段升级后，点击下方“立即同步”即可重新读取，无需重新录入账号。"}
                 </div>
               ) : null}
-              <DetailSection title="额度窗口" description={isGo ? "来自最近一次 Console 同步。" : poolOf(account) === "command-code" ? "来自 /alpha/billing 三窗同步（5 小时 + 每周 + 月度余额）；立即同步会刷新一次。" : "来自真实上游响应头；立即同步会发送一次最小额度探测。"}>
+              <DetailSection title="额度窗口" description={isGo ? "来自最近一次 Console 同步。" : poolOf(account) === "command-code" ? "来自 /alpha/billing 三窗同步（5 小时 + 每周 + 月度余额）；立即同步会刷新一次。" : poolOf(account) === "glm-coding" ? "来自 GLM Coding Plan 上游额度接口（5 小时 + 每周）；立即同步会刷新一次。" : "来自真实上游响应头；立即同步会发送一次最小额度探测。"}>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(148px,1fr))] gap-2.5">
                   {poolOf(account) === "command-code" ? (
                     <>
