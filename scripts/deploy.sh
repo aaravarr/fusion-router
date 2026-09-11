@@ -217,7 +217,9 @@ prepare_staging() {
 
   echo '=== webpack staging build ==='
   export NEXT_TELEMETRY_DISABLED=1
-  NEXT_DIST_DIR="$PROJ/.next-staging" npx next build --webpack
+  # distDir must stay relative: Next resolves it with path.join(projectDir, distDir),
+  # and path.join keeps absolute segments, which would nest the output directory.
+  NEXT_DIST_DIR=".next-staging" npx next build --webpack
 
   echo '=== remove traced data shell ==='
   if [[ -e "$STAGING/standalone/data" || -L "$STAGING/standalone/data" ]]; then
@@ -309,7 +311,16 @@ on_exit() {
   trap - EXIT
 
   if (( exit_status != 0 && SWITCH_ATTEMPTED == 1 && ROLLBACK_ATTEMPTED == 0 )); then
-    if (( LIVE_MOVED == 1 )) || (( PREV_CLEARED == 1 && ! -e "$LIVE" && -e "$PREV" )); then
+    # `[[ ... ]]` tests cannot live inside `(( ... ))` arithmetic; combine a
+    # numeric flag with real path tests instead of and-ing raw test operators.
+    local tree_needs_restore=0
+    if (( LIVE_MOVED == 1 )); then
+      tree_needs_restore=1
+    elif (( PREV_CLEARED == 1 )) && [[ ! -e "$LIVE" && -e "$PREV" ]]; then
+      tree_needs_restore=1
+    fi
+
+    if (( tree_needs_restore == 1 )); then
       if ! rollback_deployment 'unexpected deployment interruption'; then
         printf '[deploy] FATAL: automatic rollback failed; inspect service state\n' >&2
       fi
