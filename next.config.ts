@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // NEXT_DIST_DIR lets staging builds avoid clearing the live in-place .next directory.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   serverExternalPackages: ["better-sqlite3"],
   allowedDevOrigins: ["127.0.0.1"],
   // 线上 data/ 是 8.5G+ 的 live 数据库目录（含备份），output tracing 会误将其

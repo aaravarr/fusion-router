@@ -16,6 +16,8 @@
 
 # next.js
 /.next/
+/.next-prev/
+/.next-staging/
 /out/
 
 # production
