@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
-# Hardened deployment helper.
-#
-# Incident background:
-# A framework build ignored tracing exclusions and copied the live data/ directory
-# into the standalone output.  With a very large dataset, the disk filled before
-# the old post-build cleanup could run.  An interrupted build could also leave a
-# standalone tree without server.js, causing the service supervisor to restart it
-# in a loop.
-#
-# Hardening kept here: stop the service before building, rename live data to a
-# same-filesystem sibling outside the project, restore it from an EXIT trap, move
-# any build-created data/ shell aside before restoring the real data, and start
-# the service only after server.js has been verified.
+# Build in an isolated tree, then switch the verified runtime tree atomically.
+# The existing service and .next tree remain untouched until every build guard passes.
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOLD="$(dirname "$PROJ")/.$(basename "$PROJ")-data-hold"
-DATA_LIVE="$PROJ/data"
-DATA_HELD=0
+LIVE="$PROJ/.next"
+STAGING="$PROJ/.next-staging"
+PREV="$PROJ/.next-prev"
+
+SWITCH_ATTEMPTED=0
+SERVICE_STOPPED=0
+PREV_CLEARED=0
+LIVE_MOVED=0
+STAGING_MOVED=0
+ROLLBACK_ATTEMPTED=0
 
 usage() {
   cat <<'USAGE'
 用法：scripts/deploy.sh [--help]
 
-执行一次加固部署：拉取代码、停服务、暂存 live data/、构建、恢复数据、
-同步 standalone 静态资源，确认 server.js 存在后启动服务并做 HTTP 冒烟检查。
+执行一次零停机部署：拉取代码、检查磁盘余量，在隔离的 staging 目录执行
+webpack 构建并验证 standalone 运行树；随后短暂停止服务，原子切换 .next，
+启动新版本并执行 HTTP 200 冒烟检查。启动或冒烟失败会自动切回上一版本。
 
 配置（环境变量优先于仓库根目录的 deploy.local.env）：
   DEPLOY_SERVICE    必填，systemd 单元名。
@@ -80,62 +77,217 @@ validate_config() {
   fi
 }
 
-restore_data() {
-  local original_status="${1:-0}"
-  local restore_status=0
-  local scratch=''
+check_disk_space() {
+  local available_kb
+  if ! available_kb="$(df -Pk "$PROJ" | awk 'NR == 2 { print $4; exit }')"; then
+    printf '[deploy] FATAL: unable to inspect free disk space\n' >&2
+    return 1
+  fi
+  if [[ ! "$available_kb" =~ ^[0-9]+$ ]]; then
+    printf '[deploy] FATAL: unable to parse free disk space: %s\n' "$available_kb" >&2
+    return 1
+  fi
+  if (( available_kb < 5 * 1024 * 1024 )); then
+    printf '[deploy] FATAL: less than 5 GiB is available on the project filesystem (%s KiB)\n' "$available_kb" >&2
+    return 1
+  fi
+  printf '[deploy] free disk space: %s KiB\n' "$available_kb"
+}
 
-  if (( DATA_HELD == 1 )); then
-    # A successful build can create an empty data/ directory in the project.
-    # Move that shell aside so the held live data can take the canonical path.
-    if [[ -e "$DATA_LIVE" || -L "$DATA_LIVE" ]]; then
-      scratch="$PROJ/data.build-scratch-$(date +%Y%m%d-%H%M%S)"
-      while [[ -e "$scratch" || -L "$scratch" ]]; do
-        scratch="${scratch}-$$"
-      done
-      if mv -- "$DATA_LIVE" "$scratch"; then
-        echo "[deploy] build-created data moved aside -> $scratch"
+verify_running() {
+  local active_status
+  local http_status
+
+  if ! active_status="$(sudo systemctl is-active "$DEPLOY_SERVICE")"; then
+    printf '[deploy] service is not active: %s\n' "${active_status:-unknown}" >&2
+    return 1
+  fi
+  if [[ "$active_status" != 'active' ]]; then
+    printf '[deploy] service state is %s, expected active\n' "$active_status" >&2
+    return 1
+  fi
+
+  if ! http_status="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${DEPLOY_PORT}/")"; then
+    printf '[deploy] HTTP smoke request failed\n' >&2
+    return 1
+  fi
+  printf '[deploy] HTTP smoke status: %s\n' "$http_status"
+  if [[ "$http_status" != '200' ]]; then
+    printf '[deploy] HTTP smoke expected 200, got %s\n' "$http_status" >&2
+    return 1
+  fi
+}
+
+failed_tree_path() {
+  local candidate="$PROJ/.next-failed-$(date +%Y%m%d-%H%M%S)-$$"
+  while [[ -e "$candidate" || -L "$candidate" ]]; do
+    candidate="${candidate}-1"
+  done
+  printf '%s\n' "$candidate"
+}
+
+rollback_deployment() {
+  local reason="$1"
+  local rollback_status=0
+  local failed_tree
+
+  if (( ROLLBACK_ATTEMPTED == 1 )); then
+    return 1
+  fi
+  ROLLBACK_ATTEMPTED=1
+  printf '[deploy] rollback requested: %s\n' "$reason" >&2
+
+  # Stopping is safe even when the failed start left the unit inactive; keep
+  # trying the filesystem recovery so .next is never intentionally left absent.
+  if (( SWITCH_ATTEMPTED == 1 )); then
+    if sudo systemctl stop "$DEPLOY_SERVICE"; then
+      SERVICE_STOPPED=1
+    else
+      printf '[deploy] rollback warning: could not stop service\n' >&2
+      rollback_status=1
+    fi
+  fi
+
+  # If this deployment moved the old tree, keep the failed new tree for
+  # inspection and restore the old tree from the same-filesystem backup.
+  if (( LIVE_MOVED == 1 )); then
+    if [[ -e "$LIVE" || -L "$LIVE" ]]; then
+      failed_tree="$(failed_tree_path)"
+      if mv -- "$LIVE" "$failed_tree"; then
+        printf '[deploy] failed tree preserved at %s\n' "$failed_tree" >&2
       else
-        printf '[deploy] FATAL: could not move build-created data aside\n' >&2
-        restore_status=1
+        printf '[deploy] rollback warning: could not preserve failed tree\n' >&2
+        rollback_status=1
       fi
     fi
 
-    if (( restore_status == 0 )); then
-      if [[ ! -d "$HOLD" ]]; then
-        printf '[deploy] FATAL: held live data is missing: %s\n' "$HOLD" >&2
-        restore_status=1
-      elif mv -- "$HOLD" "$DATA_LIVE"; then
-        DATA_HELD=0
-        echo "[deploy] live data restored -> $DATA_LIVE"
-      else
-        printf '[deploy] FATAL: could not restore live data to %s\n' "$DATA_LIVE" >&2
-        restore_status=1
-
-        # If the destination move failed after moving a build shell, make a
-        # best-effort rollback so live data is not left without its path.
-        if [[ -n "$scratch" && ! -e "$DATA_LIVE" && ! -L "$DATA_LIVE" ]]; then
-          if [[ -e "$scratch" || -L "$scratch" ]]; then
-            if mv -- "$scratch" "$DATA_LIVE"; then
-              echo "[deploy] rolled build-created data back -> $DATA_LIVE"
-            else
-              printf '[deploy] FATAL: rollback of build-created data also failed\n' >&2
-            fi
-          fi
+    if [[ ! -e "$LIVE" && ! -L "$LIVE" ]]; then
+      if [[ -e "$PREV" || -L "$PREV" ]]; then
+        if mv -- "$PREV" "$LIVE"; then
+          printf '[deploy] previous tree restored\n' >&2
+        else
+          printf '[deploy] rollback warning: could not restore previous tree\n' >&2
+          rollback_status=1
         fi
+      else
+        printf '[deploy] rollback warning: previous tree is missing\n' >&2
+        rollback_status=1
       fi
+    fi
+  elif (( PREV_CLEARED == 1 )) && [[ ! -e "$LIVE" && ! -L "$LIVE" ]] && [[ -e "$PREV" || -L "$PREV" ]]; then
+    # Covers the tiny window after mv removed the old path but before the
+    # success marker could be assigned.
+    if mv -- "$PREV" "$LIVE"; then
+      LIVE_MOVED=1
+      printf '[deploy] previous tree restored\n' >&2
+    else
+      printf '[deploy] rollback warning: could not restore previous tree\n' >&2
+      rollback_status=1
     fi
   fi
 
-  if (( restore_status != 0 )); then
-    return "$restore_status"
+  if [[ -e "$LIVE" || -L "$LIVE" ]]; then
+    if sudo systemctl start "$DEPLOY_SERVICE"; then
+      SERVICE_STOPPED=0
+      sleep 2
+      if verify_running; then
+        printf '[deploy] 已回滚：previous .next is serving\n' >&2
+      else
+        printf '[deploy] rollback verification failed\n' >&2
+        rollback_status=1
+      fi
+    else
+      printf '[deploy] rollback warning: could not start previous service\n' >&2
+      rollback_status=1
+    fi
+  else
+    printf '[deploy] rollback failed: .next is missing\n' >&2
+    rollback_status=1
   fi
-  return "$original_status"
+
+  return "$rollback_status"
+}
+
+prepare_staging() {
+  echo '=== clean staging ==='
+  rm -rf -- "$STAGING"
+
+  echo '=== disk space guard ==='
+  check_disk_space
+
+  echo '=== webpack staging build ==='
+  export NEXT_TELEMETRY_DISABLED=1
+  NEXT_DIST_DIR="$PROJ/.next-staging" npx next build --webpack
+
+  echo '=== remove traced data shell ==='
+  if [[ -e "$STAGING/standalone/data" || -L "$STAGING/standalone/data" ]]; then
+    rm -rf -- "$STAGING/standalone/data"
+  fi
+
+  echo '=== prepare standalone runtime tree ==='
+  rm -rf -- "$STAGING/standalone/.next/static"
+  mkdir -p -- "$STAGING/standalone/.next"
+  cp -r -- "$STAGING/static" "$STAGING/standalone/.next/static"
+  rm -rf -- "$STAGING/standalone/public"
+  cp -r -- "$PROJ/public" "$STAGING/standalone/public"
+
+  echo '=== guard: staging server.js exists ==='
+  test -f "$STAGING/standalone/server.js" || {
+    echo '[deploy] FATAL: staging server.js missing; service and live .next were not touched' >&2
+    return 1
+  }
+}
+
+switch_and_verify() {
+  echo '=== preflight switch paths ==='
+  test -d "$LIVE" || {
+    echo '[deploy] FATAL: live .next directory is missing; service was not stopped' >&2
+    return 1
+  }
+  test -d "$STAGING" || {
+    echo '[deploy] FATAL: staging directory is missing; service was not stopped' >&2
+    return 1
+  }
+
+  echo '=== stop service for atomic switch ==='
+  SWITCH_ATTEMPTED=1
+  if ! sudo systemctl stop "$DEPLOY_SERVICE"; then
+    echo '[deploy] FATAL: could not stop service; live .next was not switched' >&2
+    return 1
+  fi
+  SERVICE_STOPPED=1
+
+  echo '=== atomically switch runtime trees ==='
+  rm -rf -- "$PREV"
+  PREV_CLEARED=1
+  mv -- "$LIVE" "$PREV"
+  LIVE_MOVED=1
+  mv -- "$STAGING" "$LIVE"
+  STAGING_MOVED=1
+
+  echo '=== start service ==='
+  if ! sudo systemctl start "$DEPLOY_SERVICE"; then
+    echo '[deploy] FATAL: new service failed to start; rolling back' >&2
+    if ! rollback_deployment 'service start failed'; then
+      echo '[deploy] FATAL: rollback could not be verified' >&2
+    fi
+    return 1
+  fi
+  SERVICE_STOPPED=0
+
+  sleep 6
+  if ! verify_running; then
+    echo '[deploy] FATAL: smoke check failed; rolling back' >&2
+    if ! rollback_deployment 'HTTP smoke check failed'; then
+      echo '[deploy] FATAL: rollback could not be verified' >&2
+    fi
+    return 1
+  fi
 }
 
 run_deploy() {
-  # Relative paths below (.next, public, npm run build, git pull) all resolve
-  # against the cwd, and the wrapper may be invoked from anywhere.
+  # Relative paths below (git pull, public, and the Next command) resolve
+  # against the repository even when the wrapper is invoked from elsewhere.
   cd "$PROJ"
 
   echo '=== pull ==='
@@ -147,54 +299,33 @@ run_deploy() {
     git pull origin main
   fi
 
-  echo '=== stop service (build wipes .next) ==='
-  sudo systemctl stop "$DEPLOY_SERVICE"
-
-  echo '=== move live data aside ==='
-  if [[ -e "$HOLD" || -L "$HOLD" ]]; then
-    die_with_usage "hold path already exists; inspect it before retrying: $HOLD"
-  fi
-  if [[ ! -d "$DATA_LIVE" ]]; then
-    die_with_usage "live data directory is missing: $DATA_LIVE"
-  fi
-  mv -- "$DATA_LIVE" "$HOLD"
-  DATA_HELD=1
-
-  # Do not continue unless data/ is genuinely absent from the project.
-  if [[ -e "$DATA_LIVE" || -L "$DATA_LIVE" ]]; then
-    die_with_usage "live data path still exists after move: $DATA_LIVE"
-  fi
-  if [[ ! -d "$HOLD" ]]; then
-    die_with_usage "held live data directory is missing after move: $HOLD"
-  fi
-
-  echo '=== build ==='
-  export NEXT_TELEMETRY_DISABLED=1
-  npm run build
-  rm -rf -- .next/standalone/data
-
-  echo '=== restore live data ==='
-  restore_data 0
-
-  echo '=== sync standalone assets ==='
-  rm -rf -- .next/standalone/.next/static
-  mkdir -p -- .next/standalone/.next
-  cp -r -- .next/static .next/standalone/.next/static
-  rm -rf -- .next/standalone/public
-  cp -r -- public .next/standalone/public
-
-  echo '=== guard: server.js exists ==='
-  test -f .next/standalone/server.js || {
-    echo '[deploy] FATAL: server.js missing, service left stopped' >&2
-    exit 1
-  }
-
-  echo '=== start service ==='
-  sudo systemctl start "$DEPLOY_SERVICE"
-  sleep 6
-  sudo systemctl is-active "$DEPLOY_SERVICE"
-  curl -sI "http://127.0.0.1:${DEPLOY_PORT}/" | head -n 1
+  prepare_staging
+  switch_and_verify
   echo '=== deploy done ==='
+}
+
+on_exit() {
+  local exit_status="$1"
+  trap - EXIT
+
+  if (( exit_status != 0 && SWITCH_ATTEMPTED == 1 && ROLLBACK_ATTEMPTED == 0 )); then
+    if (( LIVE_MOVED == 1 )) || (( PREV_CLEARED == 1 && ! -e "$LIVE" && -e "$PREV" )); then
+      if ! rollback_deployment 'unexpected deployment interruption'; then
+        printf '[deploy] FATAL: automatic rollback failed; inspect service state\n' >&2
+      fi
+    elif (( SWITCH_ATTEMPTED == 1 )); then
+      # No tree was moved, so start the unit to leave a definite state even if
+      # the stop command itself returned an error after changing its state.
+      if sudo systemctl start "$DEPLOY_SERVICE"; then
+        SERVICE_STOPPED=0
+        printf '[deploy] service restarted after an interrupted switch\n' >&2
+      else
+        printf '[deploy] FATAL: service could not be restarted\n' >&2
+      fi
+    fi
+  fi
+
+  exit "$exit_status"
 }
 
 main() {
@@ -208,7 +339,7 @@ main() {
 
   load_config
   validate_config
-  trap 'restore_data "$?"' EXIT
+  trap 'on_exit "$?"' EXIT
   run_deploy
 }
 
