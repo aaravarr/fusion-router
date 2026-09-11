@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { configSchema } from "./route"
+import { configSchema } from "./tool-config-schema"
 
 describe("mcp tool config schema", () => {
   it("接受 web_search 的 provider 字段（回归：曾被静默剥离）", () => {

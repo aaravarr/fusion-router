@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { createPluginAccountPost, OPTIONS } from "./route"
+import { createPluginAccountPost } from "./handler"
+import { OPTIONS } from "./route"
 
 const body = { authCookie: "a-valid-browser-auth-cookie", workspaceId: "wrk_abc", extensionVersion: "1.2.3" }
 

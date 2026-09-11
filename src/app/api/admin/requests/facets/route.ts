@@ -1,13 +1,9 @@
 import { getDatabase } from "@/server/db";
 import { requireSession } from "../../_auth";
 import { cachedCount } from "@/server/lightweight-count";
+import { FACET_MAX_OPTIONS, FACET_SAMPLE_ROWS } from "./facet-config";
 
 export const runtime = "nodejs";
-
-/** 采样行数上限：只扫最近 N 行（owner+started_at 索引前缀），绝不全表扫描。 */
-export const FACET_SAMPLE_ROWS = 5_000;
-/** 单维度选项数上限：超过后不再收录（高频值在前，低频尾部截断）。 */
-export const FACET_MAX_OPTIONS = 200;
 
 export interface RequestFacets {
   /** 实际采样的行数；approximate=true 表示样本可能不含更早记录的长尾值。 */
