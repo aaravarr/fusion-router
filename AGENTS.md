@@ -47,7 +47,7 @@
 - **已知上游特性**：muse 经 GOAT 时需 `max_tokens≥512`（否则 reasoning 吃光返回空 content）；偶发 finish_reason=stop 但 content 为空串（上游重试节点问题，网关侧不特判）。
 - **业务错误码禁用 401**：key 无效回 400（同 Kimi/GLM 的 sessionFetch 语义）。
 
-### 代理连接复用与传输层重试（2026-09-08，7890 实测）
+### 代理连接复用与传输层重试（2026-09-08，生产实测）
 
 - 关键代码：`src/server/api-fetch.ts`（`getProxyDispatcher` 连接池参数）、`src/server/gateway.ts`（`isRetryableTransportError` + catch 分支传输层退避重试）。
 - **ProxyAgent 参数**（按代理地址全进程共享实例）：`keepAliveTimeout: 60_000`（undici 默认仅 4s，每请求几乎新建 CONNECT 隧道+TLS 握手；实测远端空闲隧道存活 ≥180s，60s 为兼顾复用与新鲜度的安全值）、`keepAliveMaxTimeout: 600_000`（显式写出 undici 默认）、`connectTimeout: 15_000` + `requestTls: { timeout: 15_000 }`（undici 源码确认隧道内 TLS 握手超时走 `requestTls.timeout`，顶层 `connectTimeout` 只管到代理的 TCP，两者都需设置；实测握手 p50≈1.7s/p95≈6.2s，旧默认 10s 下新建握手失败率 25%，15s 留抖动余量）。
@@ -62,3 +62,21 @@
 - xai-grok：chat completions + responses（cli-chat-proxy.grok.com）；**不支持 messages（用户确认，已知事实）**。
 - glm-coding：chat completions + responses + Anthropic messages **三格式全原生**（2026-09-04 真实 key 实测均 200）；三 base_url 按 endpoint 查表（见上节），路由零转换。
 - 通用原则：上游格式能力以实测/官方文档为准，不靠猜；调度遵循「原生优先，兼容转换兜底」。
+
+### 部署陷阱与零停机部署（2026-09-11，生产实测）
+
+- **运行中的 live 目录禁止 in-place `next build`**：`next build` 会先清空 `distDir`；构建一旦中断，`.next/standalone/server.js` 缺失，进程管理器会反复重启（实测空转重启 100+ 次）。
+- **Turbopack 会绕过 `outputFileTracingExcludes`**：把 live `data/`（生产 23G，其中 SQLite 17.9G）整体复制到 `.next/standalone/data`，大库直接因 ENOSPC 失败；构建后再 `rm -rf .next/standalone/data` 在 ENOSPC 时根本没有执行机会。
+- **staging 构建固定走 webpack**：A/B 对照（同仓库、同假数据）显示 Turbopack 复制 82M，而 `next build --webpack` 的 `standalone/data` 完全不存在且 `server.js` 正常生成。构建服务不中断时使用：`NEXT_TELEMETRY_DISABLED=1 NEXT_DIST_DIR=".next-staging" npx next build --webpack`。
+- **`distDir` 只能传相对路径**：`next/dist/build/index.js` 用 `const distDir = path.join(dir, config.distDir)` 解析；`path.join` 不会因绝对段重置路径，传绝对路径会拼出嵌套目录，导致产物落错位置。
+- **构建会改写 `tsconfig.json`**：Next 会重新格式化文件，并把当前 distDir 的 `types` 路径加入 `include`，工作区因此变脏，后续 `git pull` 可能冲突。`scripts/deploy.sh` 在构建后执行 `git checkout -- tsconfig.json` 复原，复原失败不致命。
+- **bash `trap` 条件不要混用上下文**：`[[ ]]` 测试不能塞进 `(( ))` 算术上下文；`(( X == 1 && ! -e "$F" ))` 是语法错误，且只在第一项为真时暴露。应使用数字标志配合真正的 `[[ ]]` 判断。
+- **零停机流程（`scripts/deploy.sh`）**：配置来自仓库根 `deploy.local.env`（已 gitignore）；依次执行 pull → 磁盘余量守卫（小于 5GiB 退出）→ staging webpack 构建（服务持续运行）→ 清理 staging 的 `standalone/data`、同步 `static`/`public`、校验 `standalone/server.js` → `stop` → `rm -rf .next-prev` → `mv .next .next-prev` → `mv .next-staging .next` → `start` → 断言 HTTP 200。失败自动回滚，保留 `.next-failed-*` 供排查并恢复 `.next-prev` 为 live。生产实测编译约 45 秒，全程服务无感；停机窗口仅切换与重启，约 5 秒。
+- **运维入口**：仓库根的薄 wrapper 调用 `scripts/deploy.sh`；`NEXT_DIST_DIR` 默认 `.next`，默认行为与原流程一致。
+
+### 额度窗口的「权威快照 vs 历史高水位」（2026-09-11，生产实锤）
+
+- **现有合并语义会锁住历史峰值**：`src/server/provider-sync.ts` 对非 `custom:*` 池采用高水位合并，`usage_percent=MAX(...)`、`remaining_value=MIN(...)`，只有 `reset_at`/`last_observed_at` 覆盖。窗口重置后，上游真实低值会被历史峰值永久压住。
+- **生产实锤**：GLM Coding Plan 5h 窗（`unit=3`，`GET /api/monitor/usage/quota/limit`）上游实时返回 `percentage=10 / remaining=10722`，库里却为上一窗口峰值 `99 / 78`。`status-ui.tsx` 用 `limitValue−remainingValue` 计算后，UI 显示「1.2万 / 1.2万 tokens + 99.00%」；`reset_at` 已是新窗口，形成「重置时间是新的、进度却满格」。
+- **修复（commit `a493c9ca`）**：将 `glm-coding` 与 `custom:*` 归入 `authoritativeSnapshot`，对整行做精确覆盖。判据是该池的窗口重置时间为绝对时间戳，且上游返回完整权威快照（GLM 的 `nextResetTime` 为毫秒绝对时间）。其余池保持原语义；相对倒计时类不能简单覆盖，否则会丢失防回退保护。
+- **同步修正文案**：`accounts-page.tsx` 增加 GLM 的额度卡片文案分支，避免落到通用的「来自真实上游响应头」兜底文案。
