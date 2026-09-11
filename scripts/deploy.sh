@@ -134,6 +134,10 @@ restore_data() {
 }
 
 run_deploy() {
+  # Relative paths below (.next, public, npm run build, git pull) all resolve
+  # against the cwd, and the wrapper may be invoked from anywhere.
+  cd "$PROJ"
+
   echo '=== pull ==='
   if [[ -n "${DEPLOY_GIT_PROXY:-}" ]]; then
     http_proxy="$DEPLOY_GIT_PROXY" \
