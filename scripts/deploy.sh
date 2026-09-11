@@ -219,7 +219,16 @@ prepare_staging() {
   export NEXT_TELEMETRY_DISABLED=1
   # distDir must stay relative: Next resolves it with path.join(projectDir, distDir),
   # and path.join keeps absolute segments, which would nest the output directory.
-  NEXT_DIST_DIR=".next-staging" npx next build --webpack
+  local build_status=0
+  NEXT_DIST_DIR=".next-staging" npx next build --webpack || build_status=$?
+  # Next rewrites tsconfig.json during the build (it reformats it and adds the
+  # active distDir's generated types to "include"). Restore it so the working
+  # tree stays clean and the next `git pull` cannot conflict on it.
+  git checkout -- tsconfig.json 2>/dev/null || true
+  if (( build_status != 0 )); then
+    printf '[deploy] FATAL: staging build failed (%s); service and live .next were not touched\n' "$build_status" >&2
+    return "$build_status"
+  fi
 
   echo '=== remove traced data shell ==='
   if [[ -e "$STAGING/standalone/data" || -L "$STAGING/standalone/data" ]]; then
